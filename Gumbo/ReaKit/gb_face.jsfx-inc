@@ -1,0 +1,639 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_face.jsfx-inc -- Gumbo's face: the full layout of the approved mockup (.docs/specs/mockups/Gumbo_SFZ_Player_mockup.html)
+// and the mixer-strip face, on the ReaKit library the way the free effects are (Saturation_ReaKit.jsfx is the model):
+// knobs_kbsg (ssl_knob_interact + rk_knob_draw in the theme's knob style), rk_piano (the keyboard; every held note lit
+// over it), rk_theme (colours, the THEME cluster, NATIVE, NAME BAR), rk_srf (one face in the track panel AND the
+// mixer), meters_kbsg (the peaks the display's OUT meter reads).
+//   * top bar: GUMBO, the instrument with its family and arrows to step through the family, voices, memory, THEME
+//   * left: the browser -- family tiles with the EON track icons, the family's instruments (the library index
+//     Data/EON_Gumbo/starter.txt + pack1..9.txt from the sound packages + Data/EON_Gumbo/library.txt, the user's),
+//     click to load
+//   * the display (an Ember screen in every theme, like hardware): the instrument, the last note's waveform, the keys
+//     that have recordings, the loudness layers of the last note, the output
+//   * seven knobs: TONE DRIVE ATTACK RELEASE GLIDE WIDTH VOLUME (GLIDE dimmed until built; PUNCH folded into ATTACK
+//     and SPACE hidden until the new reverb, the owner 2026-10-30); then the keyboard (play it with the mouse),
+//     recorded keys dotted above it
+// Not drawn until built (the owner, 2026-10-30: "Hidden until built"): Layer B, the effects chain, the sequencer, tabs.
+// Reads the loader and voices (gb_job, gb_js, gb_nsmp, gb_nreg, gb_ready, GB_NT, gb_last_*); writes gb_kb_note.
+
+@init
+GBF_KS = 16; GBF_NK = 9;             // knob memory; TONE DRIVE PUNCH ATTACK RELEASE GLIDE SPACE WIDTH VOLUME
+GBF_NKV = 8;                         // SOUND page knobs (gb_face_p2): PAN took PUNCH's slot, SPACE's stays unused
+GBF_KM_BASE = 1720000;               // 9 x 16 cells, clear of gb_sfz's tables (GB_FN = 1700000 + 126)
+gbf_km = GBF_KM_BASE;
+memset(gbf_km, 0, GBF_KS * GBF_NK);
+GBF_IDX_BASE = 1764000; GBF_IS = 6; GBF_IMAX = 512;   // the index: family, MB, name ptr, name len, path ptr, path len
+GBF_ICH_BASE = 1770000; GBF_ICH_CAP = 220000;          // the index's characters (ends 1990000, under GB_AUD)
+GBF_NFAM = 12;
+GBF_ICON_SLOT = 40;                  // gfx image slots 40..51 hold the family icons
+GBF_REC = 1740000;                   // 128: does a recording have its root on this key (rebuilt per load)
+GBF_LAY = 1740200;                   // 16: the last note's loudness bands (lo, hi pairs)
+GBF_FAV = 1742000;                   // 512: is index entry i a favourite (Data/EON_Gumbo/favourites.txt, per index load)
+GBF_MATCH = 1742600;                 // 512: does entry i match the search (rebuilt when the search or the index changes)
+gbf_q_gen = 0; gbf_q_built = -1; gbf_favonly = 0; #gbf_q = "";
+GBF_KST = 1740300;                   // 128: each key's fixed state for rk_piano_draw_ex (playable, keyswitch; per load)
+GBF_KSF = 1740500;                   // 128: the same plus held / active keyswitch, rebuilt every frame
+gbf_rec_gen = -1;                    // (gb_last_* belong to gb_voice, which sets them up)
+gbf_lo = 36; gbf_hi = 96; gbf_range_gen = -1;
+gbf_cat = -1; gbf_scroll = 0; gbf_idx_n = 0; gbf_idx_loaded = 0; gbf_icons_loaded = 0; gbf_win_t = 0;
+gbf_cur = -1; gbf_cur_for = -1;    // the index entry that is loaded (cached per load)
+
+function gbf_fam_name(i) (
+  i == 0 ? "Drums" : i == 1 ? "808s" : i == 2 ? "Bass" : i == 3 ? "Keys" : i == 4 ? "E-Piano" : i == 5 ? "Pads"
+  : i == 6 ? "Leads" : i == 7 ? "Strings" : i == 8 ? "Brass" : i == 9 ? "Winds" : i == 10 ? "Plucks" : i == 11 ? "Vox"
+  : "Other";   // 12: what the list's family guess could not place -- under ALL INSTRUMENTS only, no tile
+);
+// the free EON track icons (all in the ReaKit FX icon set)
+function gbf_fam_icon(i) (
+  i == 0 ? "drum_kit" : i == 1 ? "kick" : i == 2 ? "bass" : i == 3 ? "piano" : i == 4 ? "electric_piano" : i == 5 ? "synth_pad"
+  : i == 6 ? "synth_lead" : i == 7 ? "strings" : i == 8 ? "brass" : i == 9 ? "saxophone" : i == 10 ? "guitar" : "choir";
+);
+function gbf_fam_col(i) (   // a family colour, as in the mockup's tiles
+  i <= 2 ? ( gbf_fc_r = 1.00; gbf_fc_g = 0.48; gbf_fc_b = 0.24; ) : i <= 4 ? ( gbf_fc_r = 0.30; gbf_fc_g = 0.50; gbf_fc_b = 0.91; )
+  : i == 5 ? ( gbf_fc_r = 0.48; gbf_fc_g = 0.42; gbf_fc_b = 0.88; ) : i == 6 ? ( gbf_fc_r = 0.76; gbf_fc_g = 0.36; gbf_fc_b = 0.88; )
+  : i == 7 ? ( gbf_fc_r = 0.88; gbf_fc_g = 0.69; gbf_fc_b = 0.19; ) : i == 8 ? ( gbf_fc_r = 0.88; gbf_fc_g = 0.40; gbf_fc_b = 0.23; )
+  : i == 9 ? ( gbf_fc_r = 0.25; gbf_fc_g = 0.75; gbf_fc_b = 0.38; ) : i == 10 ? ( gbf_fc_r = 0.18; gbf_fc_g = 0.72; gbf_fc_b = 0.79; )
+  : ( gbf_fc_r = 0.91; gbf_fc_g = 0.28; gbf_fc_b = 0.60; );
+);
+
+// the family icons: Gumbo's own copies (EON_Gumbo/icons, from the starter sound package, copied from the track icons by
+// the release script), else the EON track icons (the ReaKit FX track icons package), else none
+function gbf_icons_load() local(i) (
+  i = 0;
+  loop(GBF_NFAM,
+    sprintf(#gbf_tmp, "EON_Gumbo/icons/%s.png", gbf_fam_icon(i));
+    gfx_loadimg(GBF_ICON_SLOT + i, #gbf_tmp) < 0 ? (
+      sprintf(#gbf_tmp, "track_icons/EON/%s.png", gbf_fam_icon(i)); gfx_loadimg(GBF_ICON_SLOT + i, #gbf_tmp); );
+    i += 1;
+  );
+  gbf_icons_loaded = 1;
+);
+
+// ── the library index: one line per instrument, "family|name|MB|regions|path" ──
+function gbf_idx_field(a, b) local(i) ( #gbf_fld = ""; i = a; loop(b - a, sprintf(#gbf_ch, "%c", str_getchar(#gbf_ln, i)); strcat(#gbf_fld, #gbf_ch); i += 1; ); );
+function gbf_idx_line() local(n, i, c, cuts, p0, p1, p2, p3, e, f, k, top) (
+  n = strlen(#gbf_ln);
+  n > 0 && str_getchar(#gbf_ln, n - 1) == 10 ? n -= 1;
+  n > 0 && str_getchar(#gbf_ln, n - 1) == 13 ? n -= 1;
+  cuts = 0; i = 0;
+  while (i < n && cuts < 4) ( str_getchar(#gbf_ln, i) == '|' ? ( cuts == 0 ? p0 = i : cuts == 1 ? p1 = i : cuts == 2 ? p2 = i : p3 = i; cuts += 1; ); i += 1; );
+  cuts == 4 && gbf_idx_n < GBF_IMAX && gbf_ich_top + n < GBF_ICH_CAP ? (
+    gbf_idx_field(0, p0); f = -1; k = 0;
+    loop(GBF_NFAM + 1, f < 0 && stricmp(#gbf_fld, gbf_fam_name(k)) == 0 ? f = k; k += 1; );   // the tiles + Other
+    f >= 0 ? (
+      e = GBF_IDX_BASE + gbf_idx_n * GBF_IS;
+      e[0] = f;
+      gbf_idx_field(p1 + 1, p2); e[1] = 0; match("%f", #gbf_fld, e[1]);
+      top = GBF_ICH_BASE + gbf_ich_top;
+      e[2] = gbf_ich_top; e[3] = p1 - p0 - 1;
+      i = 0; loop(e[3], top[i] = str_getchar(#gbf_ln, p0 + 1 + i); i += 1; );
+      gbf_ich_top += e[3]; top = GBF_ICH_BASE + gbf_ich_top;
+      e[4] = gbf_ich_top; e[5] = n - p3 - 1;
+      i = 0; loop(e[5], top[i] = str_getchar(#gbf_ln, p3 + 1 + i); i += 1; );
+      gbf_ich_top += e[5];
+      gbf_idx_n += 1;
+    );
+  );
+);
+function gbf_idx_read(path) local(h, k) (
+  h = file_open(path);
+  h >= 0 ? (
+    file_text(h) ? ( k = 0; while (file_avail(h) > 0 && k < 4096) ( file_string(h, #gbf_ln); gbf_idx_line(); k += 1; ); );
+    file_close(h);
+  );
+);
+// the lists, all under REAPER's Data folder: the sound packages' own (starter.txt = the free starter that comes with
+// Gumbo; pack1.txt .. pack9.txt = the extra downloads, one slot each, assigned in gumbo_index.lua's header -- each
+// written only by its package, so installing or updating one never touches another or the user's imports), then the
+// user's (library.txt -- the helper, Add a library, the dev builder). Paths may be relative to Data (the packages'
+// are: they work anywhere). A list that is not there is skipped.
+// a before b? family (tile order, Other last), then the name with case ignored, then the path -- the order
+// gumbo_index.lua's X.build gives one list, so the lists read together sort as one
+function gbf_idx_cmp_str(pa, na, pb, nb) local(i, ca, cb, d) (
+  d = 0; i = 0;
+  while (d == 0 && i < min(na, nb)) (
+    ca = pa[i]; cb = pb[i]; ca >= 65 && ca <= 90 ? ca += 32; cb >= 65 && cb <= 90 ? cb += 32;
+    d = ca - cb; i += 1;
+  );
+  d == 0 ? na - nb : d;
+);
+function gbf_idx_less(a, b) local(d) (
+  d = a[0] - b[0];
+  d == 0 ? d = gbf_idx_cmp_str(GBF_ICH_BASE + a[2], a[3], GBF_ICH_BASE + b[2], b[3]);
+  d == 0 ? d = gbf_idx_cmp_str(GBF_ICH_BASE + a[4], a[5], GBF_ICH_BASE + b[4], b[5]);
+  d < 0;
+);
+// insertion sort of the entries in place (at most GBF_IMAX; run once per load of the lists)
+function gbf_idx_sort() local(i, j, k, t, a) (
+  t = GBF_IDX_BASE + GBF_IMAX * GBF_IS;            // one spare record past the table
+  i = 1;
+  while (i < gbf_idx_n) (
+    a = GBF_IDX_BASE + i * GBF_IS; k = 0; loop(GBF_IS, t[k] = a[k]; k += 1; );
+    j = i - 1;
+    while (j >= 0 && gbf_idx_less(t, GBF_IDX_BASE + j * GBF_IS)) (
+      k = 0; loop(GBF_IS, (GBF_IDX_BASE + (j + 1) * GBF_IS)[k] = (GBF_IDX_BASE + j * GBF_IS)[k]; k += 1; );
+      j -= 1;
+    );
+    a = GBF_IDX_BASE + (j + 1) * GBF_IS; k = 0; loop(GBF_IS, a[k] = t[k]; k += 1; );
+    i += 1;
+  );
+);
+// is entry e's path the line in #gbf_ln (n bytes), any case
+function gbf_fav_same(e, n) local(p, k, a, b, ok) (
+  ok = e[5] == n; p = GBF_ICH_BASE + e[4]; k = 0;
+  while (ok && k < n) (
+    a = p[k]; b = str_getchar(#gbf_ln, k, 'cu');
+    a >= 65 && a <= 90 ? a += 32; b >= 65 && b <= 90 ? b += 32;
+    a != b ? ok = 0; k += 1;
+  );
+  ok;
+);
+// the favourites: one instrument path a line, as the browser lists write it (the Gumbo helper keeps the file)
+function gbf_fav_load() local(h, k, n, i) (
+  memset(GBF_FAV, 0, GBF_IMAX);
+  h = file_open("EON_Gumbo/favourites.txt");
+  h >= 0 ? (
+    file_text(h) ? (
+      k = 0;
+      while (file_avail(h) > 0 && k < 4096) (
+        file_string(h, #gbf_ln); n = strlen(#gbf_ln);
+        while (n > 0 && (str_getchar(#gbf_ln, n - 1) == 10 || str_getchar(#gbf_ln, n - 1) == 13)) ( n -= 1; str_setlen(#gbf_ln, n); );
+        // (the path compared byte by byte, any case: gbf_idx_str is defined further down)
+        n > 0 ? ( i = 0; loop(gbf_idx_n, gbf_fav_same(GBF_IDX_BASE + i * GBF_IS, n) ? GBF_FAV[i] = 1; i += 1; ); );
+        k += 1;
+      );
+    );
+    file_close(h);
+  );
+);
+function gbf_idx_load() local(k) (
+  gbf_idx_n = 0; gbf_ich_top = 0;
+  gbf_idx_read("EON_Gumbo/starter.txt");
+  k = 1; loop(9, sprintf(#gbf_lp, "EON_Gumbo/pack%d.txt", k); gbf_idx_read(#gbf_lp); k += 1; );
+  gbf_idx_read("EON_Gumbo/library.txt");
+  gbf_idx_sort();
+  gbf_cur_for = -1;                                 // the entries moved: find the loaded one again
+  gbf_fav_load(); gbf_q_gen += 1;                   // the stars and the search follow the new entries
+  gbf_idx_loaded = 1;
+);
+function gbf_idx_str(e, which) local(p, n, i) (   // which 0 = name, 1 = path -> #gbf_es
+  p = GBF_ICH_BASE + e[which ? 4 : 2]; n = e[which ? 5 : 3]; #gbf_es = "";
+  i = 0; loop(n, sprintf(#gbf_ch, "%c", p[i]); strcat(#gbf_es, #gbf_ch); i += 1; );
+);
+// the index entry whose path is the loaded instrument, or -1
+function gbf_idx_current() local(i, e, r) (
+  r = -1; i = 0;
+  while (r < 0 && i < gbf_idx_n) ( e = GBF_IDX_BASE + i * GBF_IS; gbf_idx_str(e, 1); stricmp(#gbf_es, #gb_want) == 0 ? r = i; i += 1; );
+  r;
+);
+function gbf_idx_current_cached() (
+  gbf_cur_for != gb_load_gen + strlen(#gb_want) * 1000 ? ( gbf_cur = gbf_idx_current(); gbf_cur_for = gb_load_gen + strlen(#gb_want) * 1000; );
+  gbf_cur;
+);
+// (the loader is shared with @serialize on another thread: a click while it is busy there is ignored)
+function gbf_load_entry(i) local(e) (
+  i >= 0 && i < gbf_idx_n && gb_lock_try() ? (
+    gbh_err = 0;
+    e = GBF_IDX_BASE + i * GBF_IS; gbf_idx_str(e, 1); strcpy(#gb_want, #gbf_es); gb_job_start(#gb_want); gbf_cur = i; gbf_cur_for = -1;
+    gb_unlock();
+  );
+);
+
+// colours: the suite theme when live for this instance, else Gumbo's own; the display is always the Ember screen
+function gbf_colours() (
+  gbf_th = rkth_active();
+  gbf_th ? (
+    gbf_bg_r = gmem[GS_THEME_BASE];      gbf_bg_g = gmem[GS_THEME_BASE + 1];  gbf_bg_b = gmem[GS_THEME_BASE + 2];
+    gbf_pn_r = gmem[GS_THEME_BASE + 3];  gbf_pn_g = gmem[GS_THEME_BASE + 4];  gbf_pn_b = gmem[GS_THEME_BASE + 5];
+    gbf_tx_r = gmem[GS_THEME_BASE + 6];  gbf_tx_g = gmem[GS_THEME_BASE + 7];  gbf_tx_b = gmem[GS_THEME_BASE + 8];
+    gbf_td_r = gmem[GS_THEME_BASE + 9];  gbf_td_g = gmem[GS_THEME_BASE + 10]; gbf_td_b = gmem[GS_THEME_BASE + 11];
+    gbf_ac_r = gmem[GS_THEME_BASE + 12]; gbf_ac_g = gmem[GS_THEME_BASE + 13]; gbf_ac_b = gmem[GS_THEME_BASE + 14];
+    gbf_bd_r = gmem[GS_THEME_BASE + 21]; gbf_bd_g = gmem[GS_THEME_BASE + 22]; gbf_bd_b = gmem[GS_THEME_BASE + 23];
+  ) : (
+    gbf_bg_r = 0.13; gbf_bg_g = 0.15; gbf_bg_b = 0.17;
+    gbf_pn_r = 0.16; gbf_pn_g = 0.18; gbf_pn_b = 0.21;
+    gbf_tx_r = 0.91; gbf_tx_g = 0.92; gbf_tx_b = 0.94;
+    gbf_td_r = 0.55; gbf_td_g = 0.58; gbf_td_b = 0.62;
+    gbf_ac_r = 1.00; gbf_ac_g = 0.48; gbf_ac_b = 0.24;
+    gbf_bd_r = 0.07; gbf_bd_g = 0.07; gbf_bd_b = 0.09;
+  );
+  gbf_kp = (gbf_th && gmem[GS_THEME_KNOB_P] > 0) ? (gmem[GS_THEME_KNOB_P] | 0) : 1;
+);
+// the voices sounding now (gb_vhi is only the highest slot in use, which overstates it after stealing)
+function gbf_voices() local(i, c) ( c = 0; i = 0; loop(GB_MAXV, GB_VOI[i * GB_VS + GBV_ON] ? c += 1; i += 1; ); c; );
+// text in the face's TYPEFACE and TEXT SIZE (slider86 / slider87, the OPTIONS sheet; rk_textopts), slot 1 as before
+function gbf_font(sz, fl) ( gfx_setfont(1, rk_font_fname(slider86), max(7, floor(sz * gbf_tk)), fl); );
+// gbf_font at sz, smaller until txt fits maxw (never under 7 px); leaves gbf_tw / gbf_th_ measured
+function gbf_fit(txt, maxw, sz, fl) local(z) (
+  z = max(7, floor(sz * gbf_tk));
+  gfx_setfont(1, rk_font_fname(slider86), z, fl); gfx_measurestr(txt, gbf_tw, gbf_th_);
+  while (gbf_tw > maxw && z > 7) ( z -= 1; gfx_setfont(1, rk_font_fname(slider86), z, fl); gfx_measurestr(txt, gbf_tw, gbf_th_); );
+);
+// a colour on the screen, through its look (slider88: Ember as drawn, LCD, Theme; rk_scr_look is set each pass)
+function gbf_scr(r, g, b, a) ( rk_scr_set(r, g, b, a); );
+function gbf_box(x, y, w, h) ( gfx_rect(x, y, w, 1); gfx_rect(x, y + h - 1, w, 1); gfx_rect(x, y, 1, h); gfx_rect(x + w - 1, y, 1, h); );
+function gbf_hit(x, y, w, h) ( mx >= x && mx < x + w && my >= y && my < y + h; );
+
+// the keyboard follows the loaded instrument: its lowest to highest playable key, whole octaves, two at least
+function gbf_range() local(i, r, lo, hi) (
+  gb_ready && gbf_range_gen != gb_load_gen ? (
+    gbf_range_gen = gb_load_gen; lo = 127; hi = 0; i = 0;
+    loop(gb_nreg,
+      r = GB_REG + i * GB_RS;
+      r[GBR_TRIG] == GB_TR_ATTACK && r[GBR_HIKEY] >= r[GBR_LOKEY] ? ( lo = min(lo, r[GBR_LOKEY]); hi = max(hi, r[GBR_HIKEY]); );
+      r[GBR_SWLO] >= 0 && r[GBR_SWHI] >= r[GBR_SWLO] ? ( lo = min(lo, r[GBR_SWLO]); hi = max(hi, r[GBR_SWHI]); );   // the keyswitches show
+      i += 1;
+    );
+    hi < lo ? ( lo = 36; hi = 96; );
+    // a drum kit with named keys: just its keys (ends on white keys), so each key is wide enough for its name;
+    // anything else: whole octaves
+    gb_nkey > 0 ? ( lo = max(0, lo - rk_piano_is_black(lo)); hi = min(127, hi + rk_piano_is_black(hi)); )
+                : ( lo = max(21, floor(lo / 12) * 12); hi = min(108, floor(hi / 12) * 12 + 11); );
+    hi - lo < 23 ? hi = min(127, lo + 23);
+    gbf_lo = lo; gbf_hi = hi;
+  );
+);
+
+// the x centre of note n on a keyboard drawn over [x, x+w) for [lo, hi]
+function gbf_key_x(x, w, lo, hi, n) local(wsz) (
+  wsz = w / rk_piano_white_count(lo, hi);
+  rk_piano_is_black(n) ? x + rk_piano_whites_before(lo, n) * wsz : x + (rk_piano_whites_before(lo, n) + 0.5) * wsz;
+);
+// does some attack region have its root on note n?
+function gbf_recorded(n) local(i, r, f) (
+  f = 0; i = 0;
+  while (!f && i < gb_nreg) ( r = GB_REG + i * GB_RS; r[GBR_TRIG] == GB_TR_ATTACK && (r[GBR_KEYC] | 0) == n && r[GBR_SMP] >= 0 ? f = 1; i += 1; );
+  f;
+);
+
+// the instrument's name: the browser list's friendly one when the loaded file is in it ("Upright Piano"), else
+// the file's own name without its ending
+function gbf_name() local(i, n) (
+  gbf_idx_loaded && (i = gbf_idx_current_cached()) >= 0 ? (
+    gbf_idx_str(GBF_IDX_BASE + i * GBF_IS, 0); strcpy(#gbf_name, #gbf_es);
+  ) : (
+  n = strlen(#gb_want); i = n;
+  while (i > 0 && str_getchar(#gb_want, i - 1) != '/' && str_getchar(#gb_want, i - 1) != 92) ( i -= 1; );
+  strcpy_substr(#gbf_name, #gb_want, i);
+  n = strlen(#gbf_name);
+  n > 10 && stricmp(strcpy_substr(#gbf_tmp, #gbf_name, n - 10), ".gumbo.txt") == 0 ? strncpy(#gbf_name, #gbf_name, n - 10)
+  : n > 4 && stricmp(strcpy_substr(#gbf_tmp, #gbf_name, n - 4), ".txt") == 0 ? strncpy(#gbf_name, #gbf_name, n - 4);
+  );
+);
+function gbf_status() (
+  gbf_warn = 0;
+  // the Gumbo helper first: an import on its way, or why a dropped .sfz did not open
+  gbh_state != GBH_ST_IDLE ? strcpy(#gbf_st, gbh_kind == GBH_KIND_FAV ? "Saving your favourites..." : "Importing the .sfz... (the Gumbo helper converts it)")
+  : gbh_err ? (
+    gbf_warn = 1;
+    gbh_err == 1 ? strcpy(#gbf_st, "To open a .sfz, start the Gumbo helper (Actions: Gumbo helper)")
+    : gbh_err == 2 ? strcpy(#gbf_st, "The Gumbo helper stopped before the .sfz was done")
+    : gbh_err == 3 ? strcpy(#gbf_st, "That file's path is too long to send to the helper")
+    : gbh_err == 5 ? strcpy(#gbf_st, "Starred for now. To keep favourites, start the Gumbo helper")
+    : gbh_err == 6 ? strcpy(#gbf_st, "The Gumbo helper could not save your favourites")
+    : gbh_err == 31 ? strcpy(#gbf_st, "Could not import: its sound files are missing")
+    : gbh_err == 32 ? strcpy(#gbf_st, "Could not import: the .sfz (or a file it includes) could not be read")
+    : gbh_err == 33 ? strcpy(#gbf_st, "Could not import: nothing in it Gumbo can play")
+    : gbh_err == 34 ? strcpy(#gbf_st, "Could not import: its sound files are not WAV / FLAC or are damaged")
+    : gbh_err == 13 ? strcpy(#gbf_st, "The Gumbo helper could not convert that .sfz")
+    : gbh_err == 14 ? strcpy(#gbf_st, "Converted, but Gumbo's browser list could not be written")
+    : strcpy(#gbf_st, "The Gumbo helper refused that file");
+  )
+  : gb_job == GB_J_PARSE ? sprintf(#gbf_st, "Reading the instrument... %d regions", gb_nreg)
+  : gb_job == GB_J_SAMPLES ? sprintf(#gbf_st, "Loading sounds... %d of %d", gb_js, gb_nsmp)
+  : gb_job == GB_J_FAILED ? (
+    gbf_warn = 1;
+    gb_err == GB_E_OPEN ? strcpy(#gbf_st, "Can't open that file")
+    : gb_err == GB_E_NOTTEXT ? strcpy(#gbf_st, "That file isn't a Gumbo instrument")
+    : gb_err == GB_E_FORMAT ? strcpy(#gbf_st, "Not a Gumbo instrument file")
+    : strcpy(#gbf_st, "No playable sounds in that file");
+  )
+  : gb_ready ? sprintf(#gbf_st, "%d regions  -  %d sounds  -  %.0f MB", gb_nreg, gb_nsmp, gb_loaded_cells * 8 / 1048576)
+  : strlen(#gb_want) ? strcpy(#gbf_st, "Not loaded")
+  : gbf_idx_loaded && gbf_idx_n == 0 ? strcpy(#gbf_st, "No sounds installed - get 'Gumbo starter sounds' in ReaPack")
+  : strcpy(#gbf_st, "Pick an instrument, or drop a .gumbo.txt");
+);
+
+// one knob in colour cr, cg, cb (the EQ's band knobs wear their node's colour); dim = drawn faded with "soon", no input
+function gbf_knob_c(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim, cr, cg, cb) local(m, nv, lh) (
+  m = gbf_km + k * GBF_KS;
+  nv = (gbf_kb_drag || dim || gbf_menu_block) ? val : ssl_knob_interact(m, cx, cy, r, val, vmin, vmax, vdef, ndet);
+  rk_role_col(0, 1, cr, cg, cb);
+  rk_knob_draw(gbf_kp, cx, cy, r, nv, vmin, vmax, vmin < 0 && vmax > 0, dim ? 0 : m[0], sk_kbr, sk_kbg, sk_kbb, 11, gbf_bg_r, gbf_bg_g, gbf_bg_b);
+  dim ? ( gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 0.62); gfx_circle(cx, cy, r * 1.45, 1); );
+  gbf_fit(label, r * 3.1, gbf_lf, 'b'); dim ? gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+  lh = gbf_th_; gfx_x = cx - gbf_tw / 2; gfx_y = cy + r * 1.45; gfx_drawstr(label);
+  gbf_fit(dim ? "soon" : valtxt, r * 3.1, gbf_vf, 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_x = cx - gbf_tw / 2; gfx_y = cy + r * 1.45 + lh + 1 * gbf_s;
+  gfx_drawstr(dim ? "soon" : valtxt);
+  nv;
+);
+// one knob in the theme's accent
+function gbf_knob(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim) (
+  gbf_knob_c(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim, gbf_ac_r, gbf_ac_g, gbf_ac_b);
+);
+
+// ── the Ember display ──
+function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch, fr, step, c, i, j, a, b, v, kx, kw, n, lo, hi, nb, bl, bh, cnt, k, bx, bw, seg, db, pk, gn)
+(
+  s = gbf_s;
+  d = (gbf_tk - 1) * 9 * s;            // what a section label grows by at this TEXT SIZE
+  gbf_scr(0.08, 0.07, 0.06, 1); gfx_rect(x, y, w, h);
+  gbf_scr(0.16, 0.12, 0.09, 1); gfx_rect(x + 2 * s, y + 2 * s, w - 4 * s, h * 0.45);
+  gbf_scr(0.23, 0.16, 0.12, 1); gbf_box(x, y, w, h);
+  gbf_name(); gbf_status();
+  // the name and the line under it
+  fs = max(12, floor(min(26 * s, h * 0.15)));
+  gbf_font(fs, 'b'); gbf_scr(1, 0.69, 0.40, 1);
+  gfx_x = x + 16 * s; gfx_y = y + 12 * s;
+  strlen(#gb_want) ? gfx_drawstr(#gbf_name, 0, x + w * 0.5, y + h) : gfx_drawstr("GUMBO");
+  gbf_font(max(9, floor(11 * s)), 0);
+  gbf_warn ? gbf_scr(1, 0.55, 0.3, 1) : gbf_scr(0.79, 0.54, 0.35, 1);
+  gfx_x = x + 16 * s; gfx_y = y + 12 * s + fs * gbf_tk + 4 * s; gfx_drawstr(#gbf_st, 0, x + w * 0.5, y + h);
+  gb_ready && (gb_smp_missing + gb_smp_badfmt + gb_smp_noroom) > 0 ? (
+    gbf_scr(1, 0.55, 0.3, 1); gfx_x = x + 16 * s; gfx_y += 14 * s;
+    // too big: Gumbo holds about 1 GB of sound for now (the owner, 2026-11-01: tell users the limit)
+    gb_smp_noroom > 0 ? sprintf(#gbf_tmp, "%d sounds left out: Gumbo holds up to about 1 GB of sound", gb_smp_missing + gb_smp_badfmt + gb_smp_noroom)
+                      : sprintf(#gbf_tmp, "%d sounds left out", gb_smp_missing + gb_smp_badfmt + gb_smp_noroom);
+    gfx_drawstr(#gbf_tmp, 0, x + w * 0.5, y + h);
+  );
+  // the load bar
+  (gb_job == GB_J_PARSE || gb_job == GB_J_SAMPLES) && gb_nsmp > 0 ? (
+    gbf_scr(0.23, 0.16, 0.12, 1); gfx_rect(x + 16 * s, y + h - 14 * s, w * 0.45 - 16 * s, 4 * s);
+    gbf_scr(1, 0.48, 0.24, 1); gfx_rect(x + 16 * s, y + h - 14 * s, (w * 0.45 - 16 * s) * gb_js / gb_nsmp, 4 * s);
+  );
+  // the last note's waveform (min/max per column over its first 1.5 s)
+  wx = x + 16 * s; ww = w * 0.45 - 16 * s; wy = y + h * 0.42; wh = h * 0.40;
+  // the playing-style chips sit under the name (gb_face_p2): the waveform starts below them
+  gb_ready && gb_nswl > 0 ? ( wy = max(wy, y + 12 * s + fs * gbf_tk + 22 * s + 24 * s); wh = min(wh, y + h - wy - 16 * s); );
+  gb_ready && gb_last_reg >= 0 && gb_last_reg < gb_nreg ? (
+    r = GB_REG + gb_last_reg * GB_RS; sm = r[GBR_SMP];
+    sm >= 0 && GB_SMP[sm * GB_SS + GBS_STAT] == GB_SS_OK ? (
+      ptr = GB_SMP[sm * GB_SS + GBS_PTR]; nch = GB_SMP[sm * GB_SS + GBS_NCH];
+      fr = min(GB_SMP[sm * GB_SS + GBS_FRAMES], GB_SMP[sm * GB_SS + GBS_SR] * 1.5);
+      step = max(1, (fr / max(1, ww)) | 0);
+      // drawn to fill its space: the loudest point of what is shown reaches the top (quiet recordings, like the
+      // orchestra's, otherwise drew a flat line), at most x32 so a near-silent tail stays near-silent
+      pk = 0; c = 0;
+      loop(max(1, min(ww, fr) | 0),
+        j = (c * step) | 0; i = 0;
+        loop(min(24, step), v = abs(ptr[(j + ((i * step / min(24, step)) | 0)) * nch]); v > pk ? pk = v; i += 1; );
+        c += 1;
+      );
+      gn = pk > 0 ? min(32, 0.95 / pk) : 1;
+      gbf_scr(1, 0.48, 0.24, 1);
+      c = 0;
+      loop(max(1, min(ww, fr) | 0),    // a sound shorter than the strip is wide: stop at its end
+        a = 0; b = 0; j = (c * step) | 0; i = 0;
+        loop(min(24, step), v = ptr[(j + ((i * step / min(24, step)) | 0)) * nch]; v < a ? a = v; v > b ? b = v; i += 1; );
+        a *= gn; b *= gn;
+        gfx_line(wx + c, wy + wh * 0.5 - b * wh * 0.5, wx + c, wy + wh * 0.5 - a * wh * 0.5);
+        c += 1;
+      );
+      sprintf(#gbf_tmp, "NOTE %d  -  vel %d", gb_last_note, gb_last_vel);
+      gbf_scr(0.54, 0.35, 0.23, 1); gbf_font(max(8, floor(9 * s)), 0); gfx_x = wx; gfx_y = wy + wh + 2 * s; gfx_drawstr(#gbf_tmp);
+    );
+  );
+  // the right half: recorded notes, loudness layers, output
+  kx = x + w * 0.52; kw = w * 0.45; lo = gbf_lo; hi = gbf_hi;
+  gbf_font(max(8, floor(9 * s)), 'b'); gbf_scr(0.79, 0.54, 0.35, 1);
+  gfx_x = kx; gfx_y = y + 12 * s; gfx_drawstr("RECORDED NOTES");
+  n = lo; nb = hi - lo + 1; bw = kw / nb;
+  loop(nb,
+    bl = rk_piano_is_black(n);
+    gbf_scr(bl ? 0.16 : 0.35, bl ? 0.12 : 0.25, bl ? 0.09 : 0.19, 1);
+    gfx_rect(kx + (n - lo) * bw, y + 26 * s + d, max(1, bw - 1), bl ? 12 * s : 18 * s);
+    gb_ready && gbf_rec_gen == gb_load_gen ? ( GBF_REC[n] ? ( gbf_scr(1, 0.69, 0.40, 1); gfx_circle(kx + (n - lo + 0.5) * bw, y + 50 * s + d, max(1.5, 2 * s), 1); ); );
+    gb_ready && n == gb_last_note ? ( gbf_scr(1, 0.48, 0.24, 1); gfx_rect(kx + (n - lo) * bw, y + 56 * s + d, max(1, bw - 1), 6 * s); );
+    n += 1;
+  );
+  // loudness layers of the last note: the distinct velocity bands of the attack regions on it
+  gbf_scr(0.79, 0.54, 0.35, 1); gfx_x = kx; gfx_y = y + 72 * s + d; gfx_drawstr("LOUDNESS LAYERS");
+  cnt = 0;
+  gb_ready && gb_last_note >= 0 ? (
+    i = 0;
+    while (i < gb_nreg && cnt < 8) (
+      r = GB_REG + i * GB_RS;
+      r[GBR_TRIG] == GB_TR_ATTACK && gb_last_note >= r[GBR_LOKEY] && gb_last_note <= r[GBR_HIKEY] ? (
+        k = 0; j = 0; while (k < cnt && !j) ( GBF_LAY[k * 2] == r[GBR_LOVEL] && GBF_LAY[k * 2 + 1] == r[GBR_HIVEL] ? j = 1; k += 1; );
+        !j ? ( GBF_LAY[cnt * 2] = r[GBR_LOVEL]; GBF_LAY[cnt * 2 + 1] = r[GBR_HIVEL]; cnt += 1; );
+      );
+      i += 1;
+    );
+  );
+  cnt == 0 ? ( GBF_LAY[0] = 1; GBF_LAY[1] = 127; cnt = 1; );
+  // sort by low velocity (a handful: insertion sort)
+  i = 1; loop(cnt - 1, j = i; while (j > 0 && GBF_LAY[(j - 1) * 2] > GBF_LAY[j * 2]) ( a = GBF_LAY[j * 2]; b = GBF_LAY[j * 2 + 1];
+    GBF_LAY[j * 2] = GBF_LAY[(j - 1) * 2]; GBF_LAY[j * 2 + 1] = GBF_LAY[(j - 1) * 2 + 1]; GBF_LAY[(j - 1) * 2] = a; GBF_LAY[(j - 1) * 2 + 1] = b; j -= 1; ); i += 1; );
+  bx = kx; bw = (kw - (cnt - 1) * 4 * s) / cnt; bh = 16 * s;
+  k = 0;
+  loop(cnt,
+    j = gb_last_vel >= GBF_LAY[k * 2] && gb_last_vel <= GBF_LAY[k * 2 + 1] && gb_ready;
+    j ? gbf_scr(1, 0.48, 0.24, 1) : gbf_scr(0.29, 0.20, 0.15, 1);
+    gfx_rect(bx, y + 86 * s + 2 * d, bw, bh);
+    j ? gbf_scr(0.10, 0.05, 0.02, 1) : gbf_scr(0.79, 0.54, 0.35, 1);
+    cnt == 4 ? strcpy(#gbf_tmp, k == 0 ? "soft" : k == 1 ? "medium" : k == 2 ? "hard" : "very hard")
+    : cnt == 3 ? strcpy(#gbf_tmp, k == 0 ? "soft" : k == 1 ? "medium" : "hard")
+    : cnt == 2 ? strcpy(#gbf_tmp, k == 0 ? "soft" : "hard")
+    : cnt == 1 ? strcpy(#gbf_tmp, "one layer") : sprintf(#gbf_tmp, "%d", k + 1);
+    gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_);
+    gbf_tw < bw - 4 * s ? ( gfx_x = bx + 5 * s; gfx_y = y + 86 * s + 2 * d + (bh - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp); );
+    bx += bw + 4 * s; k += 1;
+  );
+  // the output, from the meter's peaks
+  gbf_scr(0.79, 0.54, 0.35, 1); gfx_x = kx; gfx_y = y + 116 * s + 2 * d; gfx_drawstr("OUT");
+  mtr_update_db();                     // the meter's own draw does this; the display reads its peaks without drawing it
+  db = max(mtr_peak_l, mtr_peak_r);
+  seg = 0;
+  loop(30,
+    a = -60 + seg * 2;
+    gbf_scr(db > a ? (seg >= 27 ? 1 : seg >= 22 ? 1 : 1) : 0.23, db > a ? (seg >= 27 ? 0.30 : seg >= 22 ? 0.83 : 0.48) : 0.16, db > a ? (seg >= 27 ? 0.25 : seg >= 22 ? 0.42 : 0.24) : 0.12, 1);
+    gfx_rect(kx + 30 * s + seg * (kw - 30 * s) / 30, y + 116 * s + 2 * d, max(1, (kw - 30 * s) / 30 - 2 * s), 10 * s);
+    seg += 1;
+  );
+);
+
+// recorded-notes cache (rebuilt once per load)
+function gbf_rec_build() local(n, i, r) (
+  gb_ready && gbf_rec_gen != gb_load_gen ? (
+    n = 0; loop(128, GBF_REC[n] = gbf_recorded(n); n += 1; );
+    // each key's fixed state: playable (some attack region spans it), keyswitch (inside a keyswitch range)
+    memset(GBF_KST, 0, 128);
+    i = 0;
+    loop(gb_nreg,
+      r = GB_REG + i * GB_RS;
+      r[GBR_TRIG] == GB_TR_ATTACK && r[GBR_SMP] != GB_SILENCE ? (
+        n = max(0, r[GBR_LOKEY] | 0); loop(max(0, min(127, r[GBR_HIKEY] | 0) - n + 1), GBF_KST[n] |= RKP_RANGE; n += 1; );
+      );
+      r[GBR_SWLO] >= 0 && r[GBR_SWHI] >= r[GBR_SWLO] ? (
+        n = r[GBR_SWLO] | 0; loop(min(127, r[GBR_SWHI] | 0) - n + 1, GBF_KST[n] = RKP_KS; n += 1; );
+      );
+      i += 1;
+    );
+    gbf_rec_gen = gb_load_gen;
+  );
+);
+// the keyboard's colours and this frame's key states: the family colour tints the playable keys (the owner's
+// choice, 2026-10-30), keyswitches pink with the active one bright, held keys lit whole in the accent
+function gbf_keys_prep(lo, hi) local(n, e) (
+  e = gbf_idx_loaded ? gbf_idx_current_cached() : -1;
+  e >= 0 ? ( gbf_fam_col((GBF_IDX_BASE + e * GBF_IS)[0]); rk_piano_colours(gbf_fc_r, gbf_fc_g, gbf_fc_b, 0.91, 0.28, 0.60); )
+         : rk_piano_colours(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.91, 0.28, 0.60);
+  n = lo;
+  loop(hi - lo + 1,
+    GBF_KSF[n] = (gb_ready && gbf_rec_gen == gb_load_gen ? GBF_KST[n] : 0) | (GB_NT[n] ? RKP_HELD : 0)
+                 | (gb_ready && n == gb_sw_cur && (GBF_KST[n] & RKP_KS) ? RKP_KSON : 0);
+    n += 1;
+  );
+);
+
+// ── the browser ──
+// one line of the "no sounds" text at ry + k lines, drawn only while it fits above yb (the footer)
+function gbf_hint_line(txt, k, x, w, ry, yb) (
+  ry + gbf_th_ * (k + 1) <= yb ? ( gfx_x = x + 12 * gbf_s; gfx_y = ry + gbf_th_ * k; gfx_drawstr(txt, 0, x + w - 6 * gbf_s, gfx_y + gbf_th_); );
+);
+// a five-pointed star at (cx, cy), r its outer radius: filled, or its outline
+function gbf_star(cx, cy, r, filled) local(i, a, x0, y0, x1, y1, xi, yi) (
+  i = 0;
+  loop(5,
+    a = -$pi * 0.5 + i * $pi * 0.4;
+    x0 = cx + r * cos(a); y0 = cy + r * sin(a);
+    xi = cx + r * 0.42 * cos(a + $pi * 0.2); yi = cy + r * 0.42 * sin(a + $pi * 0.2);
+    x1 = cx + r * cos(a + $pi * 0.4); y1 = cy + r * sin(a + $pi * 0.4);
+    filled ? ( gfx_triangle(cx, cy, x0, y0, xi, yi); gfx_triangle(cx, cy, xi, yi, x1, y1); )
+           : ( gfx_line(x0, y0, xi, yi, 1); gfx_line(xi, yi, x1, y1, 1); );
+    i += 1;
+  );
+);
+// the search, as a pattern for matchi (the typed text, wildcards and format marks taken out) -> GBF_MATCH per entry:
+// its name or its family's name holds the text, any case
+function gbf_match_build() local(i, k, c, e) (
+  gbf_q_built != gbf_q_gen ? (
+    gbf_q_built = gbf_q_gen;
+    #gbf_qp = "*"; k = 0;
+    loop(strlen(#gbf_q), c = str_getchar(#gbf_q, k); c != '*' && c != '?' && c != '%' ? ( sprintf(#gbf_ch, "%c", c); strcat(#gbf_qp, #gbf_ch); ); k += 1; );
+    strcat(#gbf_qp, "*");
+    i = 0;
+    loop(gbf_idx_n,
+      e = GBF_IDX_BASE + i * GBF_IS; gbf_idx_str(e, 0);
+      GBF_MATCH[i] = strlen(#gbf_qp) <= 2 || matchi(#gbf_qp, #gbf_es) || matchi(#gbf_qp, gbf_fam_name(e[0]));
+      i += 1;
+    );
+  );
+);
+// is entry i in the list now: searching = every match (any family); else its family (or all), favourites only when on
+function gbf_listed(i) local(e) (
+  e = GBF_IDX_BASE + i * GBF_IS;
+  (!gbf_favonly || GBF_FAV[i]) && (strlen(#gbf_q) > 0 ? GBF_MATCH[i] : (gbf_cat < 0 || e[0] == gbf_cat));
+);
+function gbf_browser(x, y, w, h) local(s, tw, th, i, cx, cy, e, row, n, ry, rh, vis, cur, f, ic, iw, ih, yb, sh, sx, sw) (
+  s = gbf_s;
+  gfx_set(gbf_pn_r * 0.92, gbf_pn_g * 0.92, gbf_pn_b * 0.92, 1); gfx_rect(x, y, w, h);
+  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gfx_rect(x + w - 1, y, 1, h);
+  // family tiles: 4 x 3
+  tw = (w - 16 * s - 3 * 4 * s) / 4; th = max(30 * s, min(46 * s, tw * 0.9));
+  i = 0;
+  loop(GBF_NFAM,
+    cx = x + 8 * s + (i % 4) * (tw + 4 * s); cy = y + 8 * s + ((i / 4) | 0) * (th + 4 * s);
+    gbf_fam_col(i);
+    gfx_set(i == gbf_cat ? gbf_fc_r * 0.35 + gbf_pn_r * 0.65 : gbf_pn_r * 1.25, i == gbf_cat ? gbf_fc_g * 0.35 + gbf_pn_g * 0.65 : gbf_pn_g * 1.25,
+            i == gbf_cat ? gbf_fc_b * 0.35 + gbf_pn_b * 0.65 : gbf_pn_b * 1.25, 1);
+    gfx_rect(cx, cy, tw, th);
+    gfx_set(gbf_fc_r, gbf_fc_g, gbf_fc_b, 1); gfx_rect(cx, cy + th - 2 * s, tw, 2 * s);
+    i == gbf_cat ? ( gfx_set(gbf_fc_r, gbf_fc_g, gbf_fc_b, 1); gbf_box(cx, cy, tw, th); );
+    // the icon (the EON track icons), else nothing
+    gfx_getimgdim(GBF_ICON_SLOT + i, iw, ih);
+    iw > 0 ? ( ic = min(th * 0.48, 22 * s); gfx_x = cx + (tw - ic) * 0.5; gfx_y = cy + 4 * s; gfx_a = 0.9;
+               gfx_blit(GBF_ICON_SLOT + i, ic / iw, 0); gfx_a = 1; );
+    gbf_font(max(7, floor(9 * s)), 'b'); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, i == gbf_cat ? 1 : 0.85);
+    gfx_measurestr(gbf_fam_name(i), gbf_tw, gbf_th_); gfx_x = cx + (tw - gbf_tw) * 0.5; gfx_y = cy + th - gbf_th_ - 4 * s;
+    gfx_drawstr(gbf_fam_name(i));
+    lmb_down && !gbf_menu_block && gbf_hit(cx, cy, tw, th) ? ( gbf_cat = gbf_cat == i ? -1 : i; gbf_scroll = 0; );
+    i += 1;
+  );
+  // the search box and the favourites switch (the owner's plan: Swing's filter box, rk_textin; a star per row)
+  ry = y + 8 * s + 3 * (th + 4 * s) + 6 * s;
+  sh = max(20 * s, 10 * s * gbf_tk + 8 * s); sx = x + 8 * s; sw = w - 16 * s - sh - 4 * s;
+  lmb_down && !gbf_menu_block ? (
+    rk_textin_click(sx, ry, sw, sh, is_embedded);
+    gbf_hit(sx + sw + 4 * s, ry, sh, sh) ? ( gbf_favonly = !gbf_favonly; gbf_scroll = 0; );
+  );
+  rk_ti_focus && !rkm_on ? ( rk_textin_keys(#gbf_q, gfx_getchar()) ? ( gbf_q_gen += 1; gbf_scroll = 0; ); );
+  gbf_font(max(8, floor(10 * s)), 0);
+  rk_textin_draw(#gbf_q, sx, ry, sw, sh, is_embedded ? "Search" : "Search all instruments", s, gbf_tx_r, gbf_tx_g, gbf_tx_b,
+                 gbf_pn_r * 0.6, gbf_pn_g * 0.6, gbf_pn_b * 0.6, gbf_ac_r, gbf_ac_g, gbf_ac_b);
+  gfx_set(gbf_favonly ? gbf_ac_r : gbf_pn_r * 1.3, gbf_favonly ? gbf_ac_g : gbf_pn_g * 1.3, gbf_favonly ? gbf_ac_b : gbf_pn_b * 1.3, 1);
+  gfx_rect(sx + sw + 4 * s, ry, sh, sh);
+  gbf_favonly ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 0.8);
+  gbf_star(sx + sw + 4 * s + sh * 0.5, ry + sh * 0.52, sh * 0.32, 1);
+  gbf_match_build();
+  ry += sh + 6 * s;
+  // the list: the family's instruments (all of them when no family is picked; every match while searching)
+  gbf_font(max(8, floor(10 * s)), 'b'); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_x = x + 10 * s; gfx_y = ry;
+  gfx_drawstr(strlen(#gbf_q) > 0 ? "SEARCH" : gbf_favonly && gbf_cat < 0 ? "FAVOURITES" : gbf_cat >= 0 ? gbf_fam_name(gbf_cat) : "ALL INSTRUMENTS");
+  ry += 6 * s + 10 * s * gbf_tk; rh = max(24 * s, 11 * s * gbf_tk + 10 * s); vis = max(1, ((y + h - ry - 22 * s) / rh) | 0);
+  n = 0; i = 0; loop(gbf_idx_n, gbf_listed(i) ? n += 1; i += 1; );
+  gbf_hit(x, ry, w, h - (ry - y)) && frame_wheel != 0 ? gbf_scroll -= frame_wheel;
+  gbf_scroll = max(0, min(gbf_scroll, n - vis));   // the wheel stops at the end of the list
+  cur = gbf_idx_current_cached();
+  n = 0; row = 0; i = 0;
+  loop(gbf_idx_n,
+    e = GBF_IDX_BASE + i * GBF_IS;
+    gbf_listed(i) ? (
+      n >= gbf_scroll && row < vis ? (
+        cy = ry + row * rh;
+        i == cur ? ( gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.22); gfx_rect(x + 6 * s, cy, w - 12 * s, rh - 2 * s);
+                     gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_rect(x + 6 * s, cy, 3 * s, rh - 2 * s); )
+        : gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s) ? ( gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 0.06); gfx_rect(x + 6 * s, cy, w - 12 * s, rh - 2 * s); );
+        gbf_idx_str(e, 0);
+        gbf_font(max(8, floor(11 * s)), 0); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+        gfx_x = x + 14 * s; gfx_y = cy + (rh - 2 * s - 11 * s) * 0.5; gfx_drawstr(#gbf_es, 0, x + w - 60 * s, cy + rh);
+        sprintf(#gbf_tmp, "%.0f MB", e[1]);
+        gbf_font(max(7, floor(9 * s)), 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+        gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_); gfx_x = x + w - 30 * s - gbf_tw; gfx_y = cy + (rh - 2 * s - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp);
+        // its star: lit for a favourite, a faint outline on the row under the mouse; a click on it stars / unstars
+        f = gbf_hit(x + w - 26 * s, cy, 20 * s, rh - 2 * s);
+        GBF_FAV[i] ? gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, f ? 0.7 : gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s) ? 0.25 : 0);
+        gbf_star(x + w - 16 * s, cy + (rh - 2 * s) * 0.52, 5.5 * s, GBF_FAV[i]);
+        lmb_down && !gbf_menu_block && f ? (
+          // shown only when the helper's mailbox takes it (busy with another request: the star stays as it was)
+          lmb_down = 0; gbf_idx_str(e, 1); gbh_request_fav(#gbf_es) ? ( GBF_FAV[i] = !GBF_FAV[i]; gbf_q_gen += 1; );
+        );
+        // a click on the instrument already loaded (or loading) does nothing; after a failed load it tries again
+        lmb_down && !gbf_menu_block && gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s) && (i != cur || gb_job == GB_J_FAILED) ? gbf_load_entry(i);
+        row += 1;
+      );
+      n += 1;
+    );
+    i += 1;
+  );
+  // no list at all = no sound package installed (ReaPack has no dependencies, so Gumbo says where the sounds are)
+  gbf_idx_n == 0 ? ( gbf_font(max(8, floor(10 * s)), 0); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+                     gfx_measurestr("A", gbf_tw, gbf_th_); yb = y + h - 20 * s;
+                     gbf_hint_line("No sounds installed yet.", 0, x, w, ry, yb);
+                     gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+                     gbf_hint_line("Get them free in ReaPack:", 1.6, x, w, ry, yb);
+                     gbf_hint_line("Extensions > ReaPack >", 2.7, x, w, ry, yb);
+                     gbf_hint_line("Browse packages >", 3.8, x, w, ry, yb);
+                     gbf_hint_line("'Gumbo starter sounds'", 4.9, x, w, ry, yb); );
+  strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ OR .GUMBO.TXT HERE" : "OR DROP A .GUMBO.TXT  (.SFZ: START THE GUMBO HELPER)");
+  gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b');
+  gbf_tw > w - 16 * s ? ( strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ HERE" : "OR DROP A .GUMBO.TXT HERE"); gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b'); );
+  gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_x = x + 10 * s; gfx_y = y + h - 6 * s - gbf_th_;
+  gfx_drawstr(#gbf_tmp, 0, x + w - 6 * s, y + h);
+);
+// step through the family of the loaded instrument (or the list) by d
+function gbf_step(d) local(cur, fam, i, k, e) (
+  cur = gbf_idx_current_cached(); fam = cur >= 0 ? (GBF_IDX_BASE + cur * GBF_IS)[0] : gbf_cat;
+  i = cur >= 0 ? cur : d > 0 ? -1 : 0;   // nothing loaded: > starts at the first, < at the last
+  k = 0;
+  while (k < gbf_idx_n) (
+    i = (i + d + gbf_idx_n) % gbf_idx_n; e = GBF_IDX_BASE + i * GBF_IS;
+    i != cur && (fam < 0 || e[0] == fam) ? ( gbf_load_entry(i); k = gbf_idx_n; );   // alone in its family: no reload
+    k += 1;
+  );
+);
+
+// (the window, the strip face and the @gfx pass live in gb_face_p2.jsfx-inc, after the pages they call)

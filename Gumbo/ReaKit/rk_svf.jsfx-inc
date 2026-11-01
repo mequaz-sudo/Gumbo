@@ -1,0 +1,1345 @@
+desc: rk_svf - State Variable Filter (ReaKit suite)
+
+/*
+================================================================================
+  rk_svf.jsfx-inc
+================================================================================
+
+  State Variable Filter library for the EON Studios ReaKit suite.
+  Provides 14 filter types with smooth coefficient interpolation,
+  cascading up to 96 dB/oct, magnitude response computation, and
+  Mid/Side or Left/Right routing.
+
+  This file is a port of Justin Johnson's S2GFX svf_filter.jsfx-inc as
+  bundled with the Tukan plugin suite (e.g. "Orange EQ S2 (Tukan)" which
+  declares `license: MIT`). Function identifiers have been namespaced
+  `svf_` -> `rk_svf_` for collision-free coexistence with other ReaKit
+  modules. DSP behavior is unchanged from the source.
+
+  The original SVF math is taken from Andy Simper's (Cytomic) publicly-
+  published paper:
+    https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf
+    (c) Andrew Simper, Cytomic, 2011-2013.
+
+================================================================================
+  ORIGINAL FILE LICENSE (preserved, with attribution)
+================================================================================
+
+  MIT License
+
+  Copyright (c) Justin Johnson (nitsuj / Tukan)
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+  (Provenance, checked against the installed copies 2026-09-03:
+   - The copyright holder is Justin Johnson. His own current package, ReJJ
+     ReEQ 1.2.0 ("author: Justin Johnson / license: MIT"), ships this include
+     as Dependencies/svf_filter.jsfx-inc with NO licence header inside it.
+     "Orange EQ S2 (Tukan)" is that same ReEQ 1.2.0 file repackaged by
+     Tukan, header and all.
+   - His earlier REJJ v1.0.12 release carried "License: LGPL" inside the
+     include, on an earlier revision of the code (about 60% of its lines
+     match the 1.2.0 revision). Tukan's S2GFX bundle still carries that
+     LGPL-headed copy -- it did NOT drop the header, as this note used to
+     claim.
+   - This port is of the 1.2.0 revision, the one the author released under
+     MIT. MIT attribution is kept on that basis. It is an inference from the
+     author's own releases, not a statement he made; if it ever matters,
+     ask him, or rewrite from the Cytomic paper.)
+
+================================================================================
+  EON STUDIOS - ReaKit Suite Foundation
+  Copyright (c) 2026 EON Studios
+  Modifications and integration: Proprietary, bundled with ReaKit products
+  Original SVF code: MIT (Justin Johnson, attribution above)
+================================================================================
+*/
+
+/*
+  SVF - State Variable Filter
+
+  SVF filter math taken from Andy Simper's (Cytomic) SVF paper.
+
+  https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf
+
+  Supports a variety of filter types. The filter math produces
+  high quality filtering with stability. It holds up under rapid
+  automation.
+
+  I've extended by including smooth interpolation to avoid zipper
+  effects when automating, low and high pass cascading up to 96dB
+  slopes in increments of 6dB and Butterworth modes for low and
+  high pass.
+*/
+
+@init
+
+SAMPLE_RATE = srate;
+ONE_OVER_SAMPLE_RATE = 1.0 / srate;
+
+SMOOTHING_TIME_MS = 30;
+
+/*
+ * Check if all our interpolating coefficients at rest
+ */
+function rk_svf_is_resting() local(resting) instance(onepole)
+( 
+  resting = this.iter_t == 1.0;
+  nlp > 2 ? (
+    resting |= cas1.iter_t == 1.0;
+    nlp > 4 ? (
+      resting |= cas2.iter_t == 1.0;
+      nlp > 6 ? (
+        resting |= cas3.iter_t == 1.0;
+        nlp > 8 ? (
+          resting |= cas4.iter_t == 1.0;
+          nlp > 10 ? (
+            resting |= cas5.iter_t == 1.0;
+            nlp > 12 ? (
+              resting |= cas6.iter_t == 1.0;
+              nlp > 14 ? (
+                resting |= cas7.iter_t == 1.0;
+                nlp > 16 ? (
+                  resting |= cas8.iter_t == 1.0;
+                  nlp > 18 ? (
+                    resting |= cas9.iter_t == 1.0;
+                  );
+                );
+              );
+            );
+          );
+        );
+      );
+    );
+  );
+  // Iterations are done or filter is onepole (no interpolation yet so always resting)
+  resting || onepole;
+);
+
+/*
+ * Set the sample rate.  Adjusts the low pass interpolators
+ */
+function rk_svf_set_sample_rate_single(rate)
+  instance(iter_step)
+(
+  SAMPLE_RATE = rate;
+  ONE_OVER_SAMPLE_RATE = 1.0 / rate;
+
+  // Assumption: using 'srate' here on the basis that we'll
+  // only call tick() once per @sample
+  iter_step = 1.0 / (SMOOTHING_TIME_MS * 0.001 * srate);
+);
+
+/*
+ * Set the sample rate for all filters
+ */
+function rk_svf_set_sample_rate(rate)
+  instance(cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  this.rk_svf_set_sample_rate_single(rate); //12
+  cas1.rk_svf_set_sample_rate_single(rate); //24
+  cas2.rk_svf_set_sample_rate_single(rate); //36
+  cas3.rk_svf_set_sample_rate_single(rate); //48
+  cas4.rk_svf_set_sample_rate_single(rate); //60
+  cas5.rk_svf_set_sample_rate_single(rate); //72
+  cas6.rk_svf_set_sample_rate_single(rate); //84
+  cas7.rk_svf_set_sample_rate_single(rate); //96
+  cas8.rk_svf_set_sample_rate_single(rate); //108
+  cas9.rk_svf_set_sample_rate_single(rate); //120
+);
+
+/*
+ * EON ReaKit: override the coefficient-interpolation rate on all cascade stages.
+ * The default `rk_svf_set_sample_rate*` calls produce a 30 ms ramp (good for
+ * one-shot slider moves). Dynamic EQ wants the ramp to complete in one update
+ * interval so block-rate gain re-setup doesn't lag the dynamics envelope.
+ * Pass interval_samples = number of audio samples between successive set-coeff
+ * calls. Coefficients then ramp from current to target across exactly that
+ * window, giving smooth modulation with no zipper.
+ */
+function rk_svf_set_interp_samples(interval_samples)
+  instance(iter_step, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  interval_samples = max(1, interval_samples);
+  iter_step      = 1.0 / interval_samples;
+  cas1.iter_step = 1.0 / interval_samples;
+  cas2.iter_step = 1.0 / interval_samples;
+  cas3.iter_step = 1.0 / interval_samples;
+  cas4.iter_step = 1.0 / interval_samples;
+  cas5.iter_step = 1.0 / interval_samples;
+  cas6.iter_step = 1.0 / interval_samples;
+  cas7.iter_step = 1.0 / interval_samples;
+  cas8.iter_step = 1.0 / interval_samples;
+  cas9.iter_step = 1.0 / interval_samples;
+);
+
+/*
+ * Set the target values for coefficient interpolation
+ */
+function rk_svf_set_coeffs(tg, tk, ta1, ta2, ta3, tm0, tm1, tm2)
+  instance(g, k, a1, a2, a3, m0, m1, m2, t_g, t_k, t_a1, t_a2, t_a3, t_m0, t_m1, t_m2, s_g, s_k, s_a1, s_a2, s_a3, s_m0, s_m1, s_m2, iter_t)
+(
+  iter_t = 0.0;
+
+  // Start coefficients
+  s_g = g;
+  s_k = k;
+  s_a1 = a1;
+  s_a2 = a2;
+  s_a3 = a3;
+  s_m0 = m0;
+  s_m1 = m1;
+  s_m2 = m2;
+
+  // Target coefficients
+  t_g = tg;
+  t_k = tk;
+  t_a1 = ta1;
+  t_a2 = ta2;
+  t_a3 = ta3;
+  t_m0 = tm0;
+  t_m1 = tm1;
+  t_m2 = tm2;
+);
+
+/*
+ * Interpolate coefficients
+ */
+function rk_svf_single_interpolate()
+  instance (g, k, a1, a2, a3, m0, m1, m2, t_g, t_k, t_a1, t_a2, t_a3, t_m0, t_m1, t_m2, s_g, s_k, s_a1, s_a2, s_a3, s_m0, s_m1, s_m2, iter_step, iter_t)
+(
+  iter_t < 1.0 ? (
+    g = s_g + iter_t * (t_g - s_g);
+    k = s_k + iter_t * (t_k - s_k);
+    a1 = s_a1 + iter_t * (t_a1 - s_a1);
+    a2 = s_a2 + iter_t * (t_a2 - s_a2);
+    a3 = s_a3 + iter_t * (t_a3 - s_a3);
+    m0 = s_m0 + iter_t * (t_m0 - s_m0);
+    m1 = s_m1 + iter_t * (t_m1 - s_m1);
+    m2 = s_m2 + iter_t * (t_m2 - s_m2);
+    iter_t = min(1.0, iter_t + iter_step);
+  ) : (
+    g = t_g;
+    k = t_k;
+    a1 = t_a1;
+    a2 = t_a2;
+    a3 = t_a3;
+    m0 = t_m0;
+    m1 = t_m1;
+    m2 = t_m2;
+  );
+);
+
+/*
+ * Set the coefficients to the target and stop iterating
+ */
+function rk_svf_single_set_to_target()
+  instance (g, k, a1, a2, a3, m0, m1, m2, t_g, t_k, t_a1, t_a2, t_a3, t_m0, t_m1, t_m2, iter_t)
+(
+  iter_t = 1.0;
+  g = t_g;
+  k = t_k;
+  a1 = t_a1;
+  a2 = t_a2;
+  a3 = t_a3;
+  m0 = t_m0;
+  m1 = t_m1;
+  m2 = t_m2;
+);
+
+/*
+ * Filter tick
+ * Hande interpolation.
+ */
+function rk_svf_set_to_target()
+  instance (nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  nlp > 0 ? this.rk_svf_single_set_to_target();
+  nlp > 2 ? cas1.rk_svf_single_set_to_target();
+  nlp > 4 ? cas2.rk_svf_single_set_to_target();
+  nlp > 6 ? cas3.rk_svf_single_set_to_target();
+  nlp > 8 ? cas4.rk_svf_single_set_to_target();
+  nlp > 10 ? cas5.rk_svf_single_set_to_target();
+  nlp > 12 ? cas6.rk_svf_single_set_to_target();
+  nlp > 14 ? cas7.rk_svf_single_set_to_target();
+  nlp > 16 ? cas8.rk_svf_single_set_to_target();
+  nlp > 18 ? cas9.rk_svf_single_set_to_target();
+
+  // TODO: need to interpolate one pole filter coefficients too!!
+);
+
+/*
+ * Filter tick
+ * Hande interpolation.
+ */
+function rk_svf_tick()
+  instance (nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  nlp > 0 ? this.rk_svf_single_interpolate();
+  nlp > 2 ? cas1.rk_svf_single_interpolate();
+  nlp > 4 ? cas2.rk_svf_single_interpolate();
+  nlp > 6 ? cas3.rk_svf_single_interpolate();
+  nlp > 8 ? cas4.rk_svf_single_interpolate();
+  nlp > 10 ? cas5.rk_svf_single_interpolate();
+  nlp > 12 ? cas6.rk_svf_single_interpolate();
+  nlp > 14 ? cas7.rk_svf_single_interpolate();
+  nlp > 16 ? cas8.rk_svf_single_interpolate();
+  nlp > 18 ? cas9.rk_svf_single_interpolate();
+
+  // TODO: need to interpolate one pole filter coefficients too!!
+);
+
+/*
+ * Bandwidth to Q
+ */
+function rk_svf_bwtoq(bw)
+  local(x)
+(
+  // q = 1/(2 * sinh(log(2) / 2 * bw))
+  x = exp(0.5*log(2) * bw);
+  1/(x - 1/x);
+);
+
+/*
+ * Q to bandwidth
+ */
+function rk_svf_qtobw(q)
+  local(x)
+(
+  // bw = 2 * asinh(1/(2 * q)) / log(2)
+  x = 0.5 / q;
+  2/log(2) * log(x + sqrt(sqr(x) + 1));
+);
+
+/*
+ * Compute butterworth maximal flat Q's for cascading filters
+ * Q's set so that the drop at cutoff is always by 3db
+ */
+function _rk_svf_update_splane(slope)
+  instance(q0, q1, q2, q3, q4, q5, q6, q7, q8, q9)
+  local(onepole, order, poleInc, firstAngle)
+(
+  order = slope + 1;
+  // pairs = order >> 1;
+  onepole = order & 1;
+  poleInc = $pi / order;
+
+  // firstAngle = poleInc / 2;
+  firstAngle = poleInc;
+
+  !onepole ? firstAngle /= 2;
+
+  q0 = 1.0 / (2.0 * cos(firstAngle + 0 * poleInc));
+  q1 = 1.0 / (2.0 * cos(firstAngle + 1 * poleInc));
+  q2 = 1.0 / (2.0 * cos(firstAngle + 2 * poleInc));
+  q3 = 1.0 / (2.0 * cos(firstAngle + 3 * poleInc));
+  q4 = 1.0 / (2.0 * cos(firstAngle + 4 * poleInc));
+  q5 = 1.0 / (2.0 * cos(firstAngle + 5 * poleInc));
+  q6 = 1.0 / (2.0 * cos(firstAngle + 6 * poleInc));
+  q7 = 1.0 / (2.0 * cos(firstAngle + 7 * poleInc));
+  q8 = 1.0 / (2.0 * cos(firstAngle + 8 * poleInc));
+  q9 = 1.0 / (2.0 * cos(firstAngle + 9 * poleInc));
+);
+
+/*
+ * Initialise one pole (6dB) filter
+ * 'passtype' is 0 for low pass filter, 1 for high pass filter
+ */
+function rk_svf_onepole(mode, cutoff) instance(Acc, B0, B1, A1, Z0, Z1, passtype) local (W, N) (
+  passtype = mode;
+  passtype == 0 ? (
+    // Low pass
+    W = tan($pi * cutoff * ONE_OVER_SAMPLE_RATE);
+    N = 1/(1+W);
+    B0 = W * N;
+    B1 = B0;
+    A1 = N * (W-1);  
+  ) : (
+    // High pass
+    W = tan($pi * cutoff * ONE_OVER_SAMPLE_RATE);
+    N = 1/(1+W);
+    B0 = N;
+    B1 = -B0;
+    A1 = N * (W-1);
+  );
+);
+
+/*
+ * Apply one pole (6dB) filter
+ */
+function rk_svf_onepole_do(in) instance(Acc, B0, B1, A1, Z0, Z1) (
+  Acc = in*B0 + Z0*B1 - Z1*A1;
+  Z1 = Acc;
+  Z0 = in;
+  Acc;
+);
+
+/*
+ * Set low pass filter for single cascade step
+ */
+function rk_svf_single_lp(freq, q)
+  instance(cutoff, op0, op1)
+  local(g, k, a1, a2, a3, m0, m1, m2)
+(
+  g = tan($pi * freq/SAMPLE_RATE);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 0;
+  m1 = 0;
+  m2 = 1;
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+
+  cutoff = freq;
+
+  op0.rk_svf_onepole(0, cutoff);
+  op1.rk_svf_onepole(0, cutoff);
+);
+
+/*
+ * Set low pass filter
+ */
+function rk_svf_lp(freq, q, slope)
+  instance(nlp, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, onepole)
+(
+  nlp = slope;
+  onepole = (slope+1) & 1;
+
+  this.rk_svf_single_lp(freq, q);
+  cas1.rk_svf_single_lp(freq, q);
+  cas2.rk_svf_single_lp(freq, q);
+  cas3.rk_svf_single_lp(freq, q);
+  cas4.rk_svf_single_lp(freq, q);
+  cas5.rk_svf_single_lp(freq, q);
+  cas6.rk_svf_single_lp(freq, q);
+  cas7.rk_svf_single_lp(freq, q);
+  cas8.rk_svf_single_lp(freq, q);
+  cas9.rk_svf_single_lp(freq, q);
+);
+
+/*
+ * Set low pass butterworth filter
+ */
+function rk_svf_lpb(freq, slope)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, q0, q1, q2, q3, q4, q5, q6, q7, q8, q9)
+(
+  nlp = slope;
+  onepole = (slope+1) & 1;
+
+  this._rk_svf_update_splane(nlp);
+
+  this.rk_svf_single_lp(freq, q0);
+  cas1.rk_svf_single_lp(freq, q1);
+  cas2.rk_svf_single_lp(freq, q2);
+  cas3.rk_svf_single_lp(freq, q3);
+  cas4.rk_svf_single_lp(freq, q4);
+  cas5.rk_svf_single_lp(freq, q5);
+  cas6.rk_svf_single_lp(freq, q6);
+  cas7.rk_svf_single_lp(freq, q7);
+  cas8.rk_svf_single_lp(freq, q8);
+  cas9.rk_svf_single_lp(freq, q9);
+);
+
+/*
+ * Set high pass filter for single cascade step
+ */
+function rk_svf_single_hp(freq, q)
+  instance(cutoff, op0, op1)
+  local(g, k, a1, a2, a3, m0, m1, m2)
+(
+  g = tan($pi * freq/SAMPLE_RATE);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 1.0;
+  m1 = -k;
+  m2 = -1.0;
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+
+  cutoff = freq;
+
+  op0.rk_svf_onepole(1, cutoff);
+  op1.rk_svf_onepole(1, cutoff);
+);
+
+/*
+ * Set high pass filter
+ */
+function rk_svf_hp(freq, q, slope)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  nlp = slope;
+  onepole = (slope+1) & 1;
+
+  this.rk_svf_single_hp(freq, q);
+  cas1.rk_svf_single_hp(freq, q);
+  cas2.rk_svf_single_hp(freq, q);
+  cas3.rk_svf_single_hp(freq, q);
+  cas4.rk_svf_single_hp(freq, q);
+  cas5.rk_svf_single_hp(freq, q);
+  cas6.rk_svf_single_hp(freq, q);
+  cas7.rk_svf_single_hp(freq, q);
+  cas8.rk_svf_single_hp(freq, q);
+  cas9.rk_svf_single_hp(freq, q);
+);
+
+/*
+ * Set high pass butterworth filter
+ */
+function rk_svf_hpb(freq, slope)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, q0, q1, q2, q3, q4, q5, q6, q7, q8, q9)
+(
+  nlp = slope;
+  onepole = (slope+1) & 1;
+
+  this._rk_svf_update_splane(nlp);
+
+  this.rk_svf_single_hp(freq, q0);
+  cas1.rk_svf_single_hp(freq, q1);
+  cas2.rk_svf_single_hp(freq, q2);
+  cas3.rk_svf_single_hp(freq, q3);
+  cas4.rk_svf_single_hp(freq, q4);
+  cas5.rk_svf_single_hp(freq, q5);
+  cas6.rk_svf_single_hp(freq, q6);
+  cas7.rk_svf_single_hp(freq, q7);
+  cas8.rk_svf_single_hp(freq, q8);
+  cas9.rk_svf_single_hp(freq, q9);
+);
+
+/*
+ * Band-pass (constant skirt gain, peak gain = Q)
+ */
+function _rk_svf_bp(freq, q)
+  local(g, k, a1, a2, a3, m0, m1, m2)  
+(
+  g = tan($pi * freq/SAMPLE_RATE);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 0;
+  m1 = 1;
+  m2 = 0;
+  this.rk_svf_set_coeffs(g, k, a1, a2, a2, m0, m1, m2);
+);
+
+function rk_svf_bp(freq, q)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svf_bp(freq, q);
+);
+
+/*
+ * Band-pass (constant 0 dB peak gain)
+ */
+function _rk_svf_bp2(freq, q)
+  local(g, k, a1, a2, a3, m0, m1, m2)  
+(
+  g = tan($pi * freq/SAMPLE_RATE);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 0;
+  m1 = 1/q;
+  m2 = 0;
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+);
+
+function rk_svf_bp2(freq, q)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svf_bp2(freq, q);
+);
+
+/*
+ * Band-stop (Notch)
+ */
+function _rk_svf_bs(freq, q)
+  local(g, k, a1, a2, a3, m0, m1, m2)
+(
+  g = tan($pi * freq/SAMPLE_RATE);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 1;
+  m1 = -k;
+  m2 = 0;
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+);
+
+function rk_svf_bs(freq, q)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svf_bs(freq, q);
+);
+
+/*
+ * All pass
+ */
+function _rk_svf_ap(freq, q)
+  local(g, k, a1, a2, a3, m0, m1, m2)
+(
+  g = tan($pi * freq/SAMPLE_RATE);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 1;
+  m1 = -2*k;
+  m2 = 0;
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+);
+
+function rk_svf_ap(freq, q)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svf_ap(freq, q);
+);
+
+/*
+ * Peaking EQ (Bell)
+ */
+function _rk_svf_eq(freq, q, gain)
+  local(A, a1, a2, a3, m0, m1, m2, g, k)
+(
+  A = gain; //10.0 ^ (gain / 20.0);
+  g = tan($pi * freq/SAMPLE_RATE);
+  k = 1.0 / (q * A);
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 1;
+  m1 = k*(A*A-1);
+  m2 = 0;
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+);
+
+function rk_svf_eq(freq, q, gain)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svf_eq(freq, q, gain);
+);
+
+/*
+ * Low Shelf
+ */
+function _rk_svf_ls(freq, q, gain)
+  local(A, g, k, a1, a2, a3, m0, m1, m2)
+(
+  A = gain; //10 ^ (gain / 40.0);
+  g = tan($pi * freq/SAMPLE_RATE) / sqrt(A);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = 1;
+  m1 = k*(A - 1);
+  m2 = (A * A - 1);
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+);
+
+function rk_svf_ls(freq, q, gain)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svf_ls(freq, q, gain);
+);
+
+/*
+ * High shelf
+ */
+function _rk_svf_hs(freq, q, gain)
+  local(A, g, k, a1, a2, a3, m0, m1, m2)
+(
+  A = gain; //10 ^ (gain / 40.0);
+  g = tan($pi * freq/SAMPLE_RATE) * sqrt(A);
+  k = 1.0 / q;
+  a1 = 1.0 / (1.0 + g * (g + k));
+  a2 = g * a1;
+  a3 = g * a2;
+  m0 = A * A;
+  m1 = k * (1 - A) * A;
+  m2 = (1 - A * A);
+  this.rk_svf_set_coeffs(g, k, a1, a2, a3, m0, m1, m2);
+);
+
+function rk_svf_hs(freq, q, gain)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svf_hs(freq, q, gain);
+);
+
+/*
+ * Set shelf tilt filter
+ * (A cunning combination of high and low shelf with opposite gains)
+ */
+function rk_svf_st(freq, q, gain)
+  local(gain2)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  nlp = 3;
+  onepole = 0;
+  gain2 = 10^(-gain / 40);
+  gain = 10^(gain / 40);
+  this._rk_svf_hs(freq, q, gain);
+  cas1._rk_svf_ls(freq, q, gain2);
+);
+
+/*
+ * Pultec boost and cut
+ * amm and gain2 are locals since 2026-10-20 (they were instance members that nothing else reads): a filter that
+ * is retargeted from @gfx and the audio thread at once (Apex) could otherwise divide amm by 10 twice.
+ */
+function rk_svf_pultecls(freq, q, gain)
+  local(gain2, amm)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, onepole, freq)
+(
+  freq *= 1.5;  // Puts the frequency in a better place for adjustments
+  amm = gain;
+  amm > 10 ? amm = 10;
+  amm < 0 ? amm = 0;
+  amm = (amm) / 10;
+
+  gain2 = (q / 40) * 10;
+  gain2 = gain2 * amm;
+
+  gain2 = 10^(-(gain2) / 40);
+  gain = 10^(gain / 40);
+
+  this._rk_svf_ls(freq, 0.701, gain);
+  cas1.rk_svf_eq(freq, 0.701, gain2);  // Cut!!  Make Q affect depth of this gain
+  nlp = 3;
+  onepole = 0;
+);
+
+function db_to_gain(db) ( 
+    10^(db / 40);
+);
+
+/*
+ * Low cut analog (low cut and shelf)
+ */
+function rk_svf_analog_lowcut(freq, q, gain)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, gain2, amm, freq, op0, op1, cutoff)
+(
+  gain = 10^(gain / 40);
+
+  // Low shelf
+  // 1.25 so, 80Hz for high pass is 80Hz for low shelf
+  this.rk_svf_ls(freq * 1.25, 0.701, gain);
+
+  // High pass onepole (from the argument, not read back from the shared member: 2026-10-20)
+  cutoff = freq;
+  op0.rk_svf_onepole(1, freq);
+  op1.rk_svf_onepole(1, freq);
+
+  nlp = 1;
+  onepole = 1;
+);
+
+/*
+ * High cut analog (high cut and shelf)
+ * 2026-10-20: t was a bare name (one plugin-wide variable) and the cutoff was built in the shared instance
+ * member and read back. Both are now worked out in locals and the member is written once, so code elsewhere
+ * cannot bend the result, and a filter retargeted from @gfx and the audio thread at once (Apex) gets one
+ * thread's whole value, never a mix. Locals are private per section (wiki 1.14); the coefficients this
+ * writes are instance members and still last-writer-wins if two threads retarget one filter.
+ */
+function rk_svf_analog_highcut(freq, q, gain)
+  local(gg, t, c)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, gain2, amm, freq, op0, op1, cutoff)
+(
+  gg = gain;
+  gain = 10^(gain / 40);
+
+  // High shelf
+  this.rk_svf_hs(freq, 0.701, gain);
+
+  // Low pass onepole
+  // The low pass 12dB filter starts off higher than the high shelf and gets
+  // closer to the node frequency with decreased negative gain.
+  gg > 0 ? c = 22000 : (
+    c = freq * 4.25;
+
+    gg < -12 ? gg = -12;
+    t = 1 - (-gg / 12);
+
+    c = freq + ((c - freq) * t);
+  );
+
+
+  // Clamp to a high safe frequency
+  c > 22040 ? c = 22040;
+  cutoff = c;
+
+  cas1.rk_svf_single_lp(c, 0.701);
+
+  nlp = 3;
+  onepole = 0;
+  // jj
+);
+
+
+function db_to_gain(db) ( 
+    10^(db / 40);
+);
+
+
+/*
+ * Listen filter for peak/bell eq
+ */
+function rk_svf_listen_eq(leftfreq, rightfreq, bellfreq, bellq, bellgain)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, q0, q1)
+(
+  leftfreq = max(leftfreq, 10);
+  bellfreq = min(max(bellfreq, 10), 20000);
+  rightfreq = min(rightfreq, 20000);
+
+  // Butterworth 24db for the sides
+  this._rk_svf_update_splane(3);
+
+  // The main bell filter that we're listening too
+  this._rk_svf_eq(bellfreq, bellq, bellgain);
+
+  cas1.rk_svf_single_hp(leftfreq, q0);
+  cas2.rk_svf_single_hp(leftfreq, q1);
+
+  cas3.rk_svf_single_lp(rightfreq, q0);
+  cas4.rk_svf_single_lp(rightfreq, q1);
+
+  nlp = 9;
+  onepole = 0;
+);
+
+/*
+ * Listen filter for notch
+ */
+function rk_svf_listen_bs(leftfreq, rightfreq, bellfreq, bellq)
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, q0, q1)
+(
+  leftfreq = max(leftfreq, 10);
+  bellfreq = min(max(bellfreq, 10), 44000);
+  rightfreq = min(rightfreq, 44000);
+
+  // Butterworth 24db for the sides
+  this._rk_svf_update_splane(3);
+
+  // The main bell filter that we're listening too
+  this._rk_svf_bs(bellfreq, bellq);
+
+  cas1.rk_svf_single_hp(leftfreq, q0);
+  cas2.rk_svf_single_hp(leftfreq, q1);
+
+  cas3.rk_svf_single_lp(rightfreq, q0);
+  cas4.rk_svf_single_lp(rightfreq, q1);
+
+  nlp = 9;
+  onepole = 0;
+);
+
+/*
+ * Bypass
+ */
+function rk_svf_bypass()
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  nlp < 1 ? nlp = 1;
+  onepole = 0;
+
+  this.rk_svf_set_coeffs(0, 0, 0, 0, 0, 1, 0, 0);
+  cas1.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas2.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas3.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas4.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas5.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas6.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas7.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas8.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  cas9.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+);
+
+/*
+ * Mute
+ */
+function rk_svf_mute()
+  instance(nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+(
+  nlp < 1 ? nlp = 1;
+  onepole = 0;
+
+  this.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas1.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas2.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas3.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas4.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas5.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas6.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas7.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas8.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+  cas9.rk_svf_set_coeffs(0, 0, 0, 0, 0, 0, 0, 0);
+);
+
+/*
+ * Apply full cascade filter to sample v0 for channel 0
+ * Returns an appropriate linear combination of the 3 outputs [lowpass,
+ * bandpass, highpass] of the core SVF in order to achieve various filter
+ * modes.
+ */
+function rk_svf_svf0(v0)
+  instance(ic1eq0, ic2eq0, a1, a2, a3, m0, m1, m2, nlp, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, onepole, cutoff, op0, op1)
+  local(v1, v2, v3)
+(
+  nlp > 0 ? (
+
+    v3 = v0 - ic2eq0;
+    v1 = a1 * ic1eq0 + a2 * v3;
+    v2 = ic2eq0 + a2 * ic1eq0 + a3 * v3;
+
+    // EON ReaKit: bandpass tap for dynamic-EQ detector (first stage only).
+    // Holds the raw bandpass output (pre-mixing) at this band's freq/Q.
+    this.bp_tap_L = v1;
+
+    ic1eq0 = 2 * v1 - ic1eq0;
+    ic2eq0 = 2 * v2 - ic2eq0;
+
+    v0 = m0 * v0 + m1 * v1 + m2 * v2;
+
+    nlp > 2 ? (
+      v3 = v0 - cas1.ic2eq0;
+      v1 = cas1.a1 * cas1.ic1eq0 + cas1.a2 * v3;
+      v2 = cas1.ic2eq0 + cas1.a2 * cas1.ic1eq0 + cas1.a3 * v3;
+
+      cas1.ic1eq0 = 2 * v1 - cas1.ic1eq0;
+      cas1.ic2eq0 = 2 * v2 - cas1.ic2eq0;
+
+      v0 = cas1.m0 * v0 + cas1.m1 * v1 + cas1.m2 * v2;
+
+      nlp > 4 ? (
+        v3 = v0 - cas2.ic2eq0;
+        v1 = cas2.a1 * cas2.ic1eq0 + cas2.a2 * v3;
+        v2 = cas2.ic2eq0 + cas2.a2 * cas2.ic1eq0 + cas2.a3 * v3;
+
+        cas2.ic1eq0 = 2 * v1 - cas2.ic1eq0;
+        cas2.ic2eq0 = 2 * v2 - cas2.ic2eq0;
+
+        v0 = cas2.m0 * v0 + cas2.m1 * v1 + cas2.m2 * v2;
+
+        nlp > 6 ? (
+          v3 = v0 - cas3.ic2eq0;
+          v1 = cas3.a1 * cas3.ic1eq0 + cas3.a2 * v3;
+          v2 = cas3.ic2eq0 + cas3.a2 * cas3.ic1eq0 + cas3.a3 * v3;
+
+          cas3.ic1eq0 = 2 * v1 - cas3.ic1eq0;
+          cas3.ic2eq0 = 2 * v2 - cas3.ic2eq0;
+
+          v0 = cas3.m0 * v0 + cas3.m1 * v1 + cas3.m2 * v2;
+
+          nlp > 8 ? (
+            v3 = v0 - cas4.ic2eq0;
+            v1 = cas4.a1 * cas4.ic1eq0 + cas4.a2 * v3;
+            v2 = cas4.ic2eq0 + cas4.a2 * cas4.ic1eq0 + cas4.a3 * v3;
+
+            cas4.ic1eq0 = 2 * v1 - cas4.ic1eq0;
+            cas4.ic2eq0 = 2 * v2 - cas4.ic2eq0;
+
+            v0 = cas4.m0 * v0 + cas4.m1 * v1 + cas4.m2 * v2;
+
+            nlp > 10 ? (
+              v3 = v0 - cas5.ic2eq0;
+              v1 = cas5.a1 * cas5.ic1eq0 + cas5.a2 * v3;
+              v2 = cas5.ic2eq0 + cas5.a2 * cas5.ic1eq0 + cas5.a3 * v3;
+
+              cas5.ic1eq0 = 2 * v1 - cas5.ic1eq0;
+              cas5.ic2eq0 = 2 * v2 - cas5.ic2eq0;
+
+              v0 = cas5.m0 * v0 + cas5.m1 * v1 + cas5.m2 * v2;
+
+              nlp > 12 ? (
+                v3 = v0 - cas6.ic2eq0;
+                v1 = cas6.a1 * cas6.ic1eq0 + cas6.a2 * v3;
+                v2 = cas6.ic2eq0 + cas6.a2 * cas6.ic1eq0 + cas6.a3 * v3;
+
+                cas6.ic1eq0 = 2 * v1 - cas6.ic1eq0;
+                cas6.ic2eq0 = 2 * v2 - cas6.ic2eq0;
+
+                v0 = cas6.m0 * v0 + cas6.m1 * v1 + cas6.m2 * v2;
+
+                nlp > 14 ? (
+                  v3 = v0 - cas7.ic2eq0;
+                  v1 = cas7.a1 * cas7.ic1eq0 + cas7.a2 * v3;
+                  v2 = cas7.ic2eq0 + cas7.a2 * cas7.ic1eq0 + cas7.a3 * v3;
+
+                  cas7.ic1eq0 = 2 * v1 - cas7.ic1eq0;
+                  cas7.ic2eq0 = 2 * v2 - cas7.ic2eq0;
+
+                  v0 = cas7.m0 * v0 + cas7.m1 * v1 + cas7.m2 * v2;
+
+                  nlp > 16 ? (
+                    v3 = v0 - cas8.ic2eq0;
+                    v1 = cas8.a1 * cas8.ic1eq0 + cas8.a2 * v3;
+                    v2 = cas8.ic2eq0 + cas8.a2 * cas8.ic1eq0 + cas8.a3 * v3;
+
+                    cas8.ic1eq0 = 2 * v1 - cas8.ic1eq0;
+                    cas8.ic2eq0 = 2 * v2 - cas8.ic2eq0;
+
+                    v0 = cas8.m0 * v0 + cas8.m1 * v1 + cas8.m2 * v2;
+
+                    nlp > 18 ? (
+                      v3 = v0 - cas9.ic2eq0;
+                      v1 = cas9.a1 * cas9.ic1eq0 + cas9.a2 * v3;
+                      v2 = cas9.ic2eq0 + cas9.a2 * cas9.ic1eq0 + cas9.a3 * v3;
+
+                      cas9.ic1eq0 = 2 * v1 - cas9.ic1eq0;
+                      cas9.ic2eq0 = 2 * v2 - cas9.ic2eq0;
+
+                      v0 = cas9.m0 * v0 + cas9.m1 * v1 + cas9.m2 * v2;
+                    );
+                  );
+                );
+              );
+            );
+          );
+        );
+      );
+    );
+  );
+
+  onepole ? ( 
+    v0 = op0.rk_svf_onepole_do(v0);
+  );
+
+  v0;
+);
+
+/*
+ * Apply full cascade filter to sample v0 for channel 1
+ * Returns an appropriate linear combination of the 3 outputs [lowpass,
+ * bandpass, highpass] of the core SVF in order to achieve various filter
+ * modes.
+ */
+function rk_svf_svf1(v0)
+  instance(ic1eq1, ic2eq1, a1, a2, a3, m0, m1, m2, nlp, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, onepole, op0, op1)
+  local(v1, v2, v3)
+(
+  nlp > 0 ? (
+    v3 = v0 - ic2eq1;
+    v1 = a1 * ic1eq1 + a2 * v3;
+    v2 = ic2eq1 + a2 * ic1eq1 + a3 * v3;
+
+    // EON ReaKit: bandpass tap for dynamic-EQ detector (first stage only).
+    // Holds the raw bandpass output (pre-mixing) at this band's freq/Q.
+    this.bp_tap_R = v1;
+
+    ic1eq1 = 2 * v1 - ic1eq1;
+    ic2eq1 = 2 * v2 - ic2eq1;
+
+    v0 = m0 * v0 + m1 * v1 + m2 * v2;
+
+    nlp > 2 ? (
+      v3 = v0 - cas1.ic2eq1;
+      v1 = cas1.a1 * cas1.ic1eq1 + cas1.a2 * v3;
+      v2 = cas1.ic2eq1 + cas1.a2 * cas1.ic1eq1 + cas1.a3 * v3;
+
+      cas1.ic1eq1 = 2 * v1 - cas1.ic1eq1;
+      cas1.ic2eq1 = 2 * v2 - cas1.ic2eq1;
+
+      v0 = cas1.m0 * v0 + cas1.m1 * v1 + cas1.m2 * v2;
+
+      nlp > 4 ? (
+        v3 = v0 - cas2.ic2eq1;
+        v1 = cas2.a1 * cas2.ic1eq1 + cas2.a2 * v3;
+        v2 = cas2.ic2eq1 + cas2.a2 * cas2.ic1eq1 + cas2.a3 * v3;
+
+        cas2.ic1eq1 = 2 * v1 - cas2.ic1eq1;
+        cas2.ic2eq1 = 2 * v2 - cas2.ic2eq1;
+
+        v0 = cas2.m0 * v0 + cas2.m1 * v1 + cas2.m2 * v2;
+
+        nlp > 6 ? (
+          v3 = v0 - cas3.ic2eq1;
+          v1 = cas3.a1 * cas3.ic1eq1 + cas3.a2 * v3;
+          v2 = cas3.ic2eq1 + cas3.a2 * cas3.ic1eq1 + cas3.a3 * v3;
+
+          cas3.ic1eq1 = 2 * v1 - cas3.ic1eq1;
+          cas3.ic2eq1 = 2 * v2 - cas3.ic2eq1;
+
+          v0 = cas3.m0 * v0 + cas3.m1 * v1 + cas3.m2 * v2;
+
+          nlp > 8 ? (
+            v3 = v0 - cas4.ic2eq1;
+            v1 = cas4.a1 * cas4.ic1eq1 + cas4.a2 * v3;
+            v2 = cas4.ic2eq1 + cas4.a2 * cas4.ic1eq1 + cas4.a3 * v3;
+
+            cas4.ic1eq1 = 2 * v1 - cas4.ic1eq1;
+            cas4.ic2eq1 = 2 * v2 - cas4.ic2eq1;
+
+            v0 = cas4.m0 * v0 + cas4.m1 * v1 + cas4.m2 * v2;
+
+            nlp > 10 ? (
+              v3 = v0 - cas5.ic2eq1;
+              v1 = cas5.a1 * cas5.ic1eq1 + cas5.a2 * v3;
+              v2 = cas5.ic2eq1 + cas5.a2 * cas5.ic1eq1 + cas5.a3 * v3;
+
+              cas5.ic1eq1 = 2 * v1 - cas5.ic1eq1;
+              cas5.ic2eq1 = 2 * v2 - cas5.ic2eq1;
+
+              v0 = cas5.m0 * v0 + cas5.m1 * v1 + cas5.m2 * v2;
+
+              nlp > 12 ? (
+                v3 = v0 - cas6.ic2eq1;
+                v1 = cas6.a1 * cas6.ic1eq1 + cas6.a2 * v3;
+                v2 = cas6.ic2eq1 + cas6.a2 * cas6.ic1eq1 + cas6.a3 * v3;
+
+                cas6.ic1eq1 = 2 * v1 - cas6.ic1eq1;
+                cas6.ic2eq1 = 2 * v2 - cas6.ic2eq1;
+
+                v0 = cas6.m0 * v0 + cas6.m1 * v1 + cas6.m2 * v2;
+
+                nlp > 14 ? (
+                  v3 = v0 - cas7.ic2eq1;
+                  v1 = cas7.a1 * cas7.ic1eq1 + cas7.a2 * v3;
+                  v2 = cas7.ic2eq1 + cas7.a2 * cas7.ic1eq1 + cas7.a3 * v3;
+
+                  cas7.ic1eq1 = 2 * v1 - cas7.ic1eq1;
+                  cas7.ic2eq1 = 2 * v2 - cas7.ic2eq1;
+
+                  v0 = cas7.m0 * v0 + cas7.m1 * v1 + cas7.m2 * v2;
+
+                  nlp > 16 ? (
+                    v3 = v0 - cas8.ic2eq1;
+                    v1 = cas8.a1 * cas8.ic1eq1 + cas8.a2 * v3;
+                    v2 = cas8.ic2eq1 + cas8.a2 * cas8.ic1eq1 + cas8.a3 * v3;
+
+                    cas8.ic1eq1 = 2 * v1 - cas8.ic1eq1;
+                    cas8.ic2eq1 = 2 * v2 - cas8.ic2eq1;
+
+                    v0 = cas8.m0 * v0 + cas8.m1 * v1 + cas8.m2 * v2;
+
+                    nlp > 18 ? (
+                      v3 = v0 - cas9.ic2eq1;
+                      v1 = cas9.a1 * cas9.ic1eq1 + cas9.a2 * v3;
+                      v2 = cas9.ic2eq1 + cas9.a2 * cas9.ic1eq1 + cas9.a3 * v3;
+
+                      cas9.ic1eq1 = 2 * v1 - cas9.ic1eq1;
+                      cas9.ic2eq1 = 2 * v2 - cas9.ic2eq1;
+
+                      v0 = cas9.m0 * v0 + cas9.m1 * v1 + cas9.m2 * v2;
+                    );
+                  );
+                );
+              );
+            );
+          );
+        );
+      );
+    );
+  );
+
+  onepole ? ( 
+    v0 = op1.rk_svf_onepole_do(v0);
+  );
+
+  v0;
+);
+
+/*
+ * Reset the SVF filter state for all channels
+ */
+function rk_svf_reset()
+  instance(ic1eq0, ic2eq0, ic1eq1, ic2eq1)
+(
+  ic1eq0 = ic2eq0 = 0.0;
+  ic1eq1 = ic2eq1 = 0.0;
+);
+
+/*
+ * Get magnitude response for single filter
+ */
+function rk_svf_mag(freq)
+  instance(g, k, m0, m1, m2, a1, a2, a3)
+  local(zr, zi, zrr, gsq, gm1, gk, twogsq, a, zsq_i, zsq_r, twoz_r, twoz_i, nr, ni, dr, di, norm, ddi, ddr, x, y, s)
+(
+    // exp(complex(0.0, -2.0 * pi) * frequency / sampleRate)
+    zr = 0.0;
+    zi = -2.0 * $pi;
+    
+    zr = zr * freq * ONE_OVER_SAMPLE_RATE;
+    zi = zi * freq * ONE_OVER_SAMPLE_RATE;
+    zr = exp(zr);
+    
+    zrr = zr;
+    zr = zrr * cos(zi);
+    zi = zrr * sin(zi);
+
+    gsq    = g * g;
+    gm1    = g * m1;
+    gk     = g * k;
+    twogsq = gsq * 2.0;
+
+    // z * z
+    a = zr * zr - zi * zi;
+    zsq_i = zi * zr + zr * zi;
+    zsq_r = a;
+
+    // z * 2.0
+    twoz_r = zr * 2;
+    twoz_i = zi * 2;
+    
+    // Numerator complex
+    nr = gsq * m2 * (zsq_r + twoz_r + 1.0) - gm1 * (zsq_r - 1.0);
+    ni = gsq * m2 * (zsq_i + twoz_i) - gm1 * (zsq_i);
+    
+    // Denominator complex
+    dr = gsq + gk + zsq_r * (gsq - gk + 1.0) + zr * (twogsq - 2.0) + 1.0;
+    di = zsq_i * (gsq - gk + 1.0) + zi * (twogsq - 2.0);
+
+    // Numerator / Denominator
+    norm = dr * dr + di * di;
+    a = (nr * dr + ni * di) / norm;
+    ddi = (ni * dr - nr * di) / norm;
+    ddr = a;
+
+    // abs(m0_ + (Numerator / Denominator)
+    x = m0 + ddr;
+    y = ddi;
+    s = max(abs(x), abs(y));
+    x /= s;
+    y /= s;
+
+    // Return magnitude
+    s * sqrt(x * x + y * y);
+);
+
+/*
+ * Get phase response for single filter
+ */
+function rk_svf_phase(freq)
+  instance(g, k, m0, m1, m2, a1, a2, a3)
+  local(zr, zi, zrr, gsq, gm1, gk, twogsq, a, zsq_i, zsq_r, twoz_r, twoz_i, nr, ni, dr, di, norm, ddi, ddr, x, y, s)
+(
+    // exp(complex(0.0, -2.0 * pi) * frequency / sampleRate)
+    zr = 0.0;
+    zi = -2.0 * $pi;
+    
+    zr = zr * freq * ONE_OVER_SAMPLE_RATE;
+    zi = zi * freq * ONE_OVER_SAMPLE_RATE;
+    zr = exp(zr);
+    
+    zrr = zr;
+    zr = zrr * cos(zi);
+    zi = zrr * sin(zi);
+
+    gsq    = g * g;
+    gm1    = g * m1;
+    gk     = g * k;
+    twogsq = gsq * 2.0;
+
+    // z * z
+    a = zr * zr - zi * zi;
+    zsq_i = zi * zr + zr * zi;
+    zsq_r = a;
+
+    // z * 2.0
+    twoz_r = zr * 2;
+    twoz_i = zi * 2;
+    
+    // Numerator complex
+    nr = gsq * m2 * (zsq_r + twoz_r + 1.0) - gm1 * (zsq_r - 1.0);
+    ni = gsq * m2 * (zsq_i + twoz_i) - gm1 * (zsq_i);
+    
+    // Denominator complex
+    dr = gsq + gk + zsq_r * (gsq - gk + 1.0) + zr * (twogsq - 2.0) + 1.0;
+    di = zsq_i * (gsq - gk + 1.0) + zi * (twogsq - 2.0);
+
+    // Numerator / Denominator
+    norm = dr * dr + di * di;
+    a = (nr * dr + ni * di) / norm;
+    ddi = (ni * dr - nr * di) / norm;
+    ddr = a;
+
+    // arg(m0_ + (Numerator / Denominator)
+    x = m0 + ddr;
+    y = ddi;
+
+    atan2(y, x);
+);
+
+/*
+ * Get the magnitude of the filters for the given frequency
+ * The one-pole scratch values (wdcutoff, coff, wdeval, svalue) are local since 2026-10-20; they were
+ * plugin-wide names, shared with anything else in the plugin that used the same words (and with @gfx).
+ */
+function rk_svf_magnitude(freq)
+  instance(a2, t_k, g, k, nlp, onepole, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9, cutoff, op0, op1)
+  local(m, wdcutoff, coff, wdeval, svalue)
+(
+  // Our svf magnitude maps to the same magnitude z transfer function as biquad
+
+  m = 1.0;
+
+  // Apply two pole (12dB steps)
+  nlp > 0 ? m *= this.rk_svf_mag(freq); //12
+  nlp > 2 ? m *= cas1.rk_svf_mag(freq); //24
+  nlp > 4 ? m *= cas2.rk_svf_mag(freq); //36
+  nlp > 6 ? m *= cas3.rk_svf_mag(freq); //48
+  nlp > 8 ? m *= cas4.rk_svf_mag(freq); //60
+  nlp > 10 ? m *= cas5.rk_svf_mag(freq); //72
+  nlp > 12 ? m *= cas6.rk_svf_mag(freq); //84
+  nlp > 14 ? m *= cas7.rk_svf_mag(freq); //96
+  nlp > 16 ? m *= cas8.rk_svf_mag(freq); //108
+  nlp > 18 ? m *= cas9.rk_svf_mag(freq); //120
+
+  // Apply one pole (6dB)
+//  nlp * 0.5 == floor(nlp * 0.5) ? (
+  onepole == 1 ? (
+    // TODO: optimize!
+    wdcutoff = $pi * (cutoff * ONE_OVER_SAMPLE_RATE);
+    coff = tan(wdcutoff);
+
+    wdeval = $pi * (freq * ONE_OVER_SAMPLE_RATE);
+    svalue = tan(wdeval);
+
+    op0.passtype == 0 ? ( 
+      // lp
+      m *= 1.0 / sqrt(1 + ((svalue/coff)^2));
+    ) : (
+      // hp
+      m *= 1.0 / sqrt(1 + ((coff/svalue)^2));      
+    );
+  );
+
+  m;
+);

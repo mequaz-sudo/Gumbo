@@ -1,0 +1,133 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_load.jsfx-inc -- Gumbo: load one instrument (a ".gumbo.txt" + its WAV/FLAC samples) as a resumable job.
+//
+// gb_job_start(path) then gb_job_step(cells, lines) until it returns 1. Two callers:
+//   * @gfx (a dropped file): small budgets per frame, so the window stays responsive. A file read can stall for a
+//     moment (a cold file: 240-470 ms once, Research §0c), so loads never run in @block.
+//   * @serialize (a project opening): huge budgets, one call, so the instrument is in memory before any play or
+//     render (measured: a 2.6M-cell sample loads inside @serialize, Research R7).
+// Each piece of work is bounded under EEL2's 2^20 loop cap (wiki §1.7): lines per step, cells per file_mem call.
+// Audio memory: every sample file once, interleaved as it is on disk (mono stays mono), from GB_AUD up to GB_AUD_END.
+// While a job runs gb_ready is 0 and the audio side plays nothing; gb_ready = 1 is written last.
+// Threads: @gfx and @serialize are separate sections with separate function locals (wiki §1.14), but they share
+// these globals; the host never runs both at once on purpose (a @serialize load first stops a @gfx job).
+
+@init
+GB_AUD = 2000000;
+GB_AUD_END = 134000000;              // under maxmem = 134217728, proven backed (Research R3)
+GB_CHUNK = 524288;                   // cells per file_mem call (half the loop cap; file_mem itself has no cap)
+GB_J_IDLE = 0; GB_J_PARSE = 1; GB_J_SAMPLES = 2; GB_J_DONE = 3; GB_J_FAILED = -1;
+GB_E_NONE = 0; GB_E_OPEN = 1; GB_E_NOTTEXT = 2; GB_E_FORMAT = 3; GB_E_EMPTY = 4;
+gb_job = GB_J_IDLE;
+gb_load_lock = 0;                    // one loader driver at a time (gb_lock_try / gb_lock_wait / gb_unlock)
+
+// the folder part of #gb_jpath (with its trailing slash) -> #gb_dir
+function gb_dirname() local(n, i, cut, c) (
+  n = strlen(#gb_jpath); cut = -1; i = 0;
+  loop(n, c = str_getchar(#gb_jpath, i); (c == '/' || c == 92) ? cut = i; i += 1; );
+  cut >= 0 ? strncpy(#gb_dir, #gb_jpath, cut + 1) : strcpy(#gb_dir, "");
+);
+
+// the full path of sample k -> #gb_sp (absolute paths as they are, relative ones under #gb_dir)
+function gb_sample_path(k) local(p, n, i, c0, c1, abs_) (
+  p = GB_SMP + k * GB_SS; n = p[GBS_PLEN];
+  c0 = GB_PCH[p[GBS_PATH]]; c1 = n > 1 ? GB_PCH[p[GBS_PATH] + 1] : 0;
+  abs_ = c1 == ':' || c0 == '/' || c0 == 92;
+  abs_ ? strcpy(#gb_sp, "") : strcpy(#gb_sp, #gb_dir);
+  i = 0; loop(n, sprintf(#gb_ch, "%c", GB_PCH[p[GBS_PATH] + i]); strcat(#gb_sp, #gb_ch); i += 1; );
+);
+
+function gb_job_start(path) (
+  gb_job > GB_J_IDLE && gb_jh_open ? ( file_close(gb_jh); gb_jh_open = 0; );
+  gb_ready = 0;
+  gb_load_gen += 1;                  // the audio side adopts each load once (gb_voices_block)
+  strcpy(#gb_jpath, path);
+  gb_dirname();
+  gb_tables_reset();
+  gb_aud_top = GB_AUD; gb_js = 0; gb_jpos = 0; gb_err = GB_E_NONE;
+  gb_smp_missing = 0; gb_smp_badfmt = 0; gb_smp_noroom = 0; gb_loaded_cells = 0;
+  gb_jh = file_open(#gb_jpath);
+  gb_jh < 0 ? ( gb_err = GB_E_OPEN; gb_job = GB_J_FAILED; ) : (
+    gb_jh_open = 1;
+    file_text(gb_jh) ? gb_job = GB_J_PARSE : (
+      file_close(gb_jh); gb_jh_open = 0; gb_err = GB_E_NOTTEXT; gb_job = GB_J_FAILED;
+    );
+  );
+);
+
+// one budgeted piece of work; returns 1 when the job has finished (done or failed)
+function gb_job_step(cells, lines) local(k, p, nch, sr, items, n, left) (
+  gb_job == GB_J_PARSE ? (
+    k = 0;
+    // file_avail first: in text mode it is 1 until the end, and a read past the end repeats the last line
+    while (k < lines && gb_job == GB_J_PARSE) (
+      file_avail(gb_jh) > 0 ? ( file_string(gb_jh, #gb_ln); gb_parse_line(); k += 1; ) : (
+        file_close(gb_jh); gb_jh_open = 0;
+        gb_nreg == 0 ? ( gb_err = GB_E_EMPTY; gb_job = GB_J_FAILED; )
+        : gb_fmt_ver != 1 && gb_fmt_ver != 2 ? ( gb_err = GB_E_FORMAT; gb_job = GB_J_FAILED; )   // 2 = live controllers
+        : ( gb_js = 0; gb_jpos = 0; gb_job = GB_J_SAMPLES; );
+      );
+    );
+  ) : gb_job == GB_J_SAMPLES ? (
+    left = cells;
+    while (left > 0 && gb_job == GB_J_SAMPLES) (
+      gb_js >= gb_nsmp ? ( gb_job = GB_J_DONE; gb_ready = 1; ) : (
+        p = GB_SMP + gb_js * GB_SS;
+        !gb_jh_open ? (
+          // open the next sample
+          gb_sample_path(gb_js);
+          gb_jh = file_open(#gb_sp);
+          gb_jh < 0 ? ( p[GBS_STAT] = GB_SS_MISSING; gb_smp_missing += 1; gb_js += 1; ) : (
+            nch = 0; sr = 0; file_riff(gb_jh, nch, sr);
+            items = file_avail(gb_jh);
+            nch < 1 || nch > 2 || items <= 0 ? (
+              file_close(gb_jh); p[GBS_STAT] = GB_SS_FORMAT; gb_smp_badfmt += 1; gb_js += 1;
+            ) : gb_aud_top + items > GB_AUD_END ? (
+              file_close(gb_jh); p[GBS_STAT] = GB_SS_NOROOM; gb_smp_noroom += 1; gb_js += 1;
+            ) : (
+              gb_jh_open = 1; gb_jpos = 0;
+              p[GBS_PTR] = gb_aud_top; p[GBS_NCH] = nch; p[GBS_SR] = sr > 0 ? sr : srate;
+              p[GBS_FRAMES] = (items / nch) | 0;
+              gb_jitems = p[GBS_FRAMES] * nch;
+            );
+          );
+        ) : (
+          // read the next piece of the open sample
+          n = min(min(GB_CHUNK, left), gb_jitems - gb_jpos);
+          n > 0 ? ( file_mem(gb_jh, p[GBS_PTR] + gb_jpos, n); gb_jpos += n; left -= n; );
+          gb_jpos >= gb_jitems ? (
+            file_close(gb_jh); gb_jh_open = 0;
+            p[GBS_STAT] = GB_SS_OK; gb_aud_top += gb_jitems; gb_loaded_cells += gb_jitems; gb_js += 1;
+          );
+        );
+      );
+    );
+  );
+  gb_job == GB_J_DONE || gb_job == GB_J_FAILED;
+);
+
+// stop a running job (a @serialize load takes over); leaves the instrument not ready
+function gb_job_abort() (
+  gb_jh_open ? ( file_close(gb_jh); gb_jh_open = 0; );
+  gb_job = GB_J_IDLE; gb_ready = 0;
+);
+
+// no instrument at all: an empty saved state (undo back to an empty Gumbo, a preset without one) must silence and
+// forget the loaded one, not keep it playing under an empty name
+function gb_unload() (
+  gb_job_abort();
+  gb_tables_reset();
+  gb_js = 0; gb_err = GB_E_NONE; gb_loaded_cells = 0; gb_smp_missing = 0; gb_smp_badfmt = 0; gb_smp_noroom = 0;
+);
+
+// The loader is driven from two threads: @gfx (a drop, the browser, the steps) and @serialize (a project, an undo, a
+// preset), which run concurrently (wiki 4.1). One at a time: @gfx only tries (and comes back next pass), @serialize
+// waits for @gfx's current piece (one step, a few ms) and never longer than about a second. atomic_setifequal returns
+// the OLD value (wiki 4.1).
+function gb_lock_try() ( atomic_setifequal(gb_load_lock, 0, 1) == 0; );
+function gb_lock_wait() local(g, h) (
+  g = 0;
+  while (atomic_setifequal(gb_load_lock, 0, 1) != 0 && g < 2000) ( h = 0; loop(100000, h += 1; ); g += 1; );
+  g >= 2000 ? atomic_set(gb_load_lock, 1);
+);
+function gb_unlock() ( atomic_set(gb_load_lock, 0); );

@@ -1,0 +1,817 @@
+// (C) 2026 EON Studios. EON Free Licence 1.0 (see Quezy_ReaKit.jsfx); the parts ported from ReEQ keep its MIT licence
+// (Justin Johnson's notice in Quezy_ReaKit.jsfx).
+// qz_engine.jsfx-inc -- Quezy's band engine (EON, 2026-10-20; spec .docs/specs/Spec_Quezy_Free_EQ_2026-10-10.md)
+//
+// One band = one object with a `filter` (an rk_svf instance; rk_svf.jsfx-inc and rk_svf_match.jsfx-inc are imported
+// by the host BEFORE this file). The host owns the objects (a_b1..a_b16 for audio; qzg_b1..qzg_b16, the face's
+// display bank) and calls:
+//   b.qz_band_init()          @init, and @block on a sample-rate change (never from @gfx: see below)
+//   b.qz_band_apply(o, gs)    @block, every block: o = the band's first slider (1 + 13 * (band - 1)),
+//                             gs = Scale / 100 (an argument, so each bank owns its own copy)
+//   b.qz_band_run()           @sample, bands in slot order 1..16: filters spl0 / spl1 in place
+// Every band reads its own 13 sliders (spec §5): +0 Mode, +1 Place, +2 Shape, +3 Freq (Hz), +4 Gain (dB),
+// +5 Q, +6 Slope (index: (s + 1) * 6 dB/oct), +7..+12 the release-2 dynamics (inert in release 1).
+//
+// The coefficients (build step 1b, research R12): QZ_DECRAMP = 1 (shipped) sets every shape except All Pass through
+// rk_svf_match.jsfx-inc's magnitude-matched maps, so the curve keeps its analogue shape up to Nyquist at the base
+// rate (bilinear squashes the top octave: a 16 kHz bell off by up to 13 dB at 44.1 kHz). QZ_DECRAMP = 0 is the
+// parity build: ReEQ's own bilinear rk_svf calls, unchanged. The tests flip the flag in a staged copy:
+// .dev_tests/quezy/qz_null.py nulls that copy against ReEQ (R2a), qz_decramp.py measures the shipped build against
+// the analogue prototypes and the parity build (R2b). The listen follows the flag too (its filters are the bands').
+//
+// Parity with ReEQ 1.2.0 (Justin Johnson, MIT), in the parity build: shapes 0..13 call the same rk_svf functions
+// with the same units (Peak and shelves A = 10^(dB/40); tilt, Pultec and the analog cuts dB), Scale multiplies the
+// dB first, a band switched off glides to flat the same way (it stops when its main stage's glide ends), and
+// placement encodes and decodes mid/side inside each band, in slot order (ReEQ.jsfx 392-409, 1019-1027,
+// 1292-1301). Nulls against ReEQ in the offline harness: about -260 dB (the step-1 handoff). The shipped build
+// keeps all of that but the coefficients. Differences in both:
+//   - every frequency is clamped below Nyquist (0.49 * srate); the Pultec and the analog low cut, which
+//     multiply their frequency inside rk_svf, are clamped so the multiplied one stays below it too
+//     (ReEQ's go unstable above ~14.7 / ~17.6 kHz at 44.1 kHz); the analog high cut is Quezy's own copy
+//     with its fixed 22 kHz corner kept under Nyquist (ReEQ's and rk_svf's run away below 44.1 kHz);
+//   - a band starts at its setting: on load and after a sample-rate change it lands at once instead of
+//     gliding in from flat for 30 ms (ReEQ glides in);
+//   - a filter stage that comes back into use (a steeper slope, a structure change, a 6 dB cut's main stage)
+//     starts from flat with clean memory instead of from the values it last had;
+//   - a band that is off does not retarget while its other controls move;
+//   - shapes 14..16 are Quezy's own (Bell Prop Q, Flat Tilt, Flat Gain);
+//   - the audio bank switches without a step (build step 3, spec §7; the section below qz_band_apply): stages leave
+//     through flat, the one-pole glides, placement changes, most shape swaps and full-range gain jumps crossfade
+//     into a partner object; ReEQ steps on all of those (and its tilt, low shelf and Pultec overshoot 5-8 dB).
+// There is no HQ (2x) mode: the matched coefficients already sit as close to the analogue curves as ReEQ's HQ, with no
+// latency (the user, 2026-10-22, after spec R3's numbers: "Drop it"). Every band runs at the base rate.
+//
+// Threads: only @block and @sample touch an audio-bank object. Every scratch value is a local (a local is
+// private per section, wiki 1.14); writes go to the object's own members or to spl0 / spl1. rk_svf's
+// SAMPLE_RATE / ONE_OVER_SAMPLE_RATE are plugin-wide and written by qz_band_init: a display bank must not
+// re-init from @gfx. The matched maps take the band's own run_sr (set by qz_band_init) instead of those globals.
+
+@init
+
+QZ_DECRAMP = 1;                  // 1 = matched coefficients (shipped); 0 = ReEQ's bilinear ones (the parity build)
+
+/*
+ * Start a band flat: identity coefficients snapped on all ten stages (a stage never ticked holds all-zero
+ * coefficients, i.e. silence). `fresh` makes the next apply land at once (no 30 ms glide in from flat).
+ */
+function qz_band_init()
+  instance(filter, p, c_mode, fresh, run_sr)
+(
+  run_sr = srate;                // the rate this band's filter runs at (every band runs at the base rate)
+  filter.rk_svf_set_sample_rate(srate);
+  filter.rk_svf_bypass();
+  filter.nlp = 19;
+  filter.rk_svf_set_to_target();
+  filter.nlp = 1;
+  p = 0;
+  c_mode = -1;   // stale: the next apply always retargets
+  fresh = 1;
+);
+
+/*
+ * Restart one stage from flat with clean memory, keeping the target the shape just set: its glide then runs
+ * from identity instead of from whatever the stage last held (it may have sat unused since a steeper slope).
+ */
+function qz_stage_fresh()
+  instance(g, k, a1, a2, a3, m0, m1, m2, s_g, s_k, s_a1, s_a2, s_a3, s_m0, s_m1, s_m2,
+           ic1eq0, ic2eq0, ic1eq1, ic2eq1)
+(
+  g = s_g = 0;
+  k = s_k = 0;
+  a1 = s_a1 = 1;
+  a2 = s_a2 = 0;
+  a3 = s_a3 = 0;
+  m0 = s_m0 = 1;
+  m1 = s_m1 = 0;
+  m2 = s_m2 = 0;
+  ic1eq0 = ic2eq0 = ic1eq1 = ic2eq1 = 0;
+);
+
+/*
+ * After a retarget raised the active stage count from n0 to n1 (stage k runs while nlp > 2k), restart the
+ * stages that just came into use.
+ */
+function qz_fresh_stages(n0, n1)
+  instance(filter)
+(
+  n0 <= 0 && n1 > 0 ? filter.qz_stage_fresh();
+  n0 <= 2 && n1 > 2 ? filter.cas1.qz_stage_fresh();
+  n0 <= 4 && n1 > 4 ? filter.cas2.qz_stage_fresh();
+  n0 <= 6 && n1 > 6 ? filter.cas3.qz_stage_fresh();
+  n0 <= 8 && n1 > 8 ? filter.cas4.qz_stage_fresh();
+  n0 <= 10 && n1 > 10 ? filter.cas5.qz_stage_fresh();
+  n0 <= 12 && n1 > 12 ? filter.cas6.qz_stage_fresh();
+  n0 <= 14 && n1 > 14 ? filter.cas7.qz_stage_fresh();
+  n0 <= 16 && n1 > 16 ? filter.cas8.qz_stage_fresh();
+  n0 <= 18 && n1 > 18 ? filter.cas9.qz_stage_fresh();
+);
+
+/*
+ * Flat Gain (shape 16): a volume-only band, the identity stage with its direct mix at the linear gain.
+ */
+function qz_flat_gain(gdb)
+  instance(filter)
+(
+  filter.nlp = 1;
+  filter.onepole = 0;
+  filter.rk_svf_set_coeffs(0, 0, 0, 0, 0, 10 ^ (gdb / 20), 0, 0);
+);
+
+/*
+ * One stage of the Flat Tilt: a corner below the pivot becomes a low shelf cutting by the step, one above it a
+ * high shelf boosting by it. The two are the same filter up to a constant (HS(A) = A^2 * LS(1/A): same g and k,
+ * the mix scaled), so the curve is the high-shelf staircase's, but no stage carries a large make-up gain.
+ * Returns 1 for a low shelf (a corner below the pivot), else 0. fs = the band's run rate (the matched maps).
+ */
+function qz_tilt_stage(fc, f, A, fs)
+(
+  QZ_DECRAMP ? (
+    fc < f ? (this._rk_svfm_ls(fc, 0.7071, 1 / A, fs); 1) : (this._rk_svfm_hs(fc, 0.7071, A, fs); 0);
+  ) : (
+    fc < f ? (this._rk_svf_ls(fc, 0.7071, 1 / A); 1) : (this._rk_svf_hs(fc, 0.7071, A); 0);
+  );
+);
+
+/*
+ * Flat Tilt (shape 15): a straight tilt with no corner, pivoting on f. gdb is the TOTAL tilt across the audio
+ * band: 20 kHz sits gdb above 20 Hz, so the slope is gdb / log2(1000) dB per octave and no setting lifts any
+ * part of 20 Hz .. 20 kHz by more than |gdb| (times Scale). Ten shelves at Q 0.7071, their corners log-spaced
+ * over 5 Hz .. 0.45 * srate (40 kHz at most): low shelves below the pivot, high shelves above it
+ * (qz_tilt_stage); the lowest stage's mix carries the residual (within half a step) that puts f at 0 dB.
+ * 2026-10-20, after the step-1 review: the first version read Gain as dB per decade (up to +100 dB at the far
+ * end) and kept the whole make-up gain on one stage, so a jump between tilts burst up to 93 dB over the music.
+ * Measured on the staircase (Python model of rk_svf): ripple 0.08 dB from 50 Hz to 8 kHz at 48 kHz and
+ * 3 dB/oct, the pivot within 0.07 dB; errors scale with the slope.
+ */
+function qz_flat_tilt(f, gdb)
+  instance(filter, run_sr)
+  local(s, flo, fhi, span, d, A, r, fc, nb, g0)
+(
+  f = max(20, min(f, 20000));    // the pivot stays in the audio band, so |gdb| bounds the whole of it
+  s = gdb / 9.96578428466209;    // dB per octave: gdb over log2(20000 / 20)
+  flo = 5;
+  fhi = min(0.45 * srate, 40000);
+  span = log(fhi / flo) / log(2);
+  d = s * span / 10;             // dB per stage
+  A = 10 ^ (d / 40);
+  r = 2 ^ (span / 10);
+  fc = flo * 2 ^ (0.05 * span);
+  nb = filter.qz_tilt_stage(fc, f, A, run_sr);           fc *= r;
+  nb += filter.cas1.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas2.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas3.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas4.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas5.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas6.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas7.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas8.qz_tilt_stage(fc, f, A, run_sr);     fc *= r;
+  nb += filter.cas9.qz_tilt_stage(fc, f, A, run_sr);
+  g0 = 10 ^ ((nb * d - s * log(f / flo) / log(2)) / 20);
+  filter.t_m0 *= g0;
+  filter.t_m1 *= g0;
+  filter.t_m2 *= g0;
+  filter.nlp = 19;
+  filter.onepole = 0;
+);
+
+/*
+ * High Cut Analog (shape 13): rk_svf_analog_highcut (ReEQ's svf_analog_highcut) line for line, plus one clamp:
+ * its low-pass corner, a fixed 22000 Hz on a boost and up to 22040 Hz on a cut, stays under Nyquist. At 44.1
+ * and 48 kHz the clamp never bites (0.4998 * 44100 = 22041), so the sound is ReEQ's; below 44.1 kHz the
+ * shared version runs away (32 kHz: 1e307 within 1,600 samples). The shared copy's fix is its own step.
+ * Matched build: the same shelf and corner rule through rk_svf_match (its 12 dB stage then rolls off like the
+ * analogue one up to Nyquist instead of reaching silence there).
+ */
+function qz_analog_highcut(f, gdb)
+  instance(filter, run_sr)
+  local(gg, A, t, c)
+(
+  gg = gdb;
+  A = 10 ^ (gdb / 40);
+  QZ_DECRAMP ? filter.rk_svfm_hs(f, 0.701, A, run_sr) : filter.rk_svf_hs(f, 0.701, A);
+  gg > 0 ? c = 22000 : (
+    c = f * 4.25;
+    gg < -12 ? gg = -12;
+    t = 1 - (-gg / 12);
+    c = f + ((c - f) * t);
+  );
+  c > 22040 ? c = 22040;
+  c = min(c, 0.4998 * srate);
+  filter.cutoff = c;
+  QZ_DECRAMP ? filter.cas1.rk_svfm_single_lp(c, 0.701, run_sr) : filter.cas1.rk_svf_single_lp(c, 0.701);
+  filter.nlp = 3;
+  filter.onepole = 0;
+);
+
+/*
+ * Retarget the filter to one of the 17 shapes (spec §5 order; 0..13 = ReEQ's internal ids).
+ * f is already below Nyquist; gdb is the band's gain times Scale; sl is the slope index 0..19.
+ * QZ_DECRAMP: the matched maps for every shape but All Pass (phase only: its magnitude is flat either way); the
+ * Pultec and the analog low cut keep their caps so the multiplied frequency stays under Nyquist in both builds.
+ */
+function qz_band_shape(sh, f, gdb, q, sl, fmax)
+  instance(filter, run_sr)
+  local(A)
+(
+  A = 10 ^ (gdb / 40);
+  QZ_DECRAMP ? (
+    sh == 0 ? filter.rk_svfm_eq(f, q, A, run_sr) :
+    sh == 1 ? filter.rk_svfm_hp(f, q, sl, run_sr) :
+    sh == 2 ? filter.rk_svfm_hpb(f, sl, run_sr) :
+    sh == 3 ? filter.rk_svfm_ls(f, q, A, run_sr) :
+    sh == 4 ? filter.rk_svfm_hs(f, q, A, run_sr) :
+    sh == 5 ? filter.rk_svfm_lp(f, q, sl, run_sr) :
+    sh == 6 ? filter.rk_svfm_lpb(f, sl, run_sr) :
+    sh == 7 ? filter.rk_svfm_bs(f, q, run_sr) :
+    sh == 8 ? filter.rk_svfm_bp2(f, q, run_sr) :
+    sh == 9 ? filter.rk_svfm_st(f, q, gdb, run_sr) :
+    sh == 10 ? filter.rk_svfm_pultecls(min(f, fmax / 1.5), q, gdb, run_sr) :
+    sh == 11 ? filter.rk_svf_ap(f, q) :
+    sh == 12 ? filter.rk_svfm_analog_lowcut(min(f, fmax / 1.25), q, gdb, run_sr) :
+    sh == 13 ? this.qz_analog_highcut(f, gdb) :
+    sh == 14 ? filter.rk_svfm_eq(f, q * 10 ^ (abs(gdb) / 40), A, run_sr) :
+    sh == 15 ? this.qz_flat_tilt(f, gdb) :
+               this.qz_flat_gain(gdb);
+  ) :
+  sh == 0 ? filter.rk_svf_eq(f, q, A) :
+  sh == 1 ? filter.rk_svf_hp(f, q, sl) :
+  sh == 2 ? filter.rk_svf_hpb(f, sl) :
+  sh == 3 ? filter.rk_svf_ls(f, q, A) :
+  sh == 4 ? filter.rk_svf_hs(f, q, A) :
+  sh == 5 ? filter.rk_svf_lp(f, q, sl) :
+  sh == 6 ? filter.rk_svf_lpb(f, sl) :
+  sh == 7 ? filter.rk_svf_bs(f, q) :
+  sh == 8 ? filter.rk_svf_bp2(f, q) :                       // never rk_svf_bp: it passes a2 for a3
+  sh == 9 ? filter.rk_svf_st(f, q, gdb) :
+  sh == 10 ? filter.rk_svf_pultecls(min(f, fmax / 1.5), q, gdb) :
+  sh == 11 ? filter.rk_svf_ap(f, q) :
+  sh == 12 ? filter.rk_svf_analog_lowcut(min(f, fmax / 1.25), q, gdb) :
+  sh == 13 ? this.qz_analog_highcut(f, gdb) :
+  sh == 14 ? filter.rk_svf_eq(f, q * 10 ^ (abs(gdb) / 40), A) :   // Bell Prop Q: narrows as it boosts or cuts
+  sh == 15 ? this.qz_flat_tilt(f, gdb) :
+             this.qz_flat_gain(gdb);
+);
+
+/*
+ * Read the band's sliders; retarget only when something it depends on changed (exact compares: `!=` has a
+ * 0.00001 dead zone, wiki 1.11); a band that is off retargets only when its Mode changes. Sets p (process this
+ * band) and pl (placement) for @sample. Mode: 0 Off, 1 Bypassed, 2 On, 3 Dyn above, 4 Dyn below (3 and 4 play as
+ * On in release 1). byp_shape: set only on the face's display bank (qzg_retarget, @gfx), so a Bypassed band keeps its
+ * real shape there and the window can draw it as an outline (ReEQ's gfx bank does the same, 558-577); the audio bank
+ * never sets it (0), so its branches and the sound are exactly as before.
+ */
+function qz_band_apply(o, gs)
+  instance(filter, p, pl, fresh, c_mode, c_shape, c_f, c_g, c_q, c_sl, c_fmax, rgen, byp_shape)
+  local(mode, sh, f, g, q, sl, fmax, n0, op, live)
+(
+  mode = max(0, min(4, slider(o) | 0));
+  pl = max(0, min(4, slider(o + 1) | 0));
+  sh = max(0, min(16, slider(o + 2) | 0));
+  fmax = 0.49 * srate;
+  f = min(max(slider(o + 3), 10), fmax);
+  g = slider(o + 4) * gs;
+  q = max(slider(o + 5), 0.1);
+  sl = max(0, min(19, slider(o + 6) | 0));
+  live = mode >= 2 || (byp_shape && mode == 1);
+  (mode !== c_mode) || (live && ((sh !== c_shape) || (f !== c_f) || (g !== c_g) || (q !== c_q) ||
+  (sl !== c_sl) || (fmax !== c_fmax))) ? (
+    c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax;
+    rgen += 1;                             // a retarget count: the face redraws a curve row when it moves
+    n0 = filter.nlp;
+    op = filter.onepole;
+    !live ? filter.rk_svf_bypass() : this.qz_band_shape(sh, f, g, q, sl, fmax);
+    filter.nlp > n0 ? this.qz_fresh_stages(n0, filter.nlp);
+    filter.onepole && !op ? (               // a one-pole switching in starts with clean memory
+      filter.op0.Z0 = filter.op0.Z1 = 0;
+      filter.op1.Z0 = filter.op1.Z1 = 0;
+    );
+    fresh ? (                              // the first apply after an init lands at once
+      filter.rk_svf_set_to_target();
+      fresh = 0;
+    );
+  );
+  p = (mode >= 2) || (filter.iter_t < 1);
+);
+
+// ======================================================================================================================
+// THE AUDIO BANK'S SWITCHING (build step 3, spec §7; handoff Quezy_Build_Step3_Click_Free_2026-10-22.md). The display
+// bank keeps qz_band_apply (the face snaps it to its target); the audio bank calls qz_aud_init / qz_band_step /
+// qz_band_run instead, so no change of shape, slope, placement or Mode steps the sound:
+//   - a stage that comes into use starts flat with clean memory (qz_fresh_stages); a stage that leaves glides to flat
+//     over rk_svf's 30 ms and is dropped once it rests (rk_svf and ReEQ drop it at once: 100-2700x the tone's step);
+//   - the one-pole of an odd slope or the Low Channel (Analog) glides its coefficients over the same 30 ms and enters
+//     and leaves through flat (rk_svf: "TODO: need to interpolate one pole filter coefficients too!!");
+//   - what a coefficient glide carries badly crossfades over 30 ms into a partner object (xb) started clean and
+//     snapped on the new setting: switching the band On or Off (a glide from or to flat passes through narrow resonant
+//     filters: a +12 dB bell overshot 2.7 dB, a Low Channel +30 11.6), a placement change while it sounds (the partner
+//     then starts as a warm copy of the band), most shape swaps (qz_xf_shape) and a gain jump the glide overshoots on
+//     (qz_xf_gain: per shape, Q and direction, measured from the gain the band last rested at). The block after the
+//     fade copies the partner back into the band, so the steady path stays one object; a band switched Off hands back
+//     flat and stops.
+//   - the flat a band would glide to (qz_aud_bypass) has a self-consistent first stage (a1 = 1; rk_svf_bypass's a1 = 0
+//     ducked a high cut's passband 5-8 dB on the way); with On / Off crossfaded only a fresh load lands on it.
+// Measured (48 kHz): no switch steps (every case under 8x the tone's own step, most under 2x); the steady sound is
+// step 2's to rounding (qz_switch.py). A big gain jump on a narrow Tilt still overshoots either way (Q 6, -24 -> +24 dB
+// class: up to 19 dB, ReEQ's glide 41).
+// Bypassed plays as Off here (byp_shape is the display bank's alone).
+// ======================================================================================================================
+
+/*
+ * The audio bank's flat: rk_svf_bypass with the first stage's a1 = 1, the value g = k = 0 implies (the cascade stages
+ * already have it), so a stage gliding to flat passes through filters, not through a ducked passband.
+ */
+function qz_aud_bypass()
+  instance(filter)
+(
+  filter.nlp < 1 ? filter.nlp = 1;
+  filter.onepole = 0;
+  filter.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas1.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas2.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas3.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas4.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas5.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas6.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas7.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas8.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  filter.cas9.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+);
+
+// the stages n0 .. n1 that leave: each glides to flat (the band keeps running them until they rest)
+function qz_idle_stages(n0, n1)
+  instance(filter)
+(
+  n0 <= 0 && n1 > 0 ? filter.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 2 && n1 > 2 ? filter.cas1.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 4 && n1 > 4 ? filter.cas2.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 6 && n1 > 6 ? filter.cas3.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 8 && n1 > 8 ? filter.cas4.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 10 && n1 > 10 ? filter.cas5.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 12 && n1 > 12 ? filter.cas6.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 14 && n1 > 14 ? filter.cas7.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 16 && n1 > 16 ? filter.cas8.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+  n0 <= 18 && n1 > 18 ? filter.cas9.rk_svf_set_coeffs(0, 0, 1, 0, 0, 1, 0, 0);
+);
+
+function qz_stg_clear() instance(ic1eq0, ic2eq0, ic1eq1, ic2eq1) ( ic1eq0 = ic2eq0 = ic1eq1 = ic2eq1 = 0; );
+// every stage's and both one-poles' memory
+function qz_clear_mem()
+  instance(filter)
+(
+  filter.qz_stg_clear(); filter.cas1.qz_stg_clear(); filter.cas2.qz_stg_clear(); filter.cas3.qz_stg_clear();
+  filter.cas4.qz_stg_clear(); filter.cas5.qz_stg_clear(); filter.cas6.qz_stg_clear(); filter.cas7.qz_stg_clear();
+  filter.cas8.qz_stg_clear(); filter.cas9.qz_stg_clear();
+  filter.op0.Z0 = filter.op0.Z1 = filter.op1.Z0 = filter.op1.Z1 = 0;
+);
+function qz_stg_clear0() instance(ic1eq0, ic2eq0) ( ic1eq0 = ic2eq0 = 0; );
+function qz_stg_clear1() instance(ic1eq1, ic2eq1) ( ic1eq1 = ic2eq1 = 0; );
+// one channel's memory (0 = rk_svf_svf0's, 1 = rk_svf_svf1's), every stage and its one-pole
+function qz_clear_ch(c)
+  instance(filter)
+(
+  c == 0 ? (
+    filter.qz_stg_clear0(); filter.cas1.qz_stg_clear0(); filter.cas2.qz_stg_clear0(); filter.cas3.qz_stg_clear0();
+    filter.cas4.qz_stg_clear0(); filter.cas5.qz_stg_clear0(); filter.cas6.qz_stg_clear0(); filter.cas7.qz_stg_clear0();
+    filter.cas8.qz_stg_clear0(); filter.cas9.qz_stg_clear0(); filter.op0.Z0 = filter.op0.Z1 = 0;
+  ) : (
+    filter.qz_stg_clear1(); filter.cas1.qz_stg_clear1(); filter.cas2.qz_stg_clear1(); filter.cas3.qz_stg_clear1();
+    filter.cas4.qz_stg_clear1(); filter.cas5.qz_stg_clear1(); filter.cas6.qz_stg_clear1(); filter.cas7.qz_stg_clear1();
+    filter.cas8.qz_stg_clear1(); filter.cas9.qz_stg_clear1(); filter.op1.Z0 = filter.op1.Z1 = 0;
+  );
+);
+// Stereo -> Mid (to 1) or Side (to 2): both channels ran the same coefficients, so (by linearity) the mid's memory is
+// the mean of the left's and right's, the side's half their difference: the new channel starts exactly warm
+function qz_stg_ms(to)
+  instance(ic1eq0, ic2eq0, ic1eq1, ic2eq1)
+(
+  to == 1 ? ( ic1eq0 = (ic1eq0 + ic1eq1) * 0.5; ic2eq0 = (ic2eq0 + ic2eq1) * 0.5; )
+          : ( ic1eq1 = (ic1eq0 - ic1eq1) * 0.5; ic2eq1 = (ic2eq0 - ic2eq1) * 0.5; );
+);
+function qz_mix_ms(to)
+  instance(filter)
+(
+  filter.qz_stg_ms(to); filter.cas1.qz_stg_ms(to); filter.cas2.qz_stg_ms(to); filter.cas3.qz_stg_ms(to);
+  filter.cas4.qz_stg_ms(to); filter.cas5.qz_stg_ms(to); filter.cas6.qz_stg_ms(to); filter.cas7.qz_stg_ms(to);
+  filter.cas8.qz_stg_ms(to); filter.cas9.qz_stg_ms(to);
+  to == 1 ? ( filter.op0.Z0 = (filter.op0.Z0 + filter.op1.Z0) * 0.5; filter.op0.Z1 = (filter.op0.Z1 + filter.op1.Z1) * 0.5; )
+          : ( filter.op1.Z0 = (filter.op0.Z0 - filter.op1.Z0) * 0.5; filter.op1.Z1 = (filter.op0.Z1 - filter.op1.Z1) * 0.5; );
+);
+// what channel c of a band carries at placement r (qz_obj_route): 1 left, 2 right, 3 mid, 4 side, 0 nothing
+function qz_ch_sig(c, r) ( c == 0 ? (r == 0 || r == 3 ? 1 : r == 1 ? 3 : 0) : (r == 0 || r == 4 ? 2 : r == 2 ? 4 : 0); );
+// both one-poles' coefficients (the left and right channels share them)
+function qz_op_set(ob0, ob1, oa1)
+  instance(filter)
+(
+  filter.op0.B0 = filter.op1.B0 = ob0; filter.op0.B1 = filter.op1.B1 = ob1; filter.op0.A1 = filter.op1.A1 = oa1;
+);
+
+/*
+ * Retarget with the stage machinery (live 0 = everything glides to flat). nk = the stages running (filter.nlp stays
+ * nk while leaving stages glide out; n_drop = the count to drop to at rest, -1 none); the one-pole glides from where
+ * it is (or from flat with clean memory) to its new coefficients (or to flat: opw = 0), and keeps running (opk) until
+ * it gets there.
+ */
+function qz_aud_target(sh, f, g, q, sl, fmax, live)
+  instance(filter, nk, n_drop, opk, opw, op_i, op_sb0, op_sb1, op_sa1, op_tb0, op_tb1, op_ta1)
+  local(n_new, cb0, cb1, ca1)
+(
+  cb0 = filter.op0.B0; cb1 = filter.op0.B1; ca1 = filter.op0.A1;
+  filter.nlp = nk;
+  live ? this.qz_band_shape(sh, f, g, q, sl, fmax) : this.qz_aud_bypass();
+  n_new = filter.nlp;
+  n_new > nk ? this.qz_fresh_stages(nk, n_new);
+  n_new < nk ? ( this.qz_idle_stages(n_new, nk); filter.nlp = nk; n_drop = n_new; ) : ( nk = n_new; n_drop = -1; );
+  opw = filter.onepole;
+  opw ? ( op_tb0 = filter.op0.B0; op_tb1 = filter.op0.B1; op_ta1 = filter.op0.A1; ) : ( op_tb0 = 1; op_tb1 = 0; op_ta1 = 0; );
+  opk ? ( op_sb0 = cb0; op_sb1 = cb1; op_sa1 = ca1; ) : (
+    op_sb0 = 1; op_sb1 = 0; op_sa1 = 0;
+    filter.op0.Z0 = filter.op0.Z1 = filter.op1.Z0 = filter.op1.Z1 = 0;
+  );
+  this.qz_op_set(op_sb0, op_sb1, op_sa1);
+  opk = opk || opw;
+  filter.onepole = opk;
+  op_i = opk ? 0 : 1;
+);
+
+// at rest (the main stage's glide and the one-pole's done): drop the stages and a one-pole that glided out; 1 = at rest
+function qz_aud_rest()
+  instance(filter, nk, n_drop, opk, opw, op_i)
+(
+  (filter.nlp <= 0 || filter.iter_t >= 1) && op_i >= 1 ? (
+    n_drop >= 0 ? ( filter.nlp = nk = n_drop; n_drop = -1; );
+    opk && !opw ? ( opk = 0; filter.onepole = 0; );
+    1;
+  ) : 0;
+);
+
+// land on the target at once (a load, a rate change, a crossfade partner's start)
+function qz_aud_snap()
+  instance(filter, nk, n_drop, opk, opw, op_i, op_tb0, op_tb1, op_ta1)
+(
+  filter.rk_svf_set_to_target();
+  this.qz_op_set(op_tb0, op_tb1, op_ta1);
+  op_i = 1;
+  n_drop >= 0 ? ( filter.nlp = nk = n_drop; n_drop = -1; );
+  opk && !opw ? ( opk = 0; filter.onepole = 0; );
+);
+
+// one sample of the one-pole's glide and the SVF's own (used on the crossfade path; the steady path inlines it)
+function qz_obj_tick()
+  instance(filter, op_i, op_step, op_sb0, op_sb1, op_sa1, op_tb0, op_tb1, op_ta1)
+(
+  op_i < 1 ? (
+    op_i = min(1, op_i + op_step);
+    this.qz_op_set(op_sb0 + (op_tb0 - op_sb0) * op_i, op_sb1 + (op_tb1 - op_sb1) * op_i, op_sa1 + (op_ta1 - op_sa1) * op_i);
+  );
+  filter.rk_svf_tick();
+);
+// (i0, i1) through this object with placement r (the steady path's routing); the result in o0, o1
+function qz_obj_route(i0, i1, r)
+  instance(filter, o0, o1)
+  local(m, s)
+(
+  r == 1 || r == 2 ? (
+    m = (i0 + i1) * 0.5; s = (i0 - i1) * 0.5;
+    r == 1 ? m = filter.rk_svf_svf0(m) : s = filter.rk_svf_svf1(s);
+    o0 = m + s; o1 = m - s;
+  ) : (
+    o0 = r == 0 || r == 3 ? filter.rk_svf_svf0(i0) : i0;
+    o1 = r == 0 || r == 4 ? filter.rk_svf_svf1(i1) : i1;
+  );
+);
+
+// The crossfade's hand-back: the partner's whole state copied into the band through a scratch block (@block only):
+// 30 members per stage x 10, the one-poles 6 x 2, then the cascade's and the machinery's own.
+function qz_stg_save(mm)
+  instance(g, k, a1, a2, a3, m0, m1, m2, t_g, t_k, t_a1, t_a2, t_a3, t_m0, t_m1, t_m2,
+           s_g, s_k, s_a1, s_a2, s_a3, s_m0, s_m1, s_m2, iter_t, iter_step, ic1eq0, ic2eq0, ic1eq1, ic2eq1)
+(
+  mm[0] = g; mm[1] = k; mm[2] = a1; mm[3] = a2; mm[4] = a3; mm[5] = m0; mm[6] = m1; mm[7] = m2;
+  mm[8] = t_g; mm[9] = t_k; mm[10] = t_a1; mm[11] = t_a2; mm[12] = t_a3; mm[13] = t_m0; mm[14] = t_m1; mm[15] = t_m2;
+  mm[16] = s_g; mm[17] = s_k; mm[18] = s_a1; mm[19] = s_a2; mm[20] = s_a3; mm[21] = s_m0; mm[22] = s_m1; mm[23] = s_m2;
+  mm[24] = iter_t; mm[25] = iter_step; mm[26] = ic1eq0; mm[27] = ic2eq0; mm[28] = ic1eq1; mm[29] = ic2eq1;
+);
+function qz_stg_load(mm)
+  instance(g, k, a1, a2, a3, m0, m1, m2, t_g, t_k, t_a1, t_a2, t_a3, t_m0, t_m1, t_m2,
+           s_g, s_k, s_a1, s_a2, s_a3, s_m0, s_m1, s_m2, iter_t, iter_step, ic1eq0, ic2eq0, ic1eq1, ic2eq1)
+(
+  g = mm[0]; k = mm[1]; a1 = mm[2]; a2 = mm[3]; a3 = mm[4]; m0 = mm[5]; m1 = mm[6]; m2 = mm[7];
+  t_g = mm[8]; t_k = mm[9]; t_a1 = mm[10]; t_a2 = mm[11]; t_a3 = mm[12]; t_m0 = mm[13]; t_m1 = mm[14]; t_m2 = mm[15];
+  s_g = mm[16]; s_k = mm[17]; s_a1 = mm[18]; s_a2 = mm[19]; s_a3 = mm[20]; s_m0 = mm[21]; s_m1 = mm[22]; s_m2 = mm[23];
+  iter_t = mm[24]; iter_step = mm[25]; ic1eq0 = mm[26]; ic2eq0 = mm[27]; ic1eq1 = mm[28]; ic2eq1 = mm[29];
+);
+function qz_op_save(mm) instance(B0, B1, A1, Z0, Z1, passtype) ( mm[0] = B0; mm[1] = B1; mm[2] = A1; mm[3] = Z0; mm[4] = Z1; mm[5] = passtype; );
+function qz_op_load(mm) instance(B0, B1, A1, Z0, Z1, passtype) ( B0 = mm[0]; B1 = mm[1]; A1 = mm[2]; Z0 = mm[3]; Z1 = mm[4]; passtype = mm[5]; );
+function qz_obj_save(mm)
+  instance(filter, nk, n_drop, opk, opw, op_i, op_sb0, op_sb1, op_sa1, op_tb0, op_tb1, op_ta1)
+(
+  filter.qz_stg_save(mm); filter.cas1.qz_stg_save(mm + 30); filter.cas2.qz_stg_save(mm + 60); filter.cas3.qz_stg_save(mm + 90);
+  filter.cas4.qz_stg_save(mm + 120); filter.cas5.qz_stg_save(mm + 150); filter.cas6.qz_stg_save(mm + 180);
+  filter.cas7.qz_stg_save(mm + 210); filter.cas8.qz_stg_save(mm + 240); filter.cas9.qz_stg_save(mm + 270);
+  filter.op0.qz_op_save(mm + 300); filter.op1.qz_op_save(mm + 306);
+  mm[312] = filter.nlp; mm[313] = filter.onepole; mm[314] = filter.cutoff;
+  mm[315] = nk; mm[316] = n_drop; mm[317] = opk; mm[318] = opw; mm[319] = op_i;
+  mm[320] = op_sb0; mm[321] = op_sb1; mm[322] = op_sa1; mm[323] = op_tb0; mm[324] = op_tb1; mm[325] = op_ta1;
+);
+function qz_obj_load(mm)
+  instance(filter, nk, n_drop, opk, opw, op_i, op_sb0, op_sb1, op_sa1, op_tb0, op_tb1, op_ta1)
+(
+  filter.qz_stg_load(mm); filter.cas1.qz_stg_load(mm + 30); filter.cas2.qz_stg_load(mm + 60); filter.cas3.qz_stg_load(mm + 90);
+  filter.cas4.qz_stg_load(mm + 120); filter.cas5.qz_stg_load(mm + 150); filter.cas6.qz_stg_load(mm + 180);
+  filter.cas7.qz_stg_load(mm + 210); filter.cas8.qz_stg_load(mm + 240); filter.cas9.qz_stg_load(mm + 270);
+  filter.op0.qz_op_load(mm + 300); filter.op1.qz_op_load(mm + 306);
+  filter.nlp = mm[312]; filter.onepole = mm[313]; filter.cutoff = mm[314];
+  nk = mm[315]; n_drop = mm[316]; opk = mm[317]; opw = mm[318]; op_i = mm[319];
+  op_sb0 = mm[320]; op_sb1 = mm[321]; op_sa1 = mm[322]; op_tb0 = mm[323]; op_tb1 = mm[324]; op_ta1 = mm[325];
+);
+QZ_XSCR_N = 326;                         // the scratch block's size; the host allocates it (qz_xscr) from freemem
+
+/*
+ * An audio-bank band (and its partner): qz_band_init plus the machinery's state. @init, and @block on a rate change.
+ */
+function qz_aud_init()
+  instance(xb, nk, n_drop, opk, opw, op_i, op_step, xf, xc, xc_step, c_pl, pl, r_g)
+(
+  this.qz_band_init();
+  nk = 1; n_drop = -1; opk = opw = 0; op_i = 1; op_step = 1 / (0.030 * max(srate, 8000)); r_g = 0;
+  xf = 0; xc = 1; xc_step = 1 / (0.030 * max(srate, 8000)); c_pl = -1; pl = 0;
+  xb.qz_band_init();
+  xb.nk = 1; xb.n_drop = -1; xb.opk = xb.opw = 0; xb.op_i = 1; xb.op_step = op_step;
+);
+
+// Shape swaps the coefficient glide carries better than a crossfade (measured over all 272 pairs at three settings,
+// a level-deviation score): bit b of the mask for shape a set = glide a -> b; every other swap crossfades.
+function qz_glide_mask(a) (
+  a == 0 ? 16898 : a == 1 ? 49553 : a == 2 ? 32768 : a == 3 ? 41488 : a == 4 ? 1034 : a == 7 ? 2 : a == 8 ? 514 :
+  a == 9 ? 17665 : a == 10 ? 8720 : a == 13 ? 1032 : a == 14 ? 515 : a == 15 ? 14 : a == 16 ? 512 : 0;
+);
+function qz_xf_shape(a, b) ( a === b ? 0 : ((qz_glide_mask(a) >> b) & 1) ? 0 : 1; );
+// A gain change the glide overshoots on crossfades instead. The same shape (g0 = the gain the band last rested at, so a
+// ramp of small steps counts as the jump it adds up to; q = the narrower of the old and new Q): the largest jump each
+// shape glides within about half a dB, measured glide-only against crossfade-only at 200 / 1k / 3 kHz, Q 0.71-10, from
+// -24 to +24 dB (handoff Quezy_Build_Step3_Click_Free_2026-10-22.md):
+//   - the Low and High Shelf: 18 / 24 dB at Q 1 and under, then 18 * Q^-1.6 down to 2 dB (the glide's overshoot grows
+//     with Q: a 6 dB jump at Q 10 4.7 dB over, crossfaded 0.9); the Pultec and Low Channel 18, the High Channel 24 at
+//     any Q (the glide 1.0-1.8 dB over at 24; crossfaded 0);
+//   - the Peak 24 below Q 2 (a -30 -> +30 jump at Q 1 glides 2.1 dB over, crossfades 0.1), else never (a crossfade's
+//     partner starts cold and rings on a narrow bell: +30 at Q 6 glided 0.7, crossfaded 2.7); the Bell Prop Q 6 below
+//     Q 3, else never (both under 2.7 dB there);
+//   - the Tilt 6 below Q 3; from Q 3 it glides between two cuts and down a boost or up from +12 (the cold partner rings
+//     there: -12 -> -24 at Q 3 glided 4.6, crossfaded 12.2), else crossfades past 3 dB. Its worst case is the best per
+//     case's at every Q measured from 3 up (Q 6: 19.2 dB against all-glide's 41.3, step 2's and ReEQ's way); a big
+//     jump on a narrow Tilt overshoots either way.
+// Two shapes: a swap glides only while both gains stay within QZ_XF_SWAP dB: over all 272 swaps at 100 Hz-3 kHz the
+// glide's worst overshoot was 0.68 dB at 3 dB, 1.45 at 6, 3.4 at 12 (the review: a Pultec -30 -> Tilt glided +11.9 dB
+// over, a Band Pass -> Tilt +30 +13.8).
+QZ_XF_SWAP = 3;
+function qz_xf_tilt(g0, g1, q) (
+  q < 3 ? abs(g1 - g0) > 6 :
+  (g0 < 0 && g1 < 0) || (g0 > 0 && g1 > 0 && (g1 < g0 || g0 >= 12)) ? 0 : abs(g1 - g0) > 3;
+);
+function qz_xf_gain(a, b, g0, g1, q) (
+  a === b ? (
+    a == 9 ? qz_xf_tilt(g0, g1, q) :
+    abs(g1 - g0) > (a == 3 || a == 4 ? max(2, min(a == 3 ? 18 : 24, 18 * q ^ -1.6)) : a == 10 || a == 12 ? 18 :
+                    a == 13 ? 24 : a == 0 ? (q < 2 ? 24 : 1000) : a == 14 ? (q < 3 ? 6 : 1000) : 1000);
+  ) : max(abs(g0), abs(g1)) > QZ_XF_SWAP;
+);
+
+/*
+ * The audio bank's @block, every block (replaces qz_band_apply there): read the sliders, glide value changes through
+ * the stage machinery, crossfade structure changes, take the partner back after a fade. Sets p and pl for @sample.
+ * A placement changes at once only while the band rests flat; while it fades out to Off the change waits for rest.
+ * During a crossfade the partner takes value changes; a structure change waits for the hand-back, then is compared
+ * against the new recipe (the listen's rule).
+ */
+function qz_band_step(o, gs)
+  instance(filter, xb, p, pl, fresh, c_mode, c_shape, c_f, c_g, c_q, c_sl, c_fmax, c_pl, xf, xc, xpl, sp, op_i, r_g)
+  local(mode, npl, sh, f, g, q, sl, fmax, live, rest, flat, vchg, sg, xfade)
+(
+  mode = max(0, min(4, slider(o) | 0));
+  npl = max(0, min(4, slider(o + 1) | 0));
+  sh = max(0, min(16, slider(o + 2) | 0));
+  fmax = 0.49 * srate;
+  f = min(max(slider(o + 3), 10), fmax);
+  g = slider(o + 4) * gs;
+  q = max(slider(o + 5), 0.1);
+  sl = max(0, min(19, slider(o + 6) | 0));
+  live = mode >= 2;
+  xf && xc >= 1 ? ( xb.qz_obj_save(qz_xscr); this.qz_obj_load(qz_xscr); pl = xpl; xf = 0; );
+  rest = xf ? 0 : this.qz_aud_rest();
+  rest ? r_g = c_g;                      // the gain the band rests at: a gain jump is measured from here (qz_xf_gain)
+  flat = rest && c_mode < 2;
+  vchg = (mode !== c_mode) || (live && ((sh !== c_shape) || (f !== c_f) || (g !== c_g) || (q !== c_q) ||
+         (sl !== c_sl) || (fmax !== c_fmax)));
+  // crossfade: a placement change while the band sounds; switching it On or Off (Bypassed is Off here: a glide from or
+  // to flat passes through narrow resonant filters, a +12 dB bell overshot 2.7 dB, a Low Channel +30 11.6 dB); and,
+  // while it stays On, a shape swap outside the glide table or a gain the glide overshoots on (qz_xf_gain)
+  sg = live && vchg && c_mode >= 2 && (qz_xf_shape(c_shape, sh) ||
+       qz_xf_gain(c_shape, sh, c_shape === sh ? r_g : c_g, g, max(q, c_q)));
+  xfade = !fresh && ((live && npl !== c_pl && !flat) || (live !== (c_mode >= 2)) || sg);
+  xf ? (
+    vchg && !xfade && npl === c_pl ? (
+      c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax;
+      xb.qz_aud_target(sh, f, g, q, sl, fmax, live);
+    );
+  ) : xfade && live && c_mode >= 2 && !sg ? (
+    // a placement change alone: the partner starts as a copy of the band (a cold partner rang on a narrow band: a Tilt
+    // 200 Hz Q 10 +12 moved Stereo -> Left 11.4 dB over), Stereo -> Mid / Side (the face's Split) mixes the memory
+    // over exactly, any other channel whose signal changes starts clean, and a value change in the same block glides
+    this.qz_obj_save(qz_xscr); xb.qz_obj_load(qz_xscr);
+    c_pl == 0 && (npl == 1 || npl == 2) ? xb.qz_mix_ms(npl) : (
+      qz_ch_sig(0, c_pl) !== qz_ch_sig(0, npl) ? xb.qz_clear_ch(0);
+      qz_ch_sig(1, c_pl) !== qz_ch_sig(1, npl) ? xb.qz_clear_ch(1);
+    );
+    vchg ? xb.qz_aud_target(sh, f, g, q, sl, fmax, live);
+    xpl = npl; xc = 0; xf = 1;
+    c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax; c_pl = npl;
+  ) : xfade ? (
+    xb.qz_aud_target(sh, f, g, q, sl, fmax, live);
+    xb.qz_fresh_stages(0, 20); xb.qz_clear_mem(); xb.qz_aud_snap();
+    xpl = npl; xc = 0; xf = 1; r_g = g;  // the partner starts on the new gain
+    c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax; c_pl = npl;
+  ) : (
+    npl !== c_pl && (flat || fresh) ? ( pl = c_pl = npl; );
+    vchg ? (
+      c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax;
+      this.qz_aud_target(sh, f, g, q, sl, fmax, live);
+    );
+  );
+  fresh ? ( this.qz_aud_snap(); pl = c_pl = npl; r_g = c_g; fresh = 0; );
+  rest = xf ? 0 : this.qz_aud_rest();
+  p = live || !rest || xf;
+  sp = xf || op_i < 1;                   // the slow path (a crossfade or a one-pole glide); @sample clears it when done
+);
+
+/*
+ * Process one sample through the band in place (spl0 = left, spl1 = right), ReEQ's placement: Stereo both channels;
+ * Mid / Side encode, filter one side of the pair, decode; Left / Right one channel. The steady path is inline (one
+ * object, the one-pole's glide when it runs); a crossfade runs the band and its partner on the same input.
+ */
+function qz_band_run()
+  instance(filter, xb, p, pl, sp, xf, xc, xc_step, xpl, o0, o1, op_i)
+  local(m, s)
+(
+  p ? (
+    sp ? (                                // the slow path: a crossfade, or the one-pole's glide (sp off once it lands)
+      xf ? (
+        xc < 1 ? ( this.qz_obj_tick(); this.qz_obj_route(spl0, spl1, pl); );
+        xb.qz_obj_tick(); xb.qz_obj_route(spl0, spl1, xpl);
+        xc < 1 ? ( spl0 = o0 + (xb.o0 - o0) * xc; spl1 = o1 + (xb.o1 - o1) * xc; xc = min(1, xc + xc_step); )
+               : ( spl0 = xb.o0; spl1 = xb.o1; );
+      ) : (
+        this.qz_obj_tick();               // the one-pole's step and the SVF's tick
+        op_i >= 1 ? sp = 0;
+        this.qz_obj_route(spl0, spl1, pl);
+        spl0 = o0; spl1 = o1;
+      );
+    ) : (                                 // the steady path: one test more than step 2's, the routing inline
+      filter.rk_svf_tick();
+      pl == 1 || pl == 2 ? (
+        m = (spl0 + spl1) * 0.5;
+        s = (spl0 - spl1) * 0.5;
+        pl == 1 ? m = filter.rk_svf_svf0(m) : s = filter.rk_svf_svf1(s);
+        spl0 = m + s;
+        spl1 = m - s;
+      ) : (
+        pl == 0 || pl == 3 ? spl0 = filter.rk_svf_svf0(spl0);
+        pl == 0 || pl == 4 ? spl1 = filter.rk_svf_svf1(spl1);
+      );
+    );
+  );
+);
+
+// ======================================================================================================================
+// LISTEN (build step 4b; ReEQ parity in the recipe, Quezy's own in the routing and the click-free switching).
+// The host owns two audio-only band objects, a_lsn1 and a_lsn2 (init with the bank; never touched from @gfx), and
+// crossfades between them when the listened structure changes. A listen plays the pre-EQ input through:
+//   Peak / Bell Prop Q   rk_svf_listen_eq over the band's window (2 x its bandwidth), the bell at Gain x Scale
+//                        (ReEQ ignores Scale; this plays what the band plays); a Bypassed band's bell is flat
+//   Band Pass            rk_svf_listen_bs over 1 x its bandwidth (a notch at f between the band-pass's edges)
+//   Notch                a band-pass at f with the notch's Q (what the notch removes)
+//   Low / High Cut       the opposite pass at the band's slope (what the cut removes); the analog cuts at 24 dB/oct
+//   Low Shelf / Pultec   a 24 dB/oct low-pass at f x 2^(bw/2); High Shelf: a 24 dB/oct high-pass at f / 2^(bw/2)
+//   Tilt, All Pass, Flat Tilt, Flat Gain   the whole input
+//   free listen          rk_svf_listen_eq between f x e^(-+LF w), flat bell (ReEQ's free listen), always Stereo
+// Every frequency is clamped to 10 .. 0.49 x srate first: rk_svf's own caps (20000 / 44000) sit above Nyquist at
+// low rates, and a filter tuned past Nyquist blows up. QZ_DECRAMP: the same recipe through rk_svf_match's versions
+// (rk_svfm_listen_eq / _bs keep rk_svf's caps and stage layout), so a listen plays exactly the band's own filters.
+// ======================================================================================================================
+
+QZ_LF = log(2205);                     // the face's frequency axis (10 Hz .. 22050 Hz), for the free listen's window
+
+function qz_lclamp(f, fmax) ( max(10, min(fmax, f)); );
+
+// The listened range's edges, for drawing (pure: locals only, so @gfx and @block may both call them).
+// sh -1 = the free listen (w = half-width as a fraction of the axis).
+function qz_listen_lo(sh, f, q, gdb, w) local(q2) (
+  sh < 0 ? f * exp(-QZ_LF * w) :
+  sh == 0 || sh == 14 ? ( q2 = sh == 14 ? q * 10 ^ (abs(gdb) / 40) : q; f / 2 ^ rk_svf_qtobw(max(0.1, q2)) ) :
+  sh == 7 || sh == 8 || sh == 4 ? f / 2 ^ (rk_svf_qtobw(max(0.1, q)) / 2) :
+  sh == 5 || sh == 6 || sh == 13 ? f : 10;
+);
+function qz_listen_hi(sh, f, q, gdb, w) local(q2) (
+  sh < 0 ? f * exp(QZ_LF * w) :
+  sh == 0 || sh == 14 ? ( q2 = sh == 14 ? q * 10 ^ (abs(gdb) / 40) : q; f * 2 ^ rk_svf_qtobw(max(0.1, q2)) ) :
+  sh == 7 || sh == 8 || sh == 3 || sh == 10 ? f * 2 ^ (rk_svf_qtobw(max(0.1, q)) / 2) :
+  sh == 1 || sh == 2 || sh == 12 ? f : 22050;
+);
+
+// Set the listen recipe on this object (sh -1 = free listen; f, q, gdb = Gain x Scale, sl = slope index, on = the band
+// is On, w = the free listen's half-width).
+function qz_listen_shape(sh, f, q, gdb, sl, on, w, fmax)
+  instance(filter, run_sr)
+  local(q2, lo, hi, fc)
+(
+  fc = qz_lclamp(f, fmax);
+  q = max(0.1, q);
+  QZ_DECRAMP ? (                         // matched like the bands (build step 1b): a listen plays the band's own filters
+    sh < 0 ? (
+      filter.rk_svfm_listen_eq(qz_lclamp(f * exp(-QZ_LF * w), fmax), qz_lclamp(f * exp(QZ_LF * w), fmax), fc, 0.7071, 1, run_sr);
+    ) : sh == 0 || sh == 14 ? (
+      q2 = sh == 14 ? q * 10 ^ (abs(gdb) / 40) : q;
+      lo = qz_lclamp(qz_listen_lo(sh, f, q, gdb, w), fmax); hi = qz_lclamp(qz_listen_hi(sh, f, q, gdb, w), fmax);
+      filter.rk_svfm_listen_eq(lo, hi, fc, q2, on ? 10 ^ (gdb / 40) : 1, run_sr);
+    ) : sh == 8 ? (
+      lo = qz_lclamp(qz_listen_lo(8, f, q, 0, 0), fmax); hi = qz_lclamp(qz_listen_hi(8, f, q, 0, 0), fmax);
+      filter.rk_svfm_listen_bs(lo, hi, fc, q, run_sr);
+    ) :
+    sh == 7 ? filter.rk_svfm_bp2(fc, q, run_sr) :
+    sh == 1 ? filter.rk_svfm_lp(fc, q, sl, run_sr) :
+    sh == 2 ? filter.rk_svfm_lpb(fc, sl, run_sr) :
+    sh == 5 ? filter.rk_svfm_hp(fc, q, sl, run_sr) :
+    sh == 6 ? filter.rk_svfm_hpb(fc, sl, run_sr) :
+    sh == 12 ? filter.rk_svfm_lp(fc, 0.701, 3, run_sr) :
+    sh == 13 ? filter.rk_svfm_hp(fc, 0.701, 3, run_sr) :
+    sh == 3 || sh == 10 ? filter.rk_svfm_lpb(qz_lclamp(qz_listen_hi(sh, f, q, 0, 0), fmax), 3, run_sr) :
+    sh == 4 ? filter.rk_svfm_hpb(qz_lclamp(qz_listen_lo(4, f, q, 0, 0), fmax), 3, run_sr) :
+    filter.rk_svf_bypass();
+  ) :
+  sh < 0 ? (
+    filter.rk_svf_listen_eq(qz_lclamp(f * exp(-QZ_LF * w), fmax), qz_lclamp(f * exp(QZ_LF * w), fmax), fc, 0.7071, 1);
+  ) : sh == 0 || sh == 14 ? (
+    q2 = sh == 14 ? q * 10 ^ (abs(gdb) / 40) : q;
+    lo = qz_lclamp(qz_listen_lo(sh, f, q, gdb, w), fmax); hi = qz_lclamp(qz_listen_hi(sh, f, q, gdb, w), fmax);
+    filter.rk_svf_listen_eq(lo, hi, fc, q2, on ? 10 ^ (gdb / 40) : 1);
+  ) : sh == 8 ? (
+    lo = qz_lclamp(qz_listen_lo(8, f, q, 0, 0), fmax); hi = qz_lclamp(qz_listen_hi(8, f, q, 0, 0), fmax);
+    filter.rk_svf_listen_bs(lo, hi, fc, q);
+  ) :
+  sh == 7 ? filter.rk_svf_bp2(fc, q) :
+  sh == 1 ? filter.rk_svf_lp(fc, q, sl) :
+  sh == 2 ? filter.rk_svf_lpb(fc, sl) :
+  sh == 5 ? filter.rk_svf_hp(fc, q, sl) :
+  sh == 6 ? filter.rk_svf_hpb(fc, sl) :
+  sh == 12 ? filter.rk_svf_lp(fc, 0.701, 3) :
+  sh == 13 ? filter.rk_svf_hp(fc, 0.701, 3) :
+  sh == 3 || sh == 10 ? filter.rk_svf_lpb(qz_lclamp(qz_listen_hi(sh, f, q, 0, 0), fmax), 3) :
+  sh == 4 ? filter.rk_svf_hpb(qz_lclamp(qz_listen_lo(4, f, q, 0, 0), fmax), 3) :
+  filter.rk_svf_bypass();
+);
+
+// Start this object clean on its current target: every stage restarted from flat with cleared memory, the one-poles'
+// memory cleared, then snapped onto the target (no glide in, no old state).
+function qz_listen_fresh()
+  instance(filter, op_i, op_step)
+(
+  this.qz_fresh_stages(0, 20);
+  filter.op0.Z0 = filter.op0.Z1 = 0;
+  filter.op1.Z0 = filter.op1.Z1 = 0;
+  filter.rk_svf_set_to_target();
+  op_i = 1; op_step = 1 / (0.030 * max(srate, 8000));
+);
+
+// The same structure with new values (build step 3): the stages glide as before, and the one-pole of an odd slope now
+// glides over the same 30 ms instead of stepping (a structure's slope is in its key, so the one-pole is there or not
+// for its whole life).
+function qz_listen_glide(sh, f, q, gdb, sl, on, w, fmax)
+  instance(filter, op_i, op_sb0, op_sb1, op_sa1, op_tb0, op_tb1, op_ta1)
+  local(cb0, cb1, ca1)
+(
+  cb0 = filter.op0.B0; cb1 = filter.op0.B1; ca1 = filter.op0.A1;
+  this.qz_listen_shape(sh, f, q, gdb, sl, on, w, fmax);
+  filter.onepole ? (
+    op_tb0 = filter.op0.B0; op_tb1 = filter.op0.B1; op_ta1 = filter.op0.A1;
+    op_sb0 = cb0; op_sb1 = cb1; op_sa1 = ca1;
+    this.qz_op_set(cb0, cb1, ca1);
+    op_i = 0;
+  );
+);
+
+// Run one sample of the listen on the input copy (i0, i1) with ReEQ's placement routing: Stereo both channels; Mid the
+// mid alone (L = R); Side the side alone (L = s, R = -s); Left / Right that channel alone. Result in o0, o1.
+function qz_listen_run(i0, i1, pl)
+  instance(filter, o0, o1, op_i, op_step, op_sb0, op_sb1, op_sa1, op_tb0, op_tb1, op_ta1)
+  local(m)
+(
+  op_i < 1 ? (
+    op_i = min(1, op_i + op_step);
+    this.qz_op_set(op_sb0 + (op_tb0 - op_sb0) * op_i, op_sb1 + (op_tb1 - op_sb1) * op_i, op_sa1 + (op_ta1 - op_sa1) * op_i);
+  );
+  filter.rk_svf_tick();
+  pl == 1 ? ( m = filter.rk_svf_svf0((i0 + i1) * 0.5); o0 = m; o1 = m; ) :
+  pl == 2 ? ( m = filter.rk_svf_svf1((i0 - i1) * 0.5); o0 = m; o1 = -m; ) :
+  pl == 3 ? ( o0 = filter.rk_svf_svf0(i0); o1 = 0; ) :
+  pl == 4 ? ( o0 = 0; o1 = filter.rk_svf_svf1(i1); ) :
+  ( o0 = filter.rk_svf_svf0(i0); o1 = filter.rk_svf_svf1(i1); );
+);

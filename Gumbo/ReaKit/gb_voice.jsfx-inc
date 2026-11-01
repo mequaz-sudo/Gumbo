@@ -1,0 +1,513 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_voice.jsfx-inc -- Gumbo: MIDI in, voices out. Runs on the audio thread only: gb_midi_block() and
+// gb_voices_block() from @block, gb_render() from @sample. Reads the region / sample tables gb_sfz + gb_load fill,
+// and only while gb_ready is 1 AND this load (gb_load_gen) was adopted by @block (gb_on_ready cleared the voices).
+// Rules: .docs/refs/SFZ_As_Gumbo_Reads_It_2026-10-30.md. Modelled on Swing's voices (launch, 4-point interpolation
+// Swing_ReaKit.jsfx:7253-7293, steal-to-fade slots rk_swing_core_p4:43-83), written fresh: no Swing code shared.
+//   * a note-on scans every region (key, velocity, random, CC gates, keyswitch, round robin) and starts a voice for
+//     each match; group/off_by chokes; polyphony and note_polyphony limits; *silence regions only choke
+//   * envelope: delay, attack (linear), hold, decay and release (exponential to -60 dB in the given time), sustain
+//   * loops: loop_continuous loops through the release, loop_sustain until note-off; one_shot ignores note-off
+//   * sustain pedal (CC64): held voices wait for the pedal; trigger=release regions fire on note-off or pedal-up at the
+//     note-on's velocity, quieter by rt_decay dB per second held; release_key ignores the pedal
+//   * pitch bend +-2 semitones; CC7 / CC11 scale the output; CC120 cuts, CC123 releases everything
+// Timing: note-ons, note-offs and pedal-ups land on their own sample (midirecv's offset); other CCs at the start of
+// their block; CC gates are checked at note-on.
+
+@init
+GB_VOI = 1600000; GB_VS = 40;          // 68 slots x 40 = 2720 cells, clear of GB_NT
+GB_MAXV = 64;                        // playing voices
+GB_FADES = 4;                        // extra slots a stolen voice fades out in
+GB_NT = 1610000;                     // per note: +0 held, +128 velocity, +256 note-on time, +384 waiting for pedal-up
+gb_cc = 1611000;                     // 128 controller values
+GBV_ON = 0; GBV_REG = 1; GBV_NOTE = 2; GBV_POS = 3; GBV_SEMI = 4; GBV_RATIO = 5; GBV_INC = 6; GBV_GL = 7; GBV_GR = 8;
+GBV_ST = 9; GBV_ENV = 10; GBV_CNT = 11; GBV_AINC = 12; GBV_DCOEF = 13; GBV_SUSL = 14; GBV_RCOEF = 15; GBV_FCOEF = 16;
+GBV_RELD = 17; GBV_PEDAL = 18; GBV_PTR = 19; GBV_NCH = 20; GBV_LAST = 21; GBV_LMODE = 22; GBV_LS = 23; GBV_LE = 24;
+GBV_AGE = 25; GBV_DLY = 26; GBV_GROUP = 27; GBV_OFFBY = 28; GBV_HOLDN = 29; GBV_OFFMODE = 30; GBV_TRIG = 31;
+GBV_RELIN = 32;                      // > 0: release this many samples (+1) into the block (a note-off with an offset)
+// format 2, live controllers: the voice's level before them, its region pan, the left/right gains they aim at (the
+// render glides GL/GR there, so a moving controller never clicks), their pitch in cents, and how many it has
+GBV_BLIN = 33; GBV_BPAN = 34; GBV_TGL = 35; GBV_TGR = 36; GBV_MCENT = 37; GBV_MODS = 38;
+GBV_GLS = 39;                        // glide: semitones still to slide (0 = at pitch); the last cell of GB_VS
+GB_MOD_GLIDE = 0.004;                // per sample: about 5 ms at 48 kHz
+GB_ST_ATT = 1; GB_ST_HOLD = 2; GB_ST_DEC = 3; GB_ST_SUS = 4; GB_ST_REL = 5; GB_ST_FADE = 6;
+GB_QUIET_T = 0.0001;                 // envelope level a releasing voice ends at (-80 dB)
+gb_vhi = 0; gb_age = 0; gb_t = 0; gb_bend = 0; gb_bend_last = 0; gb_held_n = 0; gb_gen_seen = -1;
+// the SETTINGS page and the SOUND page's GLIDE / PAN, set by the host each @block from its sliders: voices at most,
+// pitch-bend range in semitones, glide time in seconds (0 = off), mono (one note at a time), the output pan -100..100
+gb_vmax = GB_MAXV; gb_bend_rng = 2; gb_glide = 0; gb_mono = 0; gb_pan = 0;
+gb_glide_last = -1; gb_launch_gl = 0; gb_pl = gb_pr = gb_pl_s = gb_pr_s = 1;
+// the face's CONTROLS page turning a knob: controller gb_ui_cc_n to gb_ui_cc_v, applied once per gb_ui_cc_seq
+gb_ui_cc_seq = gb_ui_cc_done = 0; gb_ui_cc_n = 1; gb_ui_cc_v = 0;
+// the face's pitch-bend wheel: gb_ui_bend_v (0..16383, 8192 centre), applied once per gb_ui_bend_seq (value first, the
+// counter last), as a MIDI bend would be (gb_bend_in)
+gb_ui_bend_seq = gb_ui_bend_done = 0; gb_ui_bend_v = 8192;
+gb_cc7 = 127; gb_cc11 = 127; gb_gs = 1;
+// the face's controls, set by the host each @block from its sliders (never through @slider: wiki 00-rules, a face
+// change must reach the sound by itself): TUNE in semitones, RELEASE as a factor, VELOCITY 0..1
+gb_tune_st = 0; gb_relx = 1; gb_vsens = 1;
+// TONE -1..1 (0 = flat; a tilt in gb_eq), DRIVE 0..1, ATTACK seconds added, WIDTH 0..2 (1 = as recorded); gb_fx_block turns them into
+// per-block coefficients (no transcendentals in @sample)
+gb_tone = 0; gb_drive = 0; gb_att_add = 0; gb_width = 1; gb_drv_post = 0; gbx_pos_s = 0;
+gbx_drv_s = 0; gbx_w_s = 1;
+// the face's display reads these (written only by gb_launch, cleared by each new load in gb_on_ready)
+gb_last_reg = -1; gb_last_note = -1; gb_last_vel = 0; gb_last_gen = 0;
+gb_kb_note = -1; gb_kb_cur = -1;     // the face's keyboard: the note the mouse holds, and the one the audio plays
+gb_kb_vel = 100;                     // its velocity (the keyboard 100; a drum pad by where it is struck)
+
+function gb_coef60(sec) ( exp(-6.907755 / (max(sec, 0.0005) * srate)) );   // reach -60 dB in sec seconds
+// decay, release and off_time as sfizz runs them (ADSREnvelope.cpp secondsToExpRate, 1.2.3): 9 time constants
+// (-78 dB) over the given time, measured equal against sfizz_render (.dev_tests/gumbo_vs_sfizz.py)
+function gb_coef_sfz(sec) ( exp(-9 / (max(sec, 0.0005) * srate)) );
+
+// a voice's playback rate: its own semitones + pitch bend + TUNE + live controllers (cents) + glide still to go
+function gb_voice_inc(v) (
+  v[GBV_INC] = 2 ^ ((v[GBV_SEMI] + gb_bend + gb_tune_st + v[GBV_MCENT] * 0.01 + v[GBV_GLS]) / 12) * v[GBV_RATIO];
+);
+
+// ── format 2: live controllers (types in gumbo_sfz.lua's header) ──
+// a controller curve at x 0..1: sfizz's built-ins 0..6, else the file's own (GB_CCVMAP), else straight
+function gb_curve(idx, x) local(t, f, i) (
+  x = max(0, min(1, x));
+  idx == 1 ? -1 + 2 * x : idx == 2 ? 1 - x : idx == 3 ? 1 - 2 * x : idx == 4 ? x * x : idx == 5 ? sqrt(x)
+  : idx == 6 ? sqrt(1 - x)
+  : idx >= 7 && idx <= 255 && GB_CCVMAP[idx | 0] > 0 ? (
+    t = GB_CCV + (GB_CCVMAP[idx | 0] - 1) * 128; f = x * 127; i = f | 0;
+    i >= 127 ? t[127] : t[i] + (t[i + 1] - t[i]) * (f - i);
+  ) : x;
+);
+// a crossfade's gain at value t between lo and hi (in rises 0 -> 1, out falls 1 -> 0); power curve unless straight
+function gb_xf(t, lo, hi, out, straight) local(p) (
+  p = hi > lo ? max(0, min(1, (t - lo) / (hi - lo))) : t >= hi;
+  out ? p = 1 - p;
+  straight ? p : sqrt(p);
+);
+// the note-time part (velocity and key crossfades), as one factor for the voice's level at its start
+function gb_mod_note(ri, n, vel) local(m, k, t, g) (
+  g = 1; k = 0;
+  loop((GB_REG + ri * GB_RS)[GBR_NMOD],
+    m = GB_MOD + ri * GB_MODS + k * 4; t = m[0] % 100;
+    t == 7 || t == 8 ? g *= gb_xf(vel, m[2], m[3], t == 8, m[0] >= 100)
+    : t == 9 || t == 10 ? g *= gb_xf(n, m[2], m[3], t == 10, m[0] >= 100);
+    k += 1;
+  );
+  g;
+);
+// the live part (controllers), for voice v: its target gains and pitch from the controllers' values now
+function gb_voice_mod(v) local(ri, m, k, t, x, c, g, db, pan, cent) (
+  ri = v[GBV_REG]; g = 1; db = 0; pan = v[GBV_BPAN]; cent = 0; k = 0;
+  loop((GB_REG + ri * GB_RS)[GBR_NMOD],
+    m = GB_MOD + ri * GB_MODS + k * 4; t = m[0] % 100;
+    t <= 6 ? (
+      x = gb_cc[m[1]] / 127;
+      t == 5 || t == 6 ? g *= gb_xf(gb_cc[m[1]], m[2], m[3], t == 6, m[0] >= 100)
+      : ( c = gb_curve(m[3], x);
+          t == 1 ? g *= max(0, m[2] * 0.01 * c) : t == 2 ? db += m[2] * c : t == 3 ? pan += m[2] * c : cent += m[2] * c; );
+    );
+    k += 1;
+  );
+  g *= v[GBV_BLIN] * 10 ^ (db / 20);
+  pan = (max(-100, min(100, pan)) + 100) * 0.005 * $pi * 0.5;
+  v[GBV_TGL] = g * 1.41421356 * cos(pan); v[GBV_TGR] = g * 1.41421356 * sin(pan);
+  cent != v[GBV_MCENT] ? (
+    v[GBV_MCENT] = cent;
+    gb_voice_inc(v);
+  );
+);
+
+function gb_all_off() local(i) (
+  i = 0; loop(GB_MAXV + GB_FADES, GB_VOI[i * GB_VS + GBV_ON] = 0; i += 1; );
+  gb_vhi = 0;
+);
+
+// a fresh instrument: controllers from the file, no notes, keyswitch range and default
+function gb_on_ready() local(i, r) (
+  gb_all_off();
+  i = 0; loop(128, gb_cc[i] = gb_cc_init[i]; i += 1; );
+  memset(GB_NT, 0, 512);
+  gb_held_n = 0; gb_sw_lo = 128; gb_sw_hi = -1; gb_sw_cur = -1; gb_kb_cur = -1;
+  gb_last_reg = -1; gb_last_note = -1; gb_last_vel = 0;   // the display must not show the old instrument's note
+  i = 0;
+  loop(gb_nreg,
+    r = GB_REG + i * GB_RS;
+    r[GBR_SWLO] >= 0 ? gb_sw_lo = min(gb_sw_lo, r[GBR_SWLO]);
+    r[GBR_SWHI] >= 0 ? gb_sw_hi = max(gb_sw_hi, r[GBR_SWHI]);
+    gb_sw_cur < 0 && r[GBR_SWDEF] >= 0 ? gb_sw_cur = r[GBR_SWDEF];
+    r[GBR_SEQCNT] = 0;
+    i += 1;
+  );
+);
+
+// velocity -> gain as sfizz does it (RegionStateful.cpp velocityCurve, 1.2.3): the curve (amp_velcurve_N points, else
+// (v/127)^2) blended toward 1 by amp_veltrack; a negative amp_veltrack turns it upside down
+function gb_velgain(r, v) local(vt, c, g) (
+  c = r[GBR_VCPTR] > 0 ? r[GBR_VCPTR][v] : (v / 127) ^ 2;
+  vt = max(-1, min(1, r[GBR_VTRACK] * 0.01));
+  g = abs(vt) * (1 - c);
+  vt < 0 ? g : 1 - g;
+);
+
+// may region r play now? (everything but key, velocity and trigger, which the callers test)
+function gb_region_open(r, rnd) local(ok, g, c, sm) (
+  ok = rnd >= r[GBR_LORAND] && rnd < r[GBR_HIRAND];
+  ok ? ok = gb_cc[64] >= r[GBR_LOCC64] && gb_cc[64] <= r[GBR_HICC64];
+  g = 0;
+  while (ok && g < r[GBR_GCNT]) (
+    c = gb_cc[r[GBR_GATES + g * 3]];
+    ok = c >= r[GBR_GATES + g * 3 + 1] && c <= r[GBR_GATES + g * 3 + 2];
+    g += 1;
+  );
+  ok && r[GBR_SWLAST] >= 0 ? ok = gb_sw_cur == r[GBR_SWLAST];
+  sm = r[GBR_SMP];
+  ok && sm != GB_SILENCE ? ok = sm >= 0 && GB_SMP[sm * GB_SS + GBS_STAT] == GB_SS_OK;
+  ok;
+);
+
+// round robin: count this region's matches and say whether this one is its turn
+function gb_seq_turn(r) (
+  r[GBR_SEQLEN] <= 1 ? 1 : (
+    r[GBR_SEQCNT] += 1; r[GBR_SEQCNT] > r[GBR_SEQLEN] ? r[GBR_SEQCNT] = 1;
+    r[GBR_SEQCNT] == r[GBR_SEQPOS];
+  );
+);
+
+function gb_release(v) (
+  v[GBV_DLY] > 0 ? v[GBV_ON] = 0 : ( v[GBV_RELD] = 1; v[GBV_ST] < GB_ST_REL ? v[GBV_ST] = GB_ST_REL; );
+);
+function gb_fade(v) ( v[GBV_DLY] > 0 ? v[GBV_ON] = 0 : v[GBV_ST] = GB_ST_FADE; );
+// release v ofs samples into this block. A voice still waiting to start (its own offset or ampeg_delay) and released
+// before it starts never sounds; one that starts first plays until its release sample (a short note inside one block
+// used to vanish: the release killed it while it waited).
+function gb_release_at(v, ofs) (
+  ofs <= 0 ? gb_release(v)
+  : v[GBV_DLY] > 0 && ofs <= v[GBV_DLY] ? v[GBV_ON] = 0
+  : v[GBV_RELIN] = ofs + 1;
+);
+
+// the oldest voice among the regular slots matching (group, note) -- note < 0 means any note; group < 0 means any
+function gb_oldest(group, note) local(i, v, best, bage) (
+  best = -1; bage = 1000000000000000; i = 0;
+  loop(GB_MAXV,
+    v = GB_VOI + i * GB_VS;
+    v[GBV_ON] && v[GBV_ST] != GB_ST_FADE && (group < 0 || v[GBV_GROUP] == group) && (note < 0 || v[GBV_NOTE] == note)
+      && v[GBV_AGE] < bage ? ( bage = v[GBV_AGE]; best = i; );
+    i += 1;
+  );
+  best;
+);
+function gb_count(group, note) local(i, v, n) (
+  n = 0; i = 0;
+  loop(GB_MAXV,
+    v = GB_VOI + i * GB_VS;
+    v[GBV_ON] && v[GBV_ST] != GB_ST_FADE && v[GBV_GROUP] == group && (note < 0 || v[GBV_NOTE] == note) ? n += 1;
+    i += 1;
+  );
+  n;
+);
+
+// move a playing voice into a fade slot (so its slot can take a new note without a click)
+function gb_steal_slot(s) local(f, k, fv, best, bage) (
+  best = -1; bage = 1000000000000000; k = 0;
+  loop(GB_FADES,
+    fv = GB_VOI + (GB_MAXV + k) * GB_VS;
+    !fv[GBV_ON] ? ( best = k; bage = -1; ) : fv[GBV_AGE] < bage && bage >= 0 ? ( bage = fv[GBV_AGE]; best = k; );
+    k += 1;
+  );
+  f = GB_VOI + (GB_MAXV + best) * GB_VS;
+  memcpy(f, GB_VOI + s * GB_VS, GB_VS);
+  f[GBV_FCOEF] = gb_coef60(0.005); f[GBV_ST] = GB_ST_FADE;
+  gb_vhi = max(gb_vhi, GB_MAXV + best + 1);
+);
+
+// start region ri for note n at velocity vel, ofs samples into the block, its level scaled by gsc
+function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, last, pos, db, lin, pan, mc, mi) (
+  r = GB_REG + ri * GB_RS; grp = r[GBR_GROUP];
+  // a region of group G turns off every voice whose off_by is G
+  grp != 0 ? (
+    i = 0;
+    loop(GB_MAXV + GB_FADES,
+      v = GB_VOI + i * GB_VS;
+      v[GBV_ON] && v[GBV_OFFBY] == grp ? ( v[GBV_OFFMODE] == GB_OM_NORMAL ? gb_release(v) : gb_fade(v); );
+      i += 1;
+    );
+  );
+  sm = r[GBR_SMP];
+  sm != GB_SILENCE ? (
+    s = GB_SMP + sm * GB_SS; frames = s[GBS_FRAMES];
+    last = frames - 1; r[GBR_END] >= 0 ? last = min(last, r[GBR_END]);
+    pos = r[GBR_OFFSET]; r[GBR_OFFRAND] > 0 ? pos += rand(r[GBR_OFFRAND]) | 0;
+    pos <= last && last >= 0 ? (
+      // voice limits: per group, and per note within the group
+      r[GBR_POLY] > 0 ? ( while (gb_count(grp, -1) >= r[GBR_POLY] && (k = gb_oldest(grp, -1)) >= 0) ( gb_fade(GB_VOI + k * GB_VS); ); );
+      r[GBR_NPOLY] > 0 ? ( while (gb_count(grp, n) >= r[GBR_NPOLY] && (k = gb_oldest(grp, n)) >= 0) ( gb_fade(GB_VOI + k * GB_VS); ); );
+      // a free regular slot, else steal the oldest into a fade slot
+      k = -1; i = 0;
+      while (k < 0 && i < gb_vmax) ( !GB_VOI[i * GB_VS + GBV_ON] ? k = i; i += 1; );   // SETTINGS: voices
+      k < 0 ? ( k = gb_oldest(-1, -1); k >= 0 ? gb_steal_slot(k); );
+      k >= 0 ? (
+        v = GB_VOI + k * GB_VS;
+        memset(v, 0, GB_VS);
+        v[GBV_REG] = ri; v[GBV_NOTE] = n; v[GBV_POS] = pos; v[GBV_LAST] = last;
+        v[GBV_PTR] = s[GBS_PTR]; v[GBV_NCH] = s[GBS_NCH];
+        v[GBV_SEMI] = (n - r[GBR_KEYC]) * r[GBR_KTRACK] * 0.01 + r[GBR_TUNE] * 0.01 + r[GBR_TRANSP];
+        v[GBV_RATIO] = s[GBS_SR] / srate;
+        v[GBV_GLS] = gb_launch_gl;     // glide: start from the last note's pitch (0 = no glide)
+        gb_voice_inc(v);
+        db = r[GBR_VOLDB]; r[GBR_AMPRAND] > 0 ? db += rand(r[GBR_AMPRAND]);
+        // the face's VELOCITY knob: 100 % = as played, 0 % = every note full (layer choice keeps the real velocity)
+        lin = 10 ^ (db / 20) * gb_velgain(r, (127 - (127 - vel) * gb_vsens + 0.5) | 0) * gsc;
+        // pan: constant power with the centre at unity (sfizz Panning.cpp + its +3 dB make-up): hard left = +3 dB left
+        pan = (max(-100, min(100, r[GBR_PAN])) + 100) * 0.005 * $pi * 0.5;
+        v[GBV_GL] = lin * 1.41421356 * cos(pan); v[GBV_GR] = lin * 1.41421356 * sin(pan);
+        // format 2: velocity / key crossfades scale the start level; live controllers set the gains (and pitch)
+        // from where the controllers are now, and from here on per block (gb_voices_block)
+        r[GBR_NMOD] > 0 ? (
+          lin *= gb_mod_note(ri, n, vel);
+          v[GBV_BLIN] = lin; v[GBV_BPAN] = r[GBR_PAN];
+          mc = 0; mi = 0;            // (not k / i: k is this voice's slot, used below)
+          loop(r[GBR_NMOD], (GB_MOD + ri * GB_MODS + mi * 4)[0] % 100 <= 6 ? mc += 1; mi += 1; );
+          v[GBV_MODS] = mc;
+          mc > 0 ? ( gb_voice_mod(v); v[GBV_GL] = v[GBV_TGL]; v[GBV_GR] = v[GBV_TGR]; )
+                : ( v[GBV_GL] = lin * 1.41421356 * cos(pan); v[GBV_GR] = lin * 1.41421356 * sin(pan); );
+        );
+        v[GBV_LMODE] = r[GBR_LMODE]; v[GBV_LS] = r[GBR_LSTART]; v[GBV_LE] = min(r[GBR_LEND], last);
+        (v[GBV_LMODE] == GB_LM_CONT || v[GBV_LMODE] == GB_LM_SUST) && v[GBV_LE] <= v[GBV_LS] ? v[GBV_LMODE] = GB_LM_NOLOOP;
+        v[GBV_DLY] = ofs + (r[GBR_DELAY] * srate) | 0;
+        v[GBV_HOLDN] = (r[GBR_HOLD] * srate) | 0;
+        v[GBV_SUSL] = max(0, min(1, r[GBR_SUS] * 0.01));
+        v[GBV_DCOEF] = r[GBR_DEC] > 0 ? gb_coef_sfz(r[GBR_DEC]) : 0;
+        v[GBV_RCOEF] = gb_coef_sfz(max(r[GBR_REL] * gb_relx, 0.001));   // the face's RELEASE knob scales it
+        v[GBV_FCOEF] = gb_coef_sfz(max(r[GBR_OFFTIME], 0.001));
+        // the face's ATTACK knob adds to the region's own attack (0 s = as recorded)
+        r[GBR_ATT] + gb_att_add > 0 ? ( v[GBV_ENV] = 0; v[GBV_AINC] = 1 / ((r[GBR_ATT] + gb_att_add) * srate); v[GBV_ST] = GB_ST_ATT; )
+                       : ( v[GBV_ENV] = 1; v[GBV_ST] = v[GBV_HOLDN] > 0 ? GB_ST_HOLD : GB_ST_DEC; v[GBV_CNT] = v[GBV_HOLDN]; );
+        v[GBV_GROUP] = grp; v[GBV_OFFBY] = r[GBR_OFFBY]; v[GBV_OFFMODE] = r[GBR_OFFMODE]; v[GBV_TRIG] = r[GBR_TRIG];
+        gb_age += 1; v[GBV_AGE] = gb_age;
+        // for the face's display (read-only there): the last attack note, its region and velocity
+        r[GBR_TRIG] != GB_TR_RELEASE && r[GBR_TRIG] != GB_TR_RELKEY ? ( gb_last_reg = ri; gb_last_note = n; gb_last_vel = vel; gb_last_gen += 1; );
+        v[GBV_ON] = 1;                 // last: the voice exists from here
+        gb_vhi = max(gb_vhi, k + 1);
+      );
+    );
+  );
+);
+
+// every region of trigger kind tr (attack-like, or release-like) that matches note n at velocity vel
+function gb_fire(n, vel, ofs, release, gsc, prevheld) local(i, r, tr, ok, rnd) (
+  rnd = rand(1); i = 0;
+  loop(gb_nreg,
+    r = GB_REG + i * GB_RS; tr = r[GBR_TRIG];
+    ok = release ? (tr == GB_TR_RELEASE || tr == GB_TR_RELKEY) && (release == 2 ? tr == GB_TR_RELEASE : 1)
+                 : tr == GB_TR_ATTACK || (tr == GB_TR_FIRST && prevheld == 0) || (tr == GB_TR_LEGATO && prevheld > 0);
+    ok && n >= r[GBR_LOKEY] && n <= r[GBR_HIKEY] && vel >= r[GBR_LOVEL] && vel <= r[GBR_HIVEL] && gb_region_open(r, rnd) ? (
+      gb_seq_turn(r) ? gb_launch(i, n, vel, ofs, gsc);
+    );
+    i += 1;
+  );
+);
+
+function gb_note_on(n, vel, ofs) local(prev, i, v) (
+  prev = gb_held_n;
+  gb_sw_hi >= 0 && n >= gb_sw_lo && n <= gb_sw_hi ? gb_sw_cur = n;
+  // a keyswitch key only switches: no glide from it, no mono cut of the playing note
+  !(gb_sw_hi >= 0 && n >= gb_sw_lo && n <= gb_sw_hi) ? (
+    // GLIDE: over a held note (legato) or in mono, the new note starts at the last note's pitch and slides
+    gb_launch_gl = gb_glide > 0 && gb_glide_last >= 0 && (prev > 0 || gb_mono) ? gb_glide_last - n : 0;
+    // MONO: one note at a time -- the others release
+    gb_mono ? (
+      i = 0;
+      loop(GB_MAXV, v = GB_VOI + i * GB_VS; v[GBV_ON] && v[GBV_NOTE] != n && v[GBV_ST] < GB_ST_REL ? gb_release(v); i += 1; );
+    );
+    gb_glide_last = n;
+  ) : gb_launch_gl = 0;
+  !GB_NT[n] ? gb_held_n += 1;       // a second note-on of a held pitch is not a second held note (on, on, off, off)
+  GB_NT[n] = 1; GB_NT[128 + n] = vel; GB_NT[256 + n] = gb_t + ofs; GB_NT[384 + n] = 0;
+  gb_fire(n, vel, ofs, 0, 1, prev);
+  gb_launch_gl = 0;
+);
+
+// release-trigger regions for note n; release == 1 at note-off (both kinds), 2 at pedal-up (trigger=release only)
+function gb_fire_release(n, ofs, release) local(i, r, tr, held_s, rnd) (
+  held_s = max(0, (gb_t + ofs - GB_NT[256 + n]) / srate);
+  rnd = rand(1); i = 0;
+  loop(gb_nreg,
+    r = GB_REG + i * GB_RS; tr = r[GBR_TRIG];
+    (release == 1 ? (tr == GB_TR_RELKEY || (tr == GB_TR_RELEASE && gb_cc[64] < 64)) : tr == GB_TR_RELEASE)
+      && n >= r[GBR_LOKEY] && n <= r[GBR_HIKEY] && GB_NT[128 + n] >= r[GBR_LOVEL] && GB_NT[128 + n] <= r[GBR_HIVEL]
+      && gb_region_open(r, rnd) ? (
+      gb_seq_turn(r) ? gb_launch(i, n, GB_NT[128 + n], ofs, 10 ^ (-r[GBR_RTDEC] * held_s / 20));
+    );
+    i += 1;
+  );
+);
+
+function gb_note_off(n, ofs) local(i, v, pedal) (
+  GB_NT[n] ? ( GB_NT[n] = 0; gb_held_n = max(0, gb_held_n - 1); );
+  pedal = gb_cc[64] >= 64;
+  i = 0;
+  loop(GB_MAXV,
+    v = GB_VOI + i * GB_VS;
+    v[GBV_ON] && v[GBV_NOTE] == n && !v[GBV_RELD] && v[GBV_LMODE] != GB_LM_ONESHOT
+      && v[GBV_TRIG] != GB_TR_RELEASE && v[GBV_TRIG] != GB_TR_RELKEY ? ( pedal ? v[GBV_PEDAL] = 1 : gb_release_at(v, ofs); );
+    i += 1;
+  );
+  gb_fire_release(n, ofs, 1);
+  pedal ? GB_NT[384 + n] = 1;
+);
+
+function gb_cc_in(c, val, ofs) local(was, i, v) (
+  was = gb_cc[c]; gb_cc[c] = val;
+  c == 64 && was >= 64 && val < 64 ? (
+    i = 0;
+    loop(GB_MAXV,
+      v = GB_VOI + i * GB_VS;
+      v[GBV_ON] && v[GBV_PEDAL] && !GB_NT[v[GBV_NOTE]] ? ( v[GBV_PEDAL] = 0; gb_release_at(v, ofs); );
+      i += 1;
+    );
+    i = 0; loop(128, GB_NT[384 + i] && !GB_NT[i] ? ( GB_NT[384 + i] = 0; gb_fire_release(i, ofs, 2); ); i += 1; );
+  );
+  c == 7 ? gb_cc7 = val;
+  c == 11 ? gb_cc11 = val;
+  // all sound off cuts, all notes off releases; both forget every held note and pending pedal release, or a later
+  // note would count them as still held (trigger=first / legato, the pedal)
+  c == 120 ? gb_all_off();
+  c == 123 ? ( i = 0; loop(GB_MAXV, v = GB_VOI + i * GB_VS; v[GBV_ON] ? gb_release(v); i += 1; ); );
+  c == 120 || c == 123 ? ( memset(GB_NT, 0, 128); memset(GB_NT + 384, 0, 128); gb_held_n = 0; );
+);
+
+// a pitch-bend value 0..16383 (8192 = centre) -> semitones, over the SETTINGS page's range
+function gb_bend_in(v14) ( gb_bend = (v14 - 8192) / 8192 * gb_bend_rng; );
+
+// @block: MIDI (omni), then per-block voice upkeep. vol_db = the host's volume control.
+// midirecv writes its four arguments, so they are plain globals (gb_mofs, gb_m1..3), not locals
+function gb_midi_block() local(st) (
+  while (midirecv(gb_mofs, gb_m1, gb_m2, gb_m3)) (
+    st = gb_m1 & $xF0;
+    gb_ready && gb_gen_seen == gb_load_gen ? (
+      st == $x90 && gb_m3 > 0 ? gb_note_on(gb_m2, gb_m3, gb_mofs)
+      : st == $x80 || st == $x90 ? gb_note_off(gb_m2, gb_mofs)
+      : st == $xB0 ? gb_cc_in(gb_m2, gb_m3, gb_mofs)
+      : st == $xE0 ? gb_bend_in(gb_m3 * 128 + gb_m2);
+    );
+  );
+);
+
+function gb_voices_block(vol_db) local(i, v, hi) (
+  // a load in progress resets the voices on the audio thread; a finished load is adopted here, once per load
+  // (gb_load_gen counts loads, so even a load that started and finished between two blocks is seen)
+  !gb_ready ? ( gb_vhi > 0 ? gb_all_off(); )
+  : gb_gen_seen != gb_load_gen ? ( gb_on_ready(); gb_gen_seen = gb_load_gen; );
+  // pitch bend and the face's TUNE move every sounding voice (both are semitones on top of the voice's own)
+  gb_bend + gb_tune_st != gb_bend_last ? (
+    gb_bend_last = gb_bend + gb_tune_st;
+    i = 0;
+    loop(gb_vhi, v = GB_VOI + i * GB_VS; v[GBV_ON] ? gb_voice_inc(v); i += 1; );
+  );
+  // GLIDE: each sliding voice moves toward its pitch, about 99 % of the way in the glide time
+  gb_gl_k = gb_glide > 0 ? exp(-4.6 * samplesblock / (gb_glide * srate)) : 0;
+  i = 0;
+  loop(gb_vhi,
+    v = GB_VOI + i * GB_VS;
+    v[GBV_ON] && v[GBV_GLS] != 0 ? ( v[GBV_GLS] *= gb_gl_k; abs(v[GBV_GLS]) < 0.002 ? v[GBV_GLS] = 0; gb_voice_inc(v); );
+    i += 1;
+  );
+  // PAN: constant power, unity at the centre (the render glides to it)
+  gb_pl = 1.41421356 * cos((max(-100, min(100, gb_pan)) + 100) * 0.0025 * $pi);
+  gb_pr = 1.41421356 * sin((max(-100, min(100, gb_pan)) + 100) * 0.0025 * $pi);
+  // format 2: voices with live controllers follow them (target gains and pitch; the render glides the gains)
+  gb_ready && gb_gen_seen == gb_load_gen ? (
+    i = 0; loop(gb_vhi, v = GB_VOI + i * GB_VS; v[GBV_ON] && v[GBV_MODS] > 0 ? gb_voice_mod(v); i += 1; );
+  );
+  // the face's CONTROLS page: a knob turned there arrives as that controller, as if from MIDI
+  gb_ready && gb_gen_seen == gb_load_gen && gb_ui_cc_seq != gb_ui_cc_done ? (
+    gb_ui_cc_done = gb_ui_cc_seq; gb_cc_in(max(0, min(127, gb_ui_cc_n | 0)), max(0, min(127, gb_ui_cc_v | 0)), 0);
+  );
+  // the face's pitch-bend wheel
+  gb_ui_bend_seq != gb_ui_bend_done ? ( gb_ui_bend_done = gb_ui_bend_seq; gb_bend_in(max(0, min(16383, gb_ui_bend_v | 0))); );
+  // the face's keyboard (a mouse note): @gfx writes gb_kb_note (-1 = none), played here on the audio thread
+  gb_ready && gb_gen_seen == gb_load_gen && gb_kb_note != gb_kb_cur ? (
+    gb_kb_cur >= 0 ? gb_note_off(gb_kb_cur, 0);
+    gb_kb_cur = gb_kb_note;
+    gb_kb_cur >= 0 ? gb_note_on(gb_kb_cur, max(1, min(127, gb_kb_vel | 0)), 0);
+  );
+  hi = 0; i = 0; loop(gb_vhi, GB_VOI[i * GB_VS + GBV_ON] ? hi = i + 1; i += 1; ); gb_vhi = hi;
+  gb_gtarget = 10 ^ (vol_db / 20) * (gb_cc7 / 127) ^ 2 * (gb_cc11 / 127) ^ 2;
+  // (TONE is a band of Quezy's engine now: gb_eq.jsfx-inc, after this output stage)
+  gb_t += samplesblock;
+);
+
+// @sample: sum every voice into spl0 / spl1
+// DRIVE: EON Saturation's sine curve (rk_sat), the knob 0..1 bending it (f up to pi/2) and pushing into it (up to x4),
+// levelled after it (1 / (1 + drive)), mixed in from 0 so the knob's start is silent. Run on one stereo sample: before
+// the EQ in gb_render's output stage, or after it from @sample (gb_drv_post, the face's BEFORE EQ / AFTER EQ switch).
+// A switch glides (gbx_pos_s, about 7 ms): for a moment both places carry part of it, so a flip mid-note does not click
+// (outside audit, 2026-11-01). amt = this place's share. gbx_drv_s (the knob, smoothed) moves in gb_render.
+// gbx_drv_pk: the input's recent peak, for the face's curve dot (read there only).
+function gb_drive_run(l, r, amt) local(f, inv, g, k, wet) (
+  gbx_dl = l; gbx_dr = r;
+  gbx_drv_s > 0.0005 ? (
+    f = gbx_drv_s * RK_SAT_HP; inv = rk_sat_norm(f); g = 1 + 3 * gbx_drv_s; k = 1 / (1 + gbx_drv_s);
+    wet = min(1, gbx_drv_s * 20) * amt;
+    gbx_dl = l + (rk_sat_shape(l * g, f, inv) * k - l) * wet;
+    gbx_dr = r + (rk_sat_shape(r * g, f, inv) * k - r) * wet;
+  );
+  gbx_drv_pk = max(gbx_drv_pk * 0.9997, max(abs(l), abs(r)));
+);
+
+function gb_render() local(i, v, st, e, p, ip, f, ptr, last, lp, looping, i0, i2, i3, le, ll, y0, y1, y2, y3, yl, yr, ol, or_, b, dl, dr)
+(
+  ol = 0; or_ = 0;
+  gb_ready && gb_gen_seen == gb_load_gen ? (
+    i = 0;
+    loop(gb_vhi,
+      v = GB_VOI + i * GB_VS;
+      v[GBV_ON] ? (
+        v[GBV_RELIN] > 0 ? ( v[GBV_RELIN] -= 1; v[GBV_RELIN] <= 0 ? ( v[GBV_RELD] = 1; v[GBV_ST] < GB_ST_REL ? v[GBV_ST] = GB_ST_REL; ); );
+        v[GBV_DLY] > 0 ? v[GBV_DLY] -= 1 : (
+          st = v[GBV_ST]; e = v[GBV_ENV];
+          st == GB_ST_ATT ? ( e += v[GBV_AINC]; e >= 1 ? ( e = 1; v[GBV_HOLDN] > 0 ? ( st = GB_ST_HOLD; v[GBV_CNT] = v[GBV_HOLDN]; ) : st = GB_ST_DEC; ); )
+          : st == GB_ST_HOLD ? ( v[GBV_CNT] -= 1; v[GBV_CNT] <= 0 ? st = GB_ST_DEC; )
+          : st == GB_ST_DEC ? ( e *= v[GBV_DCOEF]; e <= v[GBV_SUSL] + 0.001 ? ( e = v[GBV_SUSL]; st = GB_ST_SUS; ); )
+          : st == GB_ST_REL ? e *= v[GBV_RCOEF]
+          : st == GB_ST_FADE ? e *= v[GBV_FCOEF];
+          p = v[GBV_POS]; ip = p | 0; f = p - ip; ptr = v[GBV_PTR]; last = v[GBV_LAST];
+          lp = v[GBV_LMODE]; looping = lp == GB_LM_CONT || (lp == GB_LM_SUST && !v[GBV_RELD]);
+          i0 = ip > 0 ? ip - 1 : 0; i2 = ip + 1; i3 = ip + 2;
+          // (wrapped by whole loops: a tiny loop played high moves more than one loop per sample)
+          looping ? ( le = v[GBV_LE]; ll = le - v[GBV_LS] + 1;
+                      i2 > le ? i2 -= ll * (1 + floor((i2 - le - 1) / ll)); i3 > le ? i3 -= ll * (1 + floor((i3 - le - 1) / ll)); )
+                  : ( i2 > last ? i2 = last; i3 > last ? i3 = last; );
+          v[GBV_NCH] == 1 ? (
+            y0 = ptr[i0]; y1 = ptr[ip]; y2 = ptr[i2]; y3 = ptr[i3];
+            yl = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+            yr = yl;
+          ) : (
+            y0 = ptr[2 * i0]; y1 = ptr[2 * ip]; y2 = ptr[2 * i2]; y3 = ptr[2 * i3];
+            yl = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+            b = ptr + 1;
+            y0 = b[2 * i0]; y1 = b[2 * ip]; y2 = b[2 * i2]; y3 = b[2 * i3];
+            yr = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+          );
+          v[GBV_MODS] > 0 ? ( v[GBV_GL] += (v[GBV_TGL] - v[GBV_GL]) * GB_MOD_GLIDE; v[GBV_GR] += (v[GBV_TGR] - v[GBV_GR]) * GB_MOD_GLIDE; );
+          ol += yl * e * v[GBV_GL]; or_ += yr * e * v[GBV_GR];
+          p += v[GBV_INC];
+          looping && p >= le + 1 ? p -= ll * (1 + floor((p - le - 1) / ll));
+          v[GBV_POS] = p; v[GBV_ENV] = e; v[GBV_ST] = st;
+          (!looping && p > last) || ((st == GB_ST_REL || st == GB_ST_FADE) && e < GB_QUIET_T)
+            || (st == GB_ST_SUS && v[GBV_SUSL] < GB_QUIET_T) ? v[GBV_ON] = 0;
+        );
+      );
+      i += 1;
+    );
+  );
+  // the output stage: DRIVE (before the EQ; after it, @sample runs it), WIDTH (mid/side), level, PAN (TONE and the EQ
+  // follow: gb_eq)
+  gbx_drv_s += (gb_drive - gbx_drv_s) * 0.002;
+  gbx_pos_s += (gb_drv_post - gbx_pos_s) * 0.003;
+  gbx_pos_s < 0.9999 ? ( gb_drive_run(ol, or_, 1 - gbx_pos_s); ol = gbx_dl; or_ = gbx_dr; );
+  y0 = (ol + or_) * 0.5; y1 = (ol - or_) * 0.5 * gbx_w_s; ol = y0 + y1; or_ = y0 - y1;
+  gbx_w_s += (gb_width - gbx_w_s) * 0.002;
+  gb_gs += (gb_gtarget - gb_gs) * 0.002;
+  gb_pl_s += (gb_pl - gb_pl_s) * 0.002; gb_pr_s += (gb_pr - gb_pr_s) * 0.002;
+  spl0 = ol * gb_gs * gb_pl_s; spl1 = or_ * gb_gs * gb_pr_s;
+);

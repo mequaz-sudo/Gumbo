@@ -1,0 +1,54 @@
+// rk_textopts.jsfx-inc -- a face's text and screen options: its TYPEFACE, its TEXT SIZE and its SCREEN look (EON Studios,
+// 2026-10-31; MIT, as the ReaKit library). Lifted from Swing's pad editor OPTIONS sheet (rk_swing_ui_grid_overlay
+// swing_grid_opt_draw; the owner, 2026-10-29: "we dont get text options for pad fx?") and its LCD look (ov_set,
+// rk_swing_ui_layer_mixer; the LCD's colours from rk_swing_ui_state_p3). Gumbo wears it first (the owner, 2026-10-31:
+// "can we add text size and font options. the screen LCD options"); Swing's copies (rk_font_fname in rk_weld_face, the
+// LCD mapping in ov_set) move onto this file later, under the copy script and drift check (the one-master rule) --
+// until then a file must not import both this and rk_weld_face (rk_font_fname is defined in each).
+//
+//   rk_font_fname(f)            the five faces: 0 Arial, 1 Verdana, 2 Tahoma, 3 Segoe UI, 4 Consolas (Swing's)
+//   rk_text_k(step)             the text-size step -3 .. +6 as a scale, 0.7 .. 1.6 (0 = as designed)
+//   rk_scr_look(look, gr, gg, gb, ir, ig, ib, ar, ag, ab)
+//                               pick the screen look for this pass: 0 OWN (colours pass as drawn), 1 LCD (Swing's teal
+//                               screen), 2 THEME (gr/gg/gb the theme's ground for the screen, ir/ig/ib its ink, ar/ag/ab
+//                               its accent; ignored for 0 and 1)
+//   rk_scr_set(r, g, b, a)      gfx_set through the look: in LCD and THEME every colour is laid on one line from the
+//                               screen's ground to its ink by its brightness (the dark grounds become the screen's, the
+//                               labels its ink), and a strongly coloured bright mark (the lit accent: a waveform, a lit
+//                               chip, a meter) becomes the screen's accent -- one mapping, so a whole screen turns at once
+//                               and nothing is coloured twice (Swing's ov_set, which maps greys only: Gumbo's screen is
+//                               drawn in warm colours, not greys)
+
+@init
+
+function rk_font_fname(f) ( f == 1 ? "Verdana" : f == 2 ? "Tahoma" : f == 3 ? "Segoe UI" : f == 4 ? "Consolas" : "Arial"; );
+function rk_text_k(step) ( 1 + 0.1 * max(-3, min(6, step | 0)); );
+
+function rk_scr_look(look, gr, gg, gb, ir, ig, ib, ar, ag, ab) (
+  rk_scr_mode = look | 0;
+  rk_scr_mode == 1 ? (
+    rk_scr_gr = 0.10; rk_scr_gg = 0.26; rk_scr_gb = 0.35;     // Swing's deep teal LCD ground (lcd_bg_*)
+    rk_scr_ir = 0.70; rk_scr_ig = 0.90; rk_scr_ib = 0.92;     // ... and its bright text (lcd_tx_*)
+    rk_scr_ar = 0.88; rk_scr_ag = 1.00; rk_scr_ab = 1.00;     // a lit mark: the text, brighter
+  ) : rk_scr_mode == 2 ? (
+    rk_scr_gr = gr; rk_scr_gg = gg; rk_scr_gb = gb;
+    rk_scr_ir = ir; rk_scr_ig = ig; rk_scr_ib = ib;
+    rk_scr_ar = ar; rk_scr_ag = ag; rk_scr_ab = ab;
+  );
+);
+
+function rk_scr_set(r, g, b, a) local(v, sat, t, k) (
+  rk_scr_mode == 0 ? gfx_set(r, g, b, a) : (
+    v = r * 0.299 + g * 0.587 + b * 0.114;
+    sat = max(r, max(g, b)) - min(r, min(g, b));
+    sat > 0.55 && v > 0.35 ? (
+      k = max(0.35, min(1, (v - 0.25) / 0.45));                // the lit accent, by its brightness
+      gfx_set(rk_scr_gr + (rk_scr_ar - rk_scr_gr) * k, rk_scr_gg + (rk_scr_ag - rk_scr_gg) * k,
+              rk_scr_gb + (rk_scr_ab - rk_scr_gb) * k, a);
+    ) : (
+      t = max(0, min(1.15, (v - 0.07) / 0.55));                // ground .. ink (a little past it for the brightest)
+      gfx_set(max(0, min(1, rk_scr_gr + (rk_scr_ir - rk_scr_gr) * t)), max(0, min(1, rk_scr_gg + (rk_scr_ig - rk_scr_gg) * t)),
+              max(0, min(1, rk_scr_gb + (rk_scr_ib - rk_scr_gb) * t)), a);
+    );
+  );
+);

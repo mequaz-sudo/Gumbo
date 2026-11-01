@@ -1,0 +1,395 @@
+// rk_menu.jsfx-inc -- a context menu that draws itself, with submenus (EON Studios, 2026-10-20; MIT, as the ReaKit
+// library). Grown from ReaKit's public rk_popup.jsfx-inc (.ReaKit-Repo/Library, 7f09c33, EON's own clean-room code):
+// its gate, its opening-press latch, its clamping and its scrolling, plus what a face's context menu needs and no
+// EON menu had (wiki 4, the 2026-10-20 menu survey): nested submenus, gfx_showmenu's numbering, a rounded look with a
+// hover fill, and a scale. Written for Quezy's node menu (the user, 2026-10-20: "the menus need our polish").
+//
+// ITEMS: gfx_showmenu's own syntax, so a caller can switch from the native menu without touching its decode.
+//   "a|b||>Sub|x|<y|c"  '|' separates rows, an empty row is a separator, '>' starts a submenu whose rows follow up to
+//   the row carrying '<' (its last), '!' ticks a row, '#' greys it. Prefixes in any order. A pick returns
+//   gfx_showmenu's number: items count 1, 2, 3 ... in order, greyed ones included; separators and submenu heads don't.
+//   rk_menu's own prefix (2026-10-21, the shape icons in Quezy's node menu; never pass it to gfx_showmenu): '^' and one
+//   letter puts an icon before the row's label, 'a' + code: codes 0 .. RKM_ICN - 1 draw that icon, RKM_ICN .. 2 RKM_ICN
+//   - 1 the same icon upside down. The icons come from a store the host fills once in @init after rkm_setup (rk_menu is
+//   imported before the host's drawing code, so it cannot call it): rkm_icon_def(i, j, y) gives icon i's point j of
+//   RKM_ICP (left to right, y 0 top .. 1 bottom), rkm_icon_extra(i, e) a mark (1 a ring at the centre, 2 a dashed line
+//   at 0.78 h, 0.22 upside down, 3 a dashed line at mid-height). A panel with an icon row moves its labels right.
+//
+// HOST CONTRACT (the rk_srf frame head's globals): mx, my, lmb_down, rmb_down, LMB, RMB, frame_wheel.
+//   @init:  freemem = rkm_setup(freemem);
+//   @gfx:   rkm_gate()              EARLY, after the frame head: while a menu is open everything after it sees no
+//                                   mouse (mx = my = -10000, no edges, no buttons, no wheel); the real values are kept
+//                                   for the menu (house rule 5: only on passes where the menu is up)
+//           rkm_style(...)          colours (0xRRGGBB), before rkm_open
+//           rkm_open(items, x, y, s) open at a point (s = the face's scale); the press that opened it is swallowed
+//           r = rkm_run(ch)         LAST, so it draws over everything: 0 = open or closed, >= 1 = a pick (the menu
+//                                   closes), -1 = cancelled (a press outside, or Esc with no submenu open)
+//           rkm_close()             drop it without a result (a reopened window, an embedded pass)
+//   ch = this pass's gfx_getchar() (Esc closes the open submenu first, then the menu), or 0.
+//   While rkm_on, the host redraws every pass (the hover delay opens submenus after 0.12 s without a mouse move).
+// Behaviour: hovering a submenu head opens it after 0.12 s, a press opens it at once; hovering a plain row of a parent
+// for 0.12 s closes the deeper panels; a left or right press on an item picks it; a press on a head opens it; a press
+// on a greyed row or a separator does nothing; a press outside every panel cancels. Every press while open is spent.
+// A panel taller than the window scrolls (the wheel, a row a notch) and shows a thumb; a submenu opens to the right of
+// its head, or to the left when the right has no room, and is clamped into the window (on a very narrow window it
+// overlaps its parent, drawn on top). An embedded pass closes the menu (a strip gets no right-click anyway).
+// Names: rkm_* / RKM_*; tables and constants are written in @init only, everything else in @gfx only.
+
+@init
+
+RKM_ROWS = 128;            // rows per menu: items, separators and heads together
+RKM_MAXD = 4;             // open panels at once: the root and three submenu levels
+RKM_DELAY = 0.12;          // hover time before a submenu opens or closes
+RKM_ICN = 13;              // icons in the store (codes RKM_ICN.. draw them upside down; 'a' + 2 RKM_ICN - 1 = 'z')
+RKM_ICP = 17;              // points per icon
+
+function rkm_setup(base) local(j) (
+  rkm_kind = base;                     // 0 item, 1 separator, 2 submenu head
+  rkm_par = rkm_kind + RKM_ROWS;       // the head a row sits under, -1 = the root panel
+  rkm_id = rkm_par + RKM_ROWS;         // gfx_showmenu's number for an item, 0 for the rest
+  rkm_flag = rkm_id + RKM_ROWS;        // 1 ticked, 2 greyed
+  rkm_ofs = rkm_flag + RKM_ROWS;       // the label inside #rkm_s: offset, length
+  rkm_len = rkm_ofs + RKM_ROWS;
+  rkm_pw = rkm_len + RKM_ROWS;         // the width of the panel a head opens
+  rkm_ry = rkm_pw + RKM_ROWS;          // a row's y this pass (-1 = not shown)
+  rkm_xpop = rkm_ry + RKM_ROWS;        // a head that carried '<' too: its parent's submenu ends with its own
+  rkm_dhd = rkm_xpop + RKM_ROWS;       // per open depth: its head (-1 = root), x, y, w, h, first row shown, scrolls
+  rkm_dx = rkm_dhd + RKM_MAXD;
+  rkm_dy = rkm_dx + RKM_MAXD;
+  rkm_dw = rkm_dy + RKM_MAXD;
+  rkm_dh = rkm_dw + RKM_MAXD;
+  rkm_dfirst = rkm_dh + RKM_MAXD;
+  rkm_dscr = rkm_dfirst + RKM_MAXD;
+  rkm_icon = rkm_dscr + RKM_MAXD;      // a row's icon code ('^'), -1 = none
+  rkm_icy = rkm_icon + RKM_ROWS;       // the icon store: RKM_ICP points per icon, then one mark per icon
+  rkm_icx = rkm_icy + RKM_ICN * RKM_ICP;
+  j = 0; loop(RKM_ICN * RKM_ICP, rkm_icy[j] = 0.5; j += 1; );
+  j = 0; loop(RKM_ICN, rkm_icx[j] = 0; j += 1; );
+  rkm_icx + RKM_ICN;
+);
+function rkm_icon_def(i, j, y) ( i >= 0 && i < RKM_ICN && j >= 0 && j < RKM_ICP ? rkm_icy[(i | 0) * RKM_ICP + (j | 0)] = y; );
+function rkm_icon_extra(i, e) ( i >= 0 && i < RKM_ICN ? rkm_icx[i | 0] = e; );
+
+function rkm_col(c, a) ( gfx_set(((c / 65536) | 0) / 255, (((c / 256) | 0) & 255) / 255, (c & 255) / 255, a); );
+// a filled rounded rect on whole pixels (opaque colours: the corner discs overlap the rects); the corner disc of radius
+// r - 0.5 centred at x + r - 0.5 covers exactly the 2r pixels from x, so the corners meet the sides
+function rkm_frr(x, y, w, h, r) (
+  x = floor(x + 0.5); y = floor(y + 0.5); w = floor(w + 0.5); h = floor(h + 0.5);
+  r = floor(max(0, min(r, min(w, h) / 2)));
+  r < 1 ? gfx_rect(x, y, w, h) : (
+    gfx_rect(x + r, y, w - 2 * r, h);
+    gfx_rect(x, y + r, r, h - 2 * r);
+    gfx_rect(x + w - r, y + r, r, h - 2 * r);
+    gfx_circle(x + r - 0.5, y + r - 0.5, r - 0.5, 1, 1);
+    gfx_circle(x + w - r - 0.5, y + r - 0.5, r - 0.5, 1, 1);
+    gfx_circle(x + r - 0.5, y + h - r - 0.5, r - 0.5, 1, 1);
+    gfx_circle(x + w - r - 0.5, y + h - r - 0.5, r - 0.5, 1, 1);
+  );
+);
+function rkm_font() ( gfx_setfont(11, "Arial", max(8, floor(11 * rkm_s)), 'b'); );   // slot 11, the menu's own
+
+// colours, 0xRRGGBB: panel, outline, separator, text, greyed text, accent (ticks); the hover fill is 14 % accent over
+// the panel, kept opaque
+function rkm_style(bg, line, sep, text, dim, acc) local(r, g, b) (
+  rkm_cbg = bg; rkm_cline = line; rkm_csep = sep; rkm_ctext = text; rkm_cdim = dim; rkm_cacc = acc;
+  r = ((bg / 65536) | 0) * 0.86 + ((acc / 65536) | 0) * 0.14;
+  g = (((bg / 256) | 0) & 255) * 0.86 + (((acc / 256) | 0) & 255) * 0.14;
+  b = (bg & 255) * 0.86 + (acc & 255) * 0.14;
+  rkm_chov = floor(r + 0.5) * 65536 + floor(g + 0.5) * 256 + floor(b + 0.5);
+);
+
+function rkm_active() ( rkm_on; );
+function rkm_close() ( rkm_on = 0; rkm_depth = 0; );
+
+// leave the submenu `cur`: back to its parent, and further up while the head left carried '<' itself; -2 = that chain
+// ran past the root, which ends the menu (as '<' at the root does)
+function rkm_pop(cur) local(h, out) (
+  h = cur; cur = rkm_par[h]; out = 0;
+  while (!out && rkm_xpop[h]) ( cur < 0 ? out = 1 : ( h = cur; cur = rkm_par[h]; ); );
+  out ? -2 : cur;
+);
+// Split #rkm_s into the row tables (once, at open), the way WDL's gfx_showmenu reads it: an empty row is a separator;
+// '>' makes a head whose rows follow; '<' on a row ends its submenu after it, an empty '<' row only ends it (it inserts
+// nothing and takes no number), '<' on a head ends the enclosing submenu when the head's own one ends, and '<' at the
+// root ends the menu.
+function rkm_parse() local(len, i, st, c, n, cur, k, f, pre, done, cnt, ch, stop, ic) (
+  len = strlen(#rkm_s); i = 0; st = 0; n = 0; cur = -1; cnt = 0; stop = 0;
+  while (!stop && i <= len) (
+    c = i < len ? str_getchar(#rkm_s, i) : 124;
+    c == 124 ? (
+      n < RKM_ROWS ? (
+        f = 0; pre = 0; done = 0; k = st; ic = -1;
+        while (!done && k < i) (
+          ch = str_getchar(#rkm_s, k);
+          ch == 33 ? ( f |= 1; k += 1; ) :       // '!' ticked
+          ch == 35 ? ( f |= 2; k += 1; ) :       // '#' greyed
+          ch == 62 ? ( pre |= 1; k += 1; ) :     // '>' opens a submenu
+          ch == 60 ? ( pre |= 2; k += 1; ) :     // '<' last row of a submenu
+          ch == 94 ? ( ic = k + 1 < i ? str_getchar(#rkm_s, k + 1) - 97 : -1; k = min(i, k + 2); ) :   // '^' + letter: icon
+          done = 1;
+        );
+        (pre & 2) && !(pre & 1) && i - k < 1 ? (
+          cur < 0 ? stop = 1 : ( cur = rkm_pop(cur); cur == -2 ? ( stop = 1; cur = -1; ); );
+        ) : (
+          rkm_ofs[n] = k; rkm_len[n] = i - k; rkm_par[n] = cur; rkm_flag[n] = f; rkm_id[n] = 0; rkm_pw[n] = 0;
+          rkm_xpop[n] = 0; rkm_icon[n] = i - k < 1 && !(pre & 1) ? -1 : ic;
+          pre & 1 ? ( rkm_kind[n] = 2; rkm_xpop[n] = (pre & 2) > 0; cur = n; ) :
+          i - k < 1 ? rkm_kind[n] = 1 :
+          ( rkm_kind[n] = 0; cnt += 1; rkm_id[n] = cnt; );
+          (pre & 2) && !(pre & 1) ? ( cur < 0 ? stop = 1 : ( cur = rkm_pop(cur); cur == -2 ? ( stop = 1; cur = -1; ); ); );
+          n += 1;
+        );
+      );
+      st = i + 1;
+    );
+    i += 1;
+  );
+  n > 0 && rkm_kind[n - 1] == 1 ? n -= 1;        // a trailing '|' is not a separator
+  rkm_n = n;
+);
+
+// whether a panel (its head, -1 the root) has a row with an icon: its labels then start after an icon column
+function rkm_has_icons(head) local(j, r) ( r = 0; j = 0; loop(rkm_n, rkm_par[j] == head && rkm_icon[j] >= 0 ? r = 1; j += 1; ); r; );
+// a panel's natural width: the widest label + room for the tick gutter, the icon column and a head's chevron, at
+// least 184
+function rkm_width(head) local(j, w, tw, th) (
+  rkm_font(); w = 0; j = 0;
+  loop(rkm_n,
+    rkm_par[j] == head && rkm_kind[j] != 1 ? (
+      strcpy_substr(#rkm_t, #rkm_s, rkm_ofs[j], rkm_len[j]);
+      tw = th = 0; gfx_measurestr(#rkm_t, tw, th);
+      w = max(w, tw);
+    );
+    j += 1;
+  );
+  max(184 * rkm_s, w + (rkm_has_icons(head) ? 84 : 58) * rkm_s);
+);
+// a smoothed stroke wd px wide at any slope (the host's own: two anti-aliased edges, a quad between from 2 px), opaque
+function rkm_aline(x1, y1, x2, y2, wd) local(dx, dy, l, nx, ny, o) (
+  dx = x2 - x1; dy = y2 - y1; l = sqrt(dx * dx + dy * dy);
+  l > 0.01 ? (
+    nx = -dy / l; ny = dx / l;
+    wd < 1.25 ? gfx_line(x1, y1, x2, y2, 1) : (
+      o = (wd - 1) * 0.5;
+      wd >= 2 ? gfx_triangle(x1 + nx * o, y1 + ny * o, x2 + nx * o, y2 + ny * o, x2 - nx * o, y2 - ny * o, x1 - nx * o, y1 - ny * o);
+      gfx_line(x1 + nx * o, y1 + ny * o, x2 + nx * o, y2 + ny * o, 1);
+      gfx_line(x1 - nx * o, y1 - ny * o, x2 - nx * o, y2 - ny * o, 1);
+    );
+  );
+);
+// icon code c from the store in a w x h box at x, y, in the current colour (codes RKM_ICN.. upside down)
+function rkm_glyph(c, x, y, w, h, wd) local(fl, gl, j, px, py, ox, oy, v, e, b) (
+  fl = c >= RKM_ICN; gl = (fl ? c - RKM_ICN : c) | 0;
+  gl >= 0 && gl < RKM_ICN ? (
+    j = 0;
+    loop(RKM_ICP,
+      v = rkm_icy[gl * RKM_ICP + j]; px = x + w * j / (RKM_ICP - 1); py = y + (fl ? 1 - v : v) * h;
+      j > 0 ? rkm_aline(ox, oy, px, py, wd);
+      ox = px; oy = py; j += 1;
+    );
+    e = rkm_icx[gl]; b = max(1, floor(rkm_s + 0.5));
+    e == 1 ? ( j = 0; loop(b, gfx_circle(x + w / 2, y + h / 2, 0.28 * h - j, 0, 1); j += 1; ); );
+    e == 2 || e == 3 ? (
+      v = y + (e == 3 ? 0.5 : fl ? 0.22 : 0.78) * h;
+      j = 0; loop(5, rkm_aline(x + j * w / 5, v, x + j * w / 5 + w / 10, v, rkm_s); j += 1; );
+    );
+  );
+);
+
+function rkm_open(items, x, y, s) local(j) (
+  strcpy(#rkm_s, items);
+  rkm_s = max(1, s);
+  rkm_parse();
+  rkm_n > 0 ? (
+    rkm_rootw = rkm_width(-1);
+    j = 0; loop(rkm_n, rkm_kind[j] == 2 ? rkm_pw[j] = rkm_width(j); j += 1; );
+    rkm_ax = x; rkm_ay = y;
+    rkm_on = 1; rkm_just = 1; rkm_depth = 1;
+    rkm_dhd[0] = -1; rkm_dfirst[0] = 0;
+    rkm_mx = rkm_ox = mx; rkm_my = rkm_oy = my; rkm_lmbd = rkm_rmbd = 0; rkm_whl = 0; rkm_armed = 0;
+    rkm_htrow = -1; rkm_ht = 0;
+  ) : rkm_close();
+);
+
+// THE GATE: while open, everything drawn after this sees no mouse; the real values stay for rkm_run
+function rkm_gate() (
+  rkm_on ? (
+    rkm_mx = mx; rkm_my = my; rkm_lmbd = lmb_down; rkm_rmbd = rmb_down; rkm_whl = frame_wheel;
+    mx = -10000; my = -10000; lmb_down = 0; rmb_down = 0; LMB = 0; RMB = 0; frame_wheel = 0;
+  );
+);
+
+// lay out depth d: its rows, its rect, scrolling; the rows' y go into rkm_ry (-1 = not shown)
+function rkm_layout(d) local(head, j, s, pad, rh, sh, ch, cnt, avail, x, y, w, h, first, k, used, py, full)
+(
+  s = rkm_s; pad = 4 * s; rh = 24 * s; sh = 9 * s;
+  head = rkm_dhd[d];
+  ch = pad * 2; cnt = 0; j = 0;
+  loop(rkm_n, rkm_par[j] == head ? ( ch += rkm_kind[j] == 1 ? sh : rh; cnt += 1; ); j += 1; );
+  w = head < 0 ? rkm_rootw : rkm_pw[head];
+  w = min(w, gfx_w - 8 * s);
+  avail = gfx_h - 8 * s;
+  rkm_dscr[d] = ch > avail;
+  h = min(ch, avail);
+  rkm_dscr[d] ? (
+    // k = the lowest first row that still shows the last one: walk up from the last row until one no longer fits
+    j = rkm_n - 1; used = pad * 2; k = cnt; full = 0;
+    loop(rkm_n,
+      !full && rkm_par[j] == head ? (
+        used + (rkm_kind[j] == 1 ? sh : rh) <= avail ? ( used += rkm_kind[j] == 1 ? sh : rh; k -= 1; ) : full = 1;
+      );
+      j -= 1;
+    );
+    first = max(0, min(rkm_dfirst[d], k));
+    rkm_dfirst[d] = first;
+  ) : ( first = 0; rkm_dfirst[d] = 0; );
+  // where the panel sits
+  d == 0 ? ( x = rkm_ax; y = rkm_ay; ) : (
+    x = rkm_dx[d - 1] + rkm_dw[d - 1] - 2 * s;
+    x + w > gfx_w - 4 * s ? x = rkm_dx[d - 1] - w + 2 * s;
+    y = rkm_ry[head] >= 0 ? rkm_ry[head] - pad : rkm_dy[d - 1];
+  );
+  x = max(4 * s, min(x, gfx_w - w - 4 * s));
+  y = max(4 * s, min(y, gfx_h - h - 4 * s));
+  rkm_dx[d] = floor(x + 0.5); rkm_dy[d] = floor(y + 0.5); rkm_dw[d] = floor(w + 0.5); rkm_dh[d] = floor(h + 0.5);
+  // row positions: from the first shown row down, until one no longer fits (every later row stays hidden too)
+  py = rkm_dy[d] + pad; k = 0; j = 0; full = 0;
+  loop(rkm_n,
+    rkm_par[j] == head ? (
+      k >= first && !full && py + (rkm_kind[j] == 1 ? sh : rh) <= rkm_dy[d] + rkm_dh[d] - pad + 0.5 ? (
+        rkm_ry[j] = py; py += rkm_kind[j] == 1 ? sh : rh;
+      ) : (
+        rkm_ry[j] = -1; k >= first ? full = 1;
+      );
+      k += 1;
+    );
+    j += 1;
+  );
+);
+
+function rkm_row_h(j) ( rkm_kind[j] == 1 ? 9 * rkm_s : 24 * rkm_s; );
+
+function rkm_draw(d, hovrow) local(s, x, y, w, h, j, head, rh, ry, open, tw, th, cx, cy, cnt, k, first, vis, b, hl, t, lx)
+(
+  s = rkm_s; x = rkm_dx[d]; y = rkm_dy[d]; w = rkm_dw[d]; h = rkm_dh[d]; head = rkm_dhd[d]; rh = 24 * s;
+  lx = x + (rkm_has_icons(head) ? 50 : 24) * s;          // the labels: after the tick gutter and the icon column
+  // lines grow with the scale (1 px at 100 %): the outline one scale pixel rounded, the separators a hairline (one
+  // pixel until the scale doubles), the tick and the chevron strokes n pixel-offset copies (two at 100 %)
+  b = max(1, floor(s + 0.5)); hl = max(1, floor(s));
+  // shadow (corners cut, so the translucent pieces never overlap), outline, fill
+  gfx_set(0, 0, 0, 0.35);
+  gfx_rect(x + 2 * s + 8 * s, y + 3 * s, w - 16 * s, 8 * s);
+  gfx_rect(x + 2 * s, y + 3 * s + 8 * s, w, h - 16 * s);
+  gfx_rect(x + 2 * s + 8 * s, y + 3 * s + h - 8 * s, w - 16 * s, 8 * s);
+  rkm_col(rkm_cline, 1); rkm_frr(x, y, w, h, 8 * s);
+  rkm_col(rkm_cbg, 1); rkm_frr(x + b, y + b, w - 2 * b, h - 2 * b, 8 * s - b);
+  rkm_font();
+  cnt = 0; vis = 0; j = 0;
+  loop(rkm_n,
+    rkm_par[j] == head ? (
+      cnt += 1;
+      ry = rkm_ry[j];
+      ry >= 0 ? (
+        vis += 1;
+        rkm_kind[j] == 1 ? (
+          rkm_col(rkm_csep, 1); gfx_rect(x + 8 * s, floor(ry + 4.5 * s - hl / 2), w - 16 * s, hl);
+        ) : (
+          open = rkm_kind[j] == 2 && d + 1 < rkm_depth && rkm_dhd[d + 1] == j;
+          (j == hovrow || open) && !(rkm_flag[j] & 2) ? ( rkm_col(rkm_chov, 1); rkm_frr(x + 4 * s, ry, w - 8 * s, rh, 4 * s); );
+          strcpy_substr(#rkm_t, #rkm_s, rkm_ofs[j], rkm_len[j]);
+          tw = th = 0; gfx_measurestr(#rkm_t, tw, th);
+          rkm_col(rkm_flag[j] & 2 ? rkm_cdim : rkm_ctext, 1);
+          gfx_x = lx; gfx_y = floor(ry + (rh - th) * 0.5); gfx_drawstr(#rkm_t);
+          rkm_icon[j] >= 0 ? rkm_glyph(rkm_icon[j], x + 24 * s, ry + 7 * s, 20 * s, 10 * s, 1.5 * s);   // in the label's colour
+          rkm_flag[j] & 1 ? (                            // the tick: two smoothed strokes in the gutter
+            rkm_col(rkm_cacc, 1); cx = x + 13 * s; cy = ry + rh * 0.5;
+            t = 0;
+            loop(max(2, floor(2 * s + 0.5)),
+              gfx_line(cx - 4 * s, cy + t, cx - 1.5 * s, cy + 2.5 * s + t, 1);
+              gfx_line(cx - 1.5 * s, cy + 2.5 * s + t, cx + 3.5 * s, cy - 3 * s + t, 1);
+              t += 1;
+            );
+          );
+          rkm_kind[j] == 2 ? (                           // a head's chevron
+            rkm_col(open ? rkm_ctext : rkm_cdim, 1); cx = x + w - 15 * s; cy = ry + rh * 0.5;
+            t = 0;
+            loop(max(2, floor(2 * s + 0.5)),
+              gfx_line(cx - 2 * s + t, cy - 4 * s, cx + 2 * s + t, cy, 1);
+              gfx_line(cx + 2 * s + t, cy, cx - 2 * s + t, cy + 4 * s, 1);
+              t += 1;
+            );
+          );
+        );
+      );
+    );
+    j += 1;
+  );
+  rkm_dscr[d] && cnt > 0 ? (                             // a thumb, so a cut list looks cut
+    first = rkm_dfirst[d];
+    rkm_col(rkm_csep, 1); gfx_rect(x + w - 6 * s, y + 6 * s, 3 * s, h - 12 * s);
+    rkm_col(rkm_cline, 1);
+    gfx_rect(x + w - 6 * s, y + 6 * s + (h - 12 * s) * first / cnt, 3 * s, max(10 * s, (h - 12 * s) * vis / cnt));
+  );
+);
+
+function rkm_run(ch) local(res, d, pd, pr, j, press, now, inside, x, y, target)
+(
+  res = 0;
+  rkm_on && (gfx_ext_flags & 1) ? rkm_close();           // a strip: no menus
+  rkm_on ? (
+    now = time_precise();
+    j = 0; loop(rkm_n, rkm_ry[j] = -1; j += 1; );
+    d = 0; loop(rkm_depth, rkm_layout(d); d += 1; );
+    // the deepest open panel under the pointer, and the row in it
+    pd = -1; pr = -1; d = rkm_depth - 1;
+    loop(rkm_depth,
+      pd < 0 && rkm_mx >= rkm_dx[d] && rkm_mx < rkm_dx[d] + rkm_dw[d] && rkm_my >= rkm_dy[d] && rkm_my < rkm_dy[d] + rkm_dh[d] ? (
+        pd = d; j = 0;
+        loop(rkm_n,
+          rkm_par[j] == rkm_dhd[d] && rkm_ry[j] >= 0 && rkm_my >= rkm_ry[j] && rkm_my < rkm_ry[j] + rkm_row_h(j) ? pr = j;
+          j += 1;
+        );
+      );
+      d -= 1;
+    );
+    press = !rkm_just && (rkm_lmbd || rkm_rmbd);
+    rkm_just = 0;
+    // an item can be picked only once the pointer has moved 3 px from where the menu opened: a panel clamped into the
+    // window can land under the pointer, and a quick second press (a double right-click) would pick what is there
+    !rkm_armed && abs(rkm_mx - rkm_ox) + abs(rkm_my - rkm_oy) > 3 * rkm_s ? rkm_armed = 1;
+    // hover: a head opens its submenu after the delay (a press at once); a plain row closes deeper panels after it
+    target = -2;
+    pr >= 0 && rkm_kind[pr] == 2 && !(rkm_flag[pr] & 2) ? (
+      !(pd + 1 < rkm_depth && rkm_dhd[pd + 1] == pr) ? target = pr;
+    ) : pr >= 0 && pd + 1 < rkm_depth ? target = -1;
+    target != -2 ? (
+      rkm_htrow !== target * 1000 + pd ? ( rkm_htrow = target * 1000 + pd; rkm_ht = now; );
+      now - rkm_ht >= RKM_DELAY || (press && target >= 0) ? (
+        target >= 0 && pd + 1 < RKM_MAXD ? ( rkm_dhd[pd + 1] = target; rkm_dfirst[pd + 1] = 0; rkm_depth = pd + 2; )
+                                           : rkm_depth = pd + 1;
+        rkm_htrow = -1;
+        j = 0; loop(rkm_n, rkm_ry[j] = -1; j += 1; );
+        d = 0; loop(rkm_depth, rkm_layout(d); d += 1; );
+      );
+    ) : rkm_htrow = -1;
+    // a press: pick an item; outside every panel: cancel
+    press ? (
+      pd < 0 ? res = -1 :
+      rkm_armed && pr >= 0 && rkm_kind[pr] == 0 && !(rkm_flag[pr] & 2) ? res = rkm_id[pr];
+    );
+    // the wheel scrolls the panel under the pointer
+    pd >= 0 && rkm_whl != 0 && rkm_dscr[pd] ? (
+      rkm_dfirst[pd] = max(0, rkm_dfirst[pd] - sign(rkm_whl) * max(1, abs(rkm_whl) | 0));
+      d = pd; loop(rkm_depth - pd, rkm_layout(d); d += 1; );
+    );
+    // Esc: the deepest submenu first. The closed head is held shut while the pointer stays on it (the hover timer
+    // would reopen it 0.12 s later and the menu could never be closed by key); a press on it still opens it.
+    ch == 27 && res == 0 ? (
+      rkm_depth > 1 ? ( rkm_depth -= 1; rkm_htrow = rkm_dhd[rkm_depth] * 1000 + rkm_depth - 1; rkm_ht = now + 1000000; )
+                    : res = -1;
+    );
+    res == 0 ? ( d = 0; loop(rkm_depth, rkm_draw(d, d == pd ? pr : -1); d += 1; ); );
+    res != 0 ? rkm_close();
+  );
+  res;
+);

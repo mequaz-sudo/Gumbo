@@ -1,0 +1,51 @@
+// rk_sat.jsfx-inc -- the sine waveshaper of EON Saturation, shared (EON Studios, 2026-11-01; MIT, as the ReaKit library).
+// The curve is Michael Gruhn's "Saturation" (C) 2006-2007 (LOSER), used with acknowledgement of the author as its
+// header asks: y = sin(x f) / sin(f), x f held at +-pi/2 so a hot signal flattens onto the sine's top. The sine is the
+// 5th-order polynomial EON Saturation runs in @sample (0.45 % high at pi/2; the normaliser is the same polynomial, so
+// the top still lands on 1).
+//
+//   rk_sat_norm(f)               1 / sin(f) for the curve f (0.001 .. pi/2), from the same polynomial
+//   rk_sat_shape(x, f, inv_f)    the shaped sample (inv_f = rk_sat_norm(f), worked out once a block or when f moves)
+//   rk_sat_curve_draw(x, y, w, h, f, g, k, lvl, s, ar, ag, ab, br, bg, bb)
+//       the transfer curve in a box, for input -1..1: out = rk_sat_shape(x g, f) k (g a gain into the curve, k after
+//       it); lvl 0..1 the input's recent peak, drawn as a dot riding the curve. ar/ag/ab the curve's colour, br/bg/bb
+//       the box's ground.
+// EON Saturation keeps its own copy of the arithmetic for now: moving it onto this file is its own step (its output
+// must null against the shipped plugin first).
+
+@init
+RK_SAT_HP = $pi * 0.5;
+
+function rk_sat_norm(f) local(f2) (
+  f = max(0.001, min(RK_SAT_HP, f)); f2 = f * f;
+  1.0 / (f * (1.0 - f2 * (0.16666667 - f2 * 0.00833333)));
+);
+function rk_sat_shape(x, f, inv_f) local(y, y2) (
+  y = max(-RK_SAT_HP, min(RK_SAT_HP, x * f)); y2 = y * y;
+  y * (1.0 - y2 * (0.16666667 - y2 * 0.00833333)) * inv_f;
+);
+
+function rk_sat_curve_draw(x, y, w, h, f, g, k, lvl, s, ar, ag, ab, br, bg, bb) local(inv, i, n, px, py, lx, ly, cx, cy, v)
+(
+  inv = rk_sat_norm(f);
+  gfx_set(br, bg, bb, 1); gfx_rect(x, y, w, h);
+  cx = x + w * 0.5; cy = y + h * 0.5;
+  gfx_set(1, 1, 1, 0.08); gfx_line(x, cy, x + w - 1, cy); gfx_line(cx, y, cx, y + h - 1);
+  gfx_set(1, 1, 1, 0.14); gfx_line(x, y + h - 1, x + w - 1, y);            // straight through: no colour
+  n = max(8, floor(w)); i = 0;
+  gfx_set(ar, ag, ab, 1);
+  loop(n + 1,
+    v = -1 + 2 * i / n;
+    px = x + (v + 1) * 0.5 * (w - 1);
+    py = cy - max(-1, min(1, rk_sat_shape(v * g, f, inv) * k)) * (h * 0.5 - 1);
+    i > 0 ? ( gfx_line(lx, ly, px, py, 1); gfx_line(lx, ly + 1, px, py + 1, 1); );
+    lx = px; ly = py; i += 1;
+  );
+  lvl > 0.003 ? (
+    v = min(1, lvl);
+    px = x + (v + 1) * 0.5 * (w - 1);
+    py = cy - max(-1, min(1, rk_sat_shape(v * g, f, inv) * k)) * (h * 0.5 - 1);
+    gfx_set(1, 1, 1, 0.9); gfx_circle(px, py, max(2, 2.5 * s), 1);
+  );
+  gfx_set(0, 0, 0, 0.5); gfx_rect(x, y, w, 1); gfx_rect(x, y, 1, h);
+);

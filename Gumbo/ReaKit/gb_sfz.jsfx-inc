@@ -1,0 +1,330 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_sfz.jsfx-inc -- Gumbo: read one flat instrument file (".gumbo.txt", made by the converter
+// EON/Eon_JSFX/Scripts/Gumbo/gumbo_sfz.lua, FORMAT_VERSION 1) into the region and sample tables.
+//
+// The file is plain text opened in TEXT mode (a .txt opens in text mode; a .sfz does not -- spec §0c), one region per
+// line, every field in the converter's fixed order (a field may be left out: the converter omits end=-2), numbers
+// only, then optional amp_velcurve_N and loccN/hiccN tokens. A "<control> set_ccN=V" line gives starting CC values.
+// Lines are parsed character by character: no match() and no per-token string compares (4,096 regions x 42 fields).
+//
+// Memory (cells; the host sets maxmem=134217728):
+//   GB_REG   region table, GB_RS fields each, GB_MAXREG regions
+//   GB_SMP   unique sample files, GB_SS fields each (pointer, frames, channels, rate, path chars, status)
+//   GB_PCH   path characters of every sample file, as numbers
+//   GB_VCT   velocity curves, 128 cells per region that has one
+//   GB_FN    the field-name table (length, first char, last char per field)
+// Threads: the parse runs in @gfx (a drop) or @serialize (a project open), never in @block/@sample; the host keeps
+// gb_ready = 0 for the whole load so the audio side reads none of these tables meanwhile.
+
+@init
+GB_REG = 200000;  GB_RS = 64;  GB_MAXREG = 4096;          // -> 462144
+GB_SMP = 470000;  GB_SS = 8;   GB_MAXSMP = 4096;          // -> 502768
+GB_PCH = 510000;  GB_PCH_CAP = 1000000;                   // -> 1510000
+GB_VCT = 1520000; GB_VCT_MAX = 512;                       // 512 x 128 -> 1585536
+GB_FN  = 1700000;                                         // field names, 3 x 48
+gb_cc_init = 1612000;                                     // 128 starting CC values from the file's <control> line
+
+// region fields, in the converter's FIELDS order (gumbo_sfz.lua M.FIELDS) -- file field f lands in cell f + 1
+GBR_SMP = 0;
+GBR_LOKEY = 1; GBR_HIKEY = 2; GBR_KEYC = 3; GBR_KTRACK = 4; GBR_LOVEL = 5; GBR_HIVEL = 6; GBR_TUNE = 7;
+GBR_TRANSP = 8; GBR_VOLDB = 9; GBR_PAN = 10; GBR_VTRACK = 11; GBR_AMPRAND = 12; GBR_DELAY = 13; GBR_ATT = 14;
+GBR_HOLD = 15; GBR_DEC = 16; GBR_SUS = 17; GBR_REL = 18; GBR_LMODE = 19; GBR_LSTART = 20; GBR_LEND = 21;
+GBR_OFFSET = 22; GBR_OFFRAND = 23; GBR_END = 24; GBR_TRIG = 25; GBR_RTDEC = 26; GBR_SEQLEN = 27; GBR_SEQPOS = 28;
+GBR_LORAND = 29; GBR_HIRAND = 30; GBR_GROUP = 31; GBR_OFFBY = 32; GBR_OFFMODE = 33; GBR_OFFTIME = 34; GBR_POLY = 35;
+GBR_NPOLY = 36; GBR_LOCC64 = 37; GBR_HICC64 = 38; GBR_SWLAST = 39; GBR_SWLO = 40; GBR_SWHI = 41; GBR_SWDEF = 42;
+GB_NFIELDS = 42;
+GBR_GCNT = 43;  GBR_GATES = 44;      // up to GB_MAXGATES gates: (cc, lo, hi) at 44..55
+GB_MAXGATES = 4;
+GBR_VCPTR = 56;                      // 0 = no curve, else a 128-cell table in GB_VCT
+GBR_SEQCNT = 57;                     // round-robin counter (runtime)
+GBR_NMOD = 58;                       // format 2: live controller mods on this region (0..GB_MAXMOD)
+// format 2 tables (gumbo_sfz.lua M.FORMAT_VERSION 2), in the free space between gb_cc_init and GB_FN:
+//   GB_MOD    per region GB_MAXMOD mods of 4 cells: type, cc, a, b (types in gumbo_sfz.lua's header)
+//   GB_CCV    custom curves for live controllers, 128 cells each; GB_CCVMAP[curve index 0..255] = slot + 1
+//   GB_LBL    the library's controller names: cc, char offset, length;  GB_SWL the keyswitch names: note, offset, length
+//   GB_KLB    each key's name (a drum kit's sounds: "// label_key NOTE name"), by note: char offset, length
+//   GB_LCH    the names' characters
+GB_MAXMOD = 4; GB_MODS = 16;
+GB_MOD = 1620000;                                         // 4096 x 16 -> 1685536
+GB_CCV = 1686000; GB_CCV_MAX = 16;                        // 16 x 128 -> 1688048
+GB_CCVMAP = 1688100;                                      // 256 -> 1688356
+GB_LBL = 1688400; GB_LBL_MAX = 32;                        // 32 x 3 -> 1688496
+GB_SWL = 1688500; GB_SWL_MAX = 64;                        // 64 x 3 -> 1688692
+GB_LCH = 1688700; GB_LCH_CAP = 8000;                      // -> 1696700, under GB_FN
+GB_KLB = 1697000;                                         // 128 x 2: each key's name (char offset, length; 0 = none) -> 1697256
+// word values
+GB_LM_NOLOOP = 0; GB_LM_ONESHOT = 1; GB_LM_CONT = 2; GB_LM_SUST = 3;
+GB_TR_ATTACK = 0; GB_TR_RELEASE = 1; GB_TR_RELKEY = 2; GB_TR_FIRST = 3; GB_TR_LEGATO = 4;
+GB_OM_FAST = 0; GB_OM_NORMAL = 1; GB_OM_TIME = 2;
+// sample fields
+GBS_PTR = 0; GBS_FRAMES = 1; GBS_NCH = 2; GBS_SR = 3; GBS_PATH = 4; GBS_PLEN = 5; GBS_STAT = 6; GBS_HASH = 7;
+GB_SS_NEW = 0; GB_SS_OK = 1; GB_SS_MISSING = 2; GB_SS_FORMAT = 3; GB_SS_NOROOM = 4;
+GB_SILENCE = -1;                     // region sample index for *silence (a voice with no sound: it only chokes)
+
+// field-name table: length, first and last character of each of the 42 field names (in file order)
+function gb_fn_set(f, nm) local(n) (
+  n = strlen(nm);
+  GB_FN[f * 3] = n; GB_FN[f * 3 + 1] = str_getchar(nm, 0); GB_FN[f * 3 + 2] = str_getchar(nm, n - 1);
+);
+gb_fn_set(0, "lokey"); gb_fn_set(1, "hikey"); gb_fn_set(2, "pitch_keycenter"); gb_fn_set(3, "pitch_keytrack");
+gb_fn_set(4, "lovel"); gb_fn_set(5, "hivel"); gb_fn_set(6, "tune"); gb_fn_set(7, "transpose"); gb_fn_set(8, "volume");
+gb_fn_set(9, "pan"); gb_fn_set(10, "amp_veltrack"); gb_fn_set(11, "amp_random"); gb_fn_set(12, "ampeg_delay");
+gb_fn_set(13, "ampeg_attack"); gb_fn_set(14, "ampeg_hold"); gb_fn_set(15, "ampeg_decay"); gb_fn_set(16, "ampeg_sustain");
+gb_fn_set(17, "ampeg_release"); gb_fn_set(18, "loop_mode"); gb_fn_set(19, "loop_start"); gb_fn_set(20, "loop_end");
+gb_fn_set(21, "offset"); gb_fn_set(22, "offset_random"); gb_fn_set(23, "end"); gb_fn_set(24, "trigger");
+gb_fn_set(25, "rt_decay"); gb_fn_set(26, "seq_length"); gb_fn_set(27, "seq_position"); gb_fn_set(28, "lorand");
+gb_fn_set(29, "hirand"); gb_fn_set(30, "group"); gb_fn_set(31, "off_by"); gb_fn_set(32, "off_mode");
+gb_fn_set(33, "off_time"); gb_fn_set(34, "polyphony"); gb_fn_set(35, "note_polyphony"); gb_fn_set(36, "locc64");
+gb_fn_set(37, "hicc64"); gb_fn_set(38, "sw_last"); gb_fn_set(39, "sw_lokey"); gb_fn_set(40, "sw_hikey");
+gb_fn_set(41, "sw_default");
+
+// defaults per field (the converter writes every field, but a hand-made file may leave some out)
+function gb_region_defaults(r) (
+  memset(r, 0, GB_RS);
+  r[GBR_HIKEY] = 127; r[GBR_KEYC] = 60; r[GBR_KTRACK] = 100; r[GBR_LOVEL] = 1; r[GBR_HIVEL] = 127;
+  r[GBR_VTRACK] = 100; r[GBR_SUS] = 100; r[GBR_REL] = 0.001; r[GBR_END] = -2; r[GBR_SEQLEN] = 1; r[GBR_SEQPOS] = 1;
+  r[GBR_HIRAND] = 1; r[GBR_OFFTIME] = 0.006; r[GBR_HICC64] = 127;
+  r[GBR_SWLAST] = -1; r[GBR_SWLO] = -1; r[GBR_SWHI] = -1; r[GBR_SWDEF] = -1;
+);
+
+// a decimal number in #gb_ln from character a up to (not including) b: [-]digits[.digits]; nan-safe default
+function gb_num(a, b, dflt) local(i, c, neg, v, frac, sc, any) (
+  i = a; neg = 0; v = 0; frac = 0; sc = 0.1; any = 0;
+  i < b && str_getchar(#gb_ln, i) == '-' ? ( neg = 1; i += 1; );
+  i < b && str_getchar(#gb_ln, i) == '+' ? i += 1;
+  while (i < b) (
+    c = str_getchar(#gb_ln, i);
+    c >= '0' && c <= '9' ? (
+      any = 1;
+      frac ? ( v += (c - '0') * sc; sc *= 0.1; ) : v = v * 10 + (c - '0');
+    ) : c == '.' ? frac = 1 : ( any = -1; i = b; );   // a stray character: the whole value is bad
+    i += 1;
+  );
+  any == 1 ? ( neg ? -v : v ) : ( gb_bad_values += 1; dflt );
+);
+
+// does the name at [a, a+n) look like field f? (length, first and last character)
+function gb_name_is(f, a, n) (
+  GB_FN[f * 3] == n && GB_FN[f * 3 + 1] == str_getchar(#gb_ln, a) && GB_FN[f * 3 + 2] == str_getchar(#gb_ln, a + n - 1);
+);
+
+// a word value -> its code (first letters are enough for the converter's lowercase words)
+function gb_word(f, a, b) local(c0, n) (
+  c0 = str_getchar(#gb_ln, a); n = b - a;
+  f == 18 ? (            // loop_mode: no_loop one_shot loop_continuous loop_sustain
+    c0 == 'n' ? GB_LM_NOLOOP : c0 == 'o' ? GB_LM_ONESHOT : str_getchar(#gb_ln, a + 5) == 's' ? GB_LM_SUST : GB_LM_CONT;
+  ) : f == 24 ? (        // trigger: attack release release_key first legato
+    c0 == 'r' ? ( n > 7 ? GB_TR_RELKEY : GB_TR_RELEASE ) : c0 == 'f' ? GB_TR_FIRST : c0 == 'l' ? GB_TR_LEGATO : GB_TR_ATTACK;
+  ) : (                  // off_mode: fast normal time
+    c0 == 'n' ? GB_OM_NORMAL : c0 == 't' ? GB_OM_TIME : GB_OM_FAST;
+  );
+);
+
+// find or add the sample file whose path is #gb_ln[a, b); returns its index, or -1 when the tables are full
+function gb_sample_index(a, b) local(n, h, i, k, s, j, same, p) (
+  n = b - a; h = n;
+  i = a; loop(n, h = (h * 31 + str_getchar(#gb_ln, i)) % 1000003; i += 1; );
+  k = -1; s = 0;
+  while (k < 0 && s < gb_nsmp) (
+    p = GB_SMP + s * GB_SS;
+    p[GBS_HASH] == h && p[GBS_PLEN] == n ? (
+      same = 1; j = 0;
+      while (same && j < n) ( GB_PCH[p[GBS_PATH] + j] != str_getchar(#gb_ln, a + j) ? same = 0; j += 1; );
+      same ? k = s;
+    );
+    s += 1;
+  );
+  k < 0 && gb_nsmp < GB_MAXSMP && gb_pch_top + n <= GB_PCH_CAP ? (
+    k = gb_nsmp; p = GB_SMP + k * GB_SS;
+    memset(p, 0, GB_SS);
+    p[GBS_PATH] = gb_pch_top; p[GBS_PLEN] = n; p[GBS_HASH] = h; p[GBS_STAT] = GB_SS_NEW;
+    j = 0; loop(n, GB_PCH[gb_pch_top + j] = str_getchar(#gb_ln, a + j); j += 1; );
+    gb_pch_top += n; gb_nsmp += 1;
+  );
+  k;
+);
+
+// format 2: up to four comma-separated numbers in [a, b) -> out[0..3] (a missing one stays 0)
+function gb_csv4(a, b, out) local(k, p, q) (
+  out[0] = out[1] = out[2] = out[3] = 0;
+  k = 0; p = a;
+  while (k < 4 && p < b) (
+    q = p; while (q < b && str_getchar(#gb_ln, q) != ',') ( q += 1; );
+    out[k] = gb_num(p, q, 0); k += 1; p = q + 1;
+  );
+);
+
+// one "<region> sample=..." line
+function gb_parse_region(len) local(r, p, s0, s1, f, a, eq, b, n, c, v, g, cc, lo, hi, vn, vt, k, i, last, lastv, ff)
+(
+  gb_nreg < GB_MAXREG ? (
+    r = GB_REG + gb_nreg * GB_RS;
+    gb_region_defaults(r);
+    // the sample value runs to " lokey=" (the converter writes lokey first, always)
+    s0 = 16; p = s0; s1 = -1;
+    while (s1 < 0 && p + 7 <= len) (
+      str_getchar(#gb_ln, p) == ' ' && str_getchar(#gb_ln, p + 1) == 'l' && str_getchar(#gb_ln, p + 2) == 'o'
+        && str_getchar(#gb_ln, p + 3) == 'k' && str_getchar(#gb_ln, p + 6) == '=' ? s1 = p;
+      p += 1;
+    );
+    s1 < 0 ? ( gb_bad_lines += 1; ) : (
+      // *silence keeps its region (it chokes), with no sample
+      s1 - s0 == 8 && str_getchar(#gb_ln, s0) == '*' && str_getchar(#gb_ln, s0 + 1) == 's' ? r[GBR_SMP] = GB_SILENCE
+      : ( k = gb_sample_index(s0, s1); r[GBR_SMP] = k; k < 0 ? gb_table_full = 1; );
+      // the tokens: name=value separated by single spaces
+      p = s1 + 1; f = 0; last = -1;
+      while (p < len) (
+        a = p; eq = -1;
+        while (p < len && str_getchar(#gb_ln, p) != ' ') ( eq < 0 && str_getchar(#gb_ln, p) == '=' ? eq = p; p += 1; );
+        b = p;               // [a, b) = one token
+        p += 1;
+        eq > a ? (
+          n = eq - a;
+          // fixed field? walk forward from the expected one (a left-out field is skipped)
+          ff = f; while (ff < GB_NFIELDS && !gb_name_is(ff, a, n)) ( ff += 1; );
+          ff < GB_NFIELDS ? (
+            ff == 18 || ff == 24 || ff == 32 ? v = gb_word(ff, eq + 1, b) : v = gb_num(eq + 1, b, r[ff + 1]);
+            r[ff + 1] = v; f = ff + 1;
+          ) : (
+            c = str_getchar(#gb_ln, a);
+            c == 'a' && n > 13 ? (                 // amp_velcurve_N
+              vn = gb_num(a + 13, eq, -1) | 0; vt = gb_num(eq + 1, b, -1);
+              vn >= 0 && vn <= 127 && vt >= 0 ? (
+                r[GBR_VCPTR] == 0 && gb_nvc < GB_VCT_MAX ? (
+                  r[GBR_VCPTR] = GB_VCT + gb_nvc * 128; gb_nvc += 1;
+                  memset(r[GBR_VCPTR], -1, 128);   // -1 = not given yet; filled in below
+                );
+                r[GBR_VCPTR] > 0 ? r[GBR_VCPTR][vn] = min(1, vt);
+              );
+            ) : (c == 'l' || c == 'h') && n > 4 && str_getchar(#gb_ln, a + 2) == 'c' ? (   // loccN / hiccN
+              cc = gb_num(a + 4, eq, -1) | 0; v = gb_num(eq + 1, b, c == 'l' ? 0 : 127);
+              cc >= 0 && cc <= 127 ? (
+                g = 0; k = -1;
+                while (k < 0 && g < r[GBR_GCNT]) ( r[GBR_GATES + g * 3] == cc ? k = g; g += 1; );
+                k < 0 && r[GBR_GCNT] < GB_MAXGATES ? (
+                  k = r[GBR_GCNT]; r[GBR_GCNT] += 1;
+                  r[GBR_GATES + k * 3] = cc; r[GBR_GATES + k * 3 + 1] = 0; r[GBR_GATES + k * 3 + 2] = 127;
+                );
+                k >= 0 ? ( r[GBR_GATES + k * 3 + (c == 'l' ? 1 : 2)] = v; ) : gb_gates_dropped += 1;
+              );
+            ) : c == 'm' && n == 3 && str_getchar(#gb_ln, a + 1) == 'o' && str_getchar(#gb_ln, a + 2) == 'd' ? (   // mod=T,CC,A,B
+              r[GBR_NMOD] < GB_MAXMOD ? (
+                g = GB_MOD + gb_nreg * GB_MODS + r[GBR_NMOD] * 4;
+                gb_csv4(eq + 1, b, g);
+                g[1] = max(0, min(127, g[1] | 0));
+                r[GBR_NMOD] += 1;
+              ) : gb_mods_dropped += 1;
+            ) : gb_unknown_tokens += 1;
+          );
+        );
+      );
+      // velocity curve: fill the gaps linearly (amp_velcurve_0 = 0 and _127 = 1 unless given)
+      r[GBR_VCPTR] > 0 ? (
+        vt = r[GBR_VCPTR];
+        vt[0] < 0 ? vt[0] = 0;
+        vt[127] < 0 ? vt[127] = 1;
+        last = 0; lastv = vt[0]; i = 1;
+        loop(127,
+          vt[i] >= 0 ? (
+            k = last + 1; loop(i - last - 1, vt[k] = lastv + (vt[i] - lastv) * (k - last) / (i - last); k += 1; );
+            last = i; lastv = vt[i];
+          );
+          i += 1;
+        );
+      );
+      r[GBR_SEQCNT] = 0;
+      gb_nreg += 1;
+    );
+  ) : gb_table_full = 1;
+);
+
+// "<control> set_ccN=V ..." -> starting CC values (gb_cc_init[N])
+function gb_parse_control(len) local(p, a, eq, b, cc) (
+  p = 10;
+  while (p < len) (
+    a = p; eq = -1;
+    while (p < len && str_getchar(#gb_ln, p) != ' ') ( eq < 0 && str_getchar(#gb_ln, p) == '=' ? eq = p; p += 1; );
+    b = p; p += 1;
+    eq > a + 6 && str_getchar(#gb_ln, a) == 's' && str_getchar(#gb_ln, a + 4) == 'c' ? (
+      cc = gb_num(a + 6, eq, -1) | 0;
+      cc >= 0 && cc <= 127 ? gb_cc_init[cc] = max(0, min(127, gb_num(eq + 1, b, 0)));
+    );
+  );
+);
+
+// format 2: a name line "// label_cc N text" / "// sw_label N text" (p = where N starts) -> its table
+function gb_parse_name(p, len, tbl, cnt, mx) local(q, n, i) (
+  q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+  n = gb_num(p, q, -1) | 0;
+  q += 1;
+  cnt < mx && n >= 0 && n <= 127 && q < len && gb_lch_top + (len - q) <= GB_LCH_CAP ? (
+    tbl[cnt * 3] = n; tbl[cnt * 3 + 1] = gb_lch_top; tbl[cnt * 3 + 2] = min(len - q, 40);
+    i = 0; loop(tbl[cnt * 3 + 2], GB_LCH[gb_lch_top + i] = str_getchar(#gb_ln, q + i); i += 1; );
+    gb_lch_top += tbl[cnt * 3 + 2];
+    cnt + 1;
+  ) : cnt;
+);
+// format 2: "// label_key NOTE name" -> that key's name (GB_KLB, by note; the first name a key gets stays)
+function gb_parse_key_name(len) local(p, q, n, i, k) (
+  p = 13; q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+  n = gb_num(p, q, -1) | 0;
+  q += 1; k = min(len - q, 24);
+  n >= 0 && n <= 127 && k > 0 && GB_KLB[n * 2 + 1] == 0 && gb_lch_top + k <= GB_LCH_CAP ? (
+    GB_KLB[n * 2] = gb_lch_top; GB_KLB[n * 2 + 1] = k;
+    i = 0; loop(k, GB_LCH[gb_lch_top + i] = str_getchar(#gb_ln, q + i); i += 1; );
+    gb_lch_top += k; gb_nkey += 1;
+  );
+);
+// format 2: "// curve I v0 .. v127" -> a custom curve slot for live controllers
+function gb_parse_curve(len) local(p, q, idx, k, t) (
+  p = 9; q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+  idx = gb_num(p, q, -1) | 0;
+  idx >= 0 && idx <= 255 && gb_nccv < GB_CCV_MAX ? (
+    t = GB_CCV + gb_nccv * 128; k = 0; p = q + 1;
+    while (k < 128 && p < len) (
+      q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+      t[k] = gb_num(p, q, 0); k += 1; p = q + 1;
+    );
+    while (k < 128) ( t[k] = t[max(0, k - 1)]; k += 1; );
+    gb_nccv += 1; GB_CCVMAP[idx] = gb_nccv;
+  );
+);
+// format 2, for the face: the library's controller names and keyswitch names (-> #gb_ls)
+function gb_name_str(tbl, i) local(p, k) (
+  #gb_ls = ""; p = GB_LCH + tbl[i * 3 + 1];
+  k = 0; loop(tbl[i * 3 + 2], sprintf(#gb_lsc, "%c", p[k]); strcat(#gb_ls, #gb_lsc); k += 1; );
+  #gb_ls;
+);
+// a key's name into #gb_ls (empty when it has none); returns its length
+function gb_key_name(n) local(p, k) (
+  #gb_ls = "";
+  n >= 0 && n <= 127 && GB_KLB[n * 2 + 1] > 0 ? (
+    p = GB_LCH + GB_KLB[n * 2];
+    k = 0; loop(GB_KLB[n * 2 + 1], sprintf(#gb_lsc, "%c", p[k]); strcat(#gb_ls, #gb_lsc); k += 1; );
+  );
+  strlen(#gb_ls);
+);
+
+// one line of the file (already in #gb_ln)
+function gb_parse_line() local(len) (
+  len = strlen(#gb_ln);
+  // file_string keeps the line's own line break: strip LF and CR (a file edited by hand on Windows has both)
+  len > 0 && str_getchar(#gb_ln, len - 1) == 10 ? len -= 1;
+  len > 0 && str_getchar(#gb_ln, len - 1) == 13 ? len -= 1;
+  len >= 16 && strncmp(#gb_ln, "<region> sample=", 16) == 0 ? gb_parse_region(len)
+  : len >= 9 && strncmp(#gb_ln, "<control>", 9) == 0 ? gb_parse_control(len)
+  : len >= 14 && strncmp(#gb_ln, "// gumbo-flat ", 14) == 0 ? gb_fmt_ver = gb_num(14, len, 0)
+  : len >= 13 && strncmp(#gb_ln, "// label_cc ", 12) == 0 ? gb_nlbl = gb_parse_name(12, len, GB_LBL, gb_nlbl, GB_LBL_MAX)
+  : len >= 13 && strncmp(#gb_ln, "// sw_label ", 12) == 0 ? gb_nswl = gb_parse_name(12, len, GB_SWL, gb_nswl, GB_SWL_MAX)
+  : len >= 14 && strncmp(#gb_ln, "// label_key ", 13) == 0 ? gb_parse_key_name(len)
+  : len >= 10 && strncmp(#gb_ln, "// curve ", 9) == 0 ? gb_parse_curve(len);
+);
+
+// clear everything a new load fills
+function gb_tables_reset() local(i) (
+  gb_nreg = 0; gb_nsmp = 0; gb_pch_top = 0; gb_nvc = 0; gb_fmt_ver = 0;
+  gb_bad_values = 0; gb_bad_lines = 0; gb_unknown_tokens = 0; gb_gates_dropped = 0; gb_table_full = 0;
+  gb_mods_dropped = 0; gb_nccv = 0; gb_nlbl = 0; gb_nswl = 0; gb_lch_top = 0; gb_nkey = 0;
+  memset(GB_CCVMAP, 0, 256); memset(GB_KLB, 0, 256);
+  i = 0; loop(128, gb_cc_init[i] = 0; i += 1; );
+);

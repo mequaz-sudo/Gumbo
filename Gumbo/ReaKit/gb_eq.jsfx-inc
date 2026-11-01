@@ -1,0 +1,64 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_eq.jsfx-inc -- Gumbo's EQ and TONE on Quezy's own band engine (qz_engine.jsfx-inc + rk_svf + rk_svf_match, the
+// one master; ReEQ's design, Justin Johnson, MIT -- the notice is in Gumbo_LICENSE.md). Nothing here filters: it only
+// wires Quezy's band objects the way Quezy_ReaKit.jsfx does (qz_aud_init at start and on a rate change, qz_band_step
+// every block, qz_band_run every sample).
+//   bands 1..4 (sliders 21, 34, 47, 60; 13 each, Quezy's layout): LOW shelf, LOW MID bell, HIGH MID bell, HIGH shelf
+//   -- the EQ page sets them (an EQ, no filters: the owner, 2026-10-30)
+//   band 5 (sliders 73..85): TONE, Quezy's Flat Tilt (shape 15) pivoting on 1 kHz: -100 dark (the top down, the bottom
+//   up) .. +100 bright, GBE_TILT dB across the audio band at the ends, 0 = off (the engine's switching crossfade makes
+//   on/off click-free). The owner, 2026-10-31: a high cut "doesn't do much"; a tone knob tilts the whole balance.
+// The display bank (gbe_d1..5) evaluates the same bands for the face's curve (@gfx, its own objects: the audio bank is
+// @block / @sample only, as qz_engine's threads note says).
+// The host: qz_xscr from freemem and gb_eq_init() in @init, gb_eq_block(tone) in @block, gb_eq_sample() in @sample.
+
+@init
+GBE_O1 = 21; GBE_OT = 73;            // band 1's first slider; TONE's first slider
+gbe_sr = 0;
+
+GBE_TILT = 18;                       // TONE's tilt at either end: dB from 20 Hz to 20 kHz (1.8 dB an octave)
+GBE_PIVOT = 1000;                    // ... round this frequency
+
+function gb_eq_init() (
+  gbe_a1.qz_aud_init(); gbe_a2.qz_aud_init(); gbe_a3.qz_aud_init(); gbe_a4.qz_aud_init(); gbe_a5.qz_aud_init();
+  gbe_sr = srate;
+);
+// tone -1..1 (0 = flat): TONE's band follows it, then every band takes its sliders (a changed value glides; a switched
+// mode or shape crossfades -- qz_band_step)
+function gb_eq_block(tone) (
+  srate != gbe_sr ? gb_eq_init();
+  slider73 = abs(tone) > 0.001 ? 2 : 0;
+  slider75 = 15; slider76 = GBE_PIVOT; slider77 = tone * GBE_TILT;
+  gbe_a1.qz_band_step(21, 1); gbe_a2.qz_band_step(34, 1); gbe_a3.qz_band_step(47, 1); gbe_a4.qz_band_step(60, 1);
+  gbe_a5.qz_band_step(73, 1);
+);
+function gb_eq_sample() (
+  gbe_a5.qz_band_run();              // TONE first (it used to sit before WIDTH and the level), then the EQ
+  gbe_a1.qz_band_run(); gbe_a2.qz_band_run(); gbe_a3.qz_band_run(); gbe_a4.qz_band_run();
+);
+
+// ── the display bank, for the face (@gfx only) ──
+function gbe_mag(f) instance(filter, run_sr) local(m) (
+  m = filter.rk_svfm_magnitude(f, run_sr); m > 0.000000001 ? 20 * log10(m) : -180;
+);
+function gb_eq_display_init() (
+  gbe_d1.qz_band_init(); gbe_d2.qz_band_init(); gbe_d3.qz_band_init(); gbe_d4.qz_band_init(); gbe_d5.qz_band_init();
+);
+// band k (0..3; 4 = TONE) at frequency f, in dB, after gb_eq_display_apply
+function gb_eq_display_db(k, f) (
+  k == 0 ? gbe_d1.gbe_mag(f) : k == 1 ? gbe_d2.gbe_mag(f) : k == 2 ? gbe_d3.gbe_mag(f) : k == 3 ? gbe_d4.gbe_mag(f)
+  : gbe_d_ton ? gbe_d5.gbe_mag(f) : 0;
+);
+// tone -1..1 = the face's own TONE value: band 5's sliders are written by @block, so the curve is shaped here from the
+// knob (the same tilt) and follows it at once, audio running or not
+function gb_eq_display_apply(tone) (
+  gbe_d1.run_sr = gbe_d2.run_sr = gbe_d3.run_sr = gbe_d4.run_sr = gbe_d5.run_sr = srate;
+  gbe_d1.qz_band_apply(21, 1); gbe_d2.qz_band_apply(34, 1); gbe_d3.qz_band_apply(47, 1); gbe_d4.qz_band_apply(60, 1);
+  // apply only sets each band's TARGET after its first call (the audio bank glides there); the display jumps to it,
+  // as Quezy's face does (qz_face 514) -- without this the curve kept its first shape and never moved
+  gbe_d1.filter.rk_svf_set_to_target(); gbe_d2.filter.rk_svf_set_to_target();
+  gbe_d3.filter.rk_svf_set_to_target(); gbe_d4.filter.rk_svf_set_to_target();
+  gbe_d_ton = abs(tone) > 0.001;
+  gbe_d_ton ? gbe_d5.qz_band_shape(15, GBE_PIVOT, tone * GBE_TILT, 0.7071, 1, 0.49 * srate);
+  gbe_d_ton ? gbe_d5.filter.rk_svf_set_to_target();   // the shape sets targets; the magnitude reads the live ones
+);

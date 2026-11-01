@@ -1,0 +1,65 @@
+// gumbo-index 1
+Drums|GM Percussion|561.9|220|EON_Gumbo/Library/VSCO 2 CE/GM-StylePerc.gumbo.txt
+Drums|Timpani Rolls|149.5|10|EON_Gumbo/Library/VSCO 2 CE/TimpaniRolls.gumbo.txt
+Keys|Organ Loud Pedal|94.9|11|EON_Gumbo/Library/VSCO 2 CE/OrganLoudPedal.gumbo.txt
+Keys|Organ Quiet|171.2|21|EON_Gumbo/Library/VSCO 2 CE/OrganQuiet.gumbo.txt
+Keys|Organ Quiet Pedal|88.8|11|EON_Gumbo/Library/VSCO 2 CE/OrganQuietPedal.gumbo.txt
+Keys|Upright Piano 2|590.0|82|EON_Gumbo/Library/VSCO 2 CE/VSUpright1.gumbo.txt
+Strings|Cello Section (all styles)|473.2|156|EON_Gumbo/Library/VSCO 2 CE/CelloEns-KS.gumbo.txt
+Strings|Cello Section Pizzicato|88.6|52|EON_Gumbo/Library/VSCO 2 CE/CelloEnsPizz.gumbo.txt
+Strings|Cello Section Spiccato|66.5|52|EON_Gumbo/Library/VSCO 2 CE/CelloEnsSpic.gumbo.txt
+Strings|Cello Section Sustain Vibrato (quiet)|81.3|14|EON_Gumbo/Library/VSCO 2 CE/CelloEnsSusVib-Quiet.gumbo.txt
+Strings|Cello Section Tremolo|133.5|25|EON_Gumbo/Library/VSCO 2 CE/CelloEnsTrem.gumbo.txt
+Strings|Double Bass (all styles)|594.4|152|EON_Gumbo/Library/VSCO 2 CE/Contrabass-KS.gumbo.txt
+Strings|Double Bass Pizzicato|79.3|40|EON_Gumbo/Library/VSCO 2 CE/ContrabassPizz.gumbo.txt
+Strings|Double Bass Spiccato|49.4|42|EON_Gumbo/Library/VSCO 2 CE/ContrabassSpic.gumbo.txt
+Strings|Double Bass Sustain Non-Vibrato|201.4|28|EON_Gumbo/Library/VSCO 2 CE/ContrabassSusNV.gumbo.txt
+Strings|Double Bass Sustain Vibrato|182.9|26|EON_Gumbo/Library/VSCO 2 CE/ContrabassSusVB.gumbo.txt
+Strings|Double Bass Sustain Vibrato (quiet)|83.4|13|EON_Gumbo/Library/VSCO 2 CE/ContrabassSusVB-Quiet.gumbo.txt
+Strings|Double Bass Tremolo|81.3|16|EON_Gumbo/Library/VSCO 2 CE/ContrabassTrem.gumbo.txt
+Strings|Solo Violin (all styles)|516.7|161|EON_Gumbo/Library/VSCO 2 CE/SViolin-KS.gumbo.txt
+Strings|Solo Violin Pizzicato|52.3|44|EON_Gumbo/Library/VSCO 2 CE/SViolinPizz.gumbo.txt
+Strings|Solo Violin Spiccato|51.2|60|EON_Gumbo/Library/VSCO 2 CE/SViolinSpic.gumbo.txt
+Strings|Solo Violin Tremolo|129.5|27|EON_Gumbo/Library/VSCO 2 CE/SViolinTrem.gumbo.txt
+Strings|Solo Violin Vibrato|283.6|30|EON_Gumbo/Library/VSCO 2 CE/SViolinVib.gumbo.txt
+Strings|Solo Violin Vibrato (quiet)|148.6|15|EON_Gumbo/Library/VSCO 2 CE/SViolinVib-Quiet.gumbo.txt
+Strings|Viola Section (all styles)|435.6|144|EON_Gumbo/Library/VSCO 2 CE/ViolaEns-KS.gumbo.txt
+Strings|Viola Section Pizzicato|38.3|46|EON_Gumbo/Library/VSCO 2 CE/ViolaEnsPizz.gumbo.txt
+Strings|Viola Section Spiccato|38.4|48|EON_Gumbo/Library/VSCO 2 CE/ViolaEnsSpic.gumbo.txt
+Strings|Viola Section Sustain Vibrato|182.3|26|EON_Gumbo/Library/VSCO 2 CE/ViolaEnsSusVib.gumbo.txt
+Strings|Viola Section Sustain Vibrato (quiet)|79.7|13|EON_Gumbo/Library/VSCO 2 CE/ViolaEnsSusVib-Quiet.gumbo.txt
+Strings|Viola Section Tremolo|176.6|24|EON_Gumbo/Library/VSCO 2 CE/ViolaEnsTrem.gumbo.txt
+Strings|Violin Section (all styles)|379.3|131|EON_Gumbo/Library/VSCO 2 CE/ViolinEns-KS.gumbo.txt
+Strings|Violin Section Spiccato|35.3|44|EON_Gumbo/Library/VSCO 2 CE/ViolinEnsSpic.gumbo.txt
+Strings|Violin Section Sustain Vibrato (quiet)|87.9|11|EON_Gumbo/Library/VSCO 2 CE/ViolinEnsSusVib-Quiet.gumbo.txt
+Strings|Violin Section Tremolo|134.2|21|EON_Gumbo/Library/VSCO 2 CE/ViolinEnsTrem.gumbo.txt
+Brass|French Horn Mute|77.4|17|EON_Gumbo/Library/VSCO 2 CE/FHornMute.gumbo.txt
+Brass|French Horn Staccato|50.3|55|EON_Gumbo/Library/VSCO 2 CE/FHornStac.gumbo.txt
+Brass|Trombone Staccato|50.0|55|EON_Gumbo/Library/VSCO 2 CE/TromboneStac.gumbo.txt
+Brass|Trombone Sustain|229.4|31|EON_Gumbo/Library/VSCO 2 CE/TromboneSus.gumbo.txt
+Brass|Trombone Vibrato|45.9|12|EON_Gumbo/Library/VSCO 2 CE/TromboneVib.gumbo.txt
+Brass|Trumpet Harmon Mute Sustain|70.6|16|EON_Gumbo/Library/VSCO 2 CE/TrumpetHarmonMuteSus.gumbo.txt
+Brass|Trumpet Staccato|55.8|66|EON_Gumbo/Library/VSCO 2 CE/TrumpetStac.gumbo.txt
+Brass|Trumpet Straight Mute Sustain|93.3|16|EON_Gumbo/Library/VSCO 2 CE/TrumpetStraightMuteSus.gumbo.txt
+Brass|Trumpet Sustain Vibrato|82.4|22|EON_Gumbo/Library/VSCO 2 CE/TrumpetSusVib.gumbo.txt
+Brass|Tuba (all styles)|154.8|87|EON_Gumbo/Library/VSCO 2 CE/Tuba-KS.gumbo.txt
+Brass|Tuba Staccato|35.6|64|EON_Gumbo/Library/VSCO 2 CE/TubaStac.gumbo.txt
+Brass|Tuba Sustain|119.2|23|EON_Gumbo/Library/VSCO 2 CE/TubaSus.gumbo.txt
+Winds|Bassoon Staccato|21.8|46|EON_Gumbo/Library/VSCO 2 CE/BassoonStac.gumbo.txt
+Winds|Bassoon Sustain|134.3|25|EON_Gumbo/Library/VSCO 2 CE/BassoonSus.gumbo.txt
+Winds|Bassoon Vibrato|108.4|21|EON_Gumbo/Library/VSCO 2 CE/BassoonVib.gumbo.txt
+Winds|Clarinet (all styles)|251.9|97|EON_Gumbo/Library/VSCO 2 CE/Clarinet-KS.gumbo.txt
+Winds|Clarinet Staccato|25.6|64|EON_Gumbo/Library/VSCO 2 CE/ClarinetStac.gumbo.txt
+Winds|Flute (all styles)|306.2|94|EON_Gumbo/Library/VSCO 2 CE/Flute-KS.gumbo.txt
+Winds|Flute Expressive Vibrato|91.9|14|EON_Gumbo/Library/VSCO 2 CE/FluteExpVib.gumbo.txt
+Winds|Flute Staccato|25.7|48|EON_Gumbo/Library/VSCO 2 CE/FluteStac.gumbo.txt
+Winds|Flute Sustain Non-Vibrato|124.6|19|EON_Gumbo/Library/VSCO 2 CE/FluteSusNV.gumbo.txt
+Winds|Oboe Staccato|27.0|52|EON_Gumbo/Library/VSCO 2 CE/OboeStac.gumbo.txt
+Winds|Oboe Sustain Non-Vibrato|133.0|18|EON_Gumbo/Library/VSCO 2 CE/OboeSusNV.gumbo.txt
+Winds|Oboe Sustain Vibrato|91.6|18|EON_Gumbo/Library/VSCO 2 CE/OboeSusVib.gumbo.txt
+Winds|Piccolo Staccato|1.6|5|EON_Gumbo/Library/VSCO 2 CE/PiccoloStac.gumbo.txt
+Winds|Piccolo Sustain|30.2|5|EON_Gumbo/Library/VSCO 2 CE/PiccoloSus.gumbo.txt
+Plucks|Glockenspiel|24.3|6|EON_Gumbo/Library/VSCO 2 CE/Glockenspiel.gumbo.txt
+Plucks|Tubular Bells|61.1|4|EON_Gumbo/Library/VSCO 2 CE/TubularBells.gumbo.txt
+Plucks|Xylophone|11.4|8|EON_Gumbo/Library/VSCO 2 CE/Xylophone.gumbo.txt
+// end

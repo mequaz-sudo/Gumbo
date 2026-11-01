@@ -1,0 +1,461 @@
+desc: rk_svf_match - magnitude-matched (de-cramped) coefficients for rk_svf (ReaKit suite)
+
+/*
+================================================================================
+  rk_svf_match.jsfx-inc  (EON, 2026-10-21; research R12 of the Quezy spec)
+================================================================================
+
+  Coefficients for rk_svf's Simper SVF whose MAGNITUDE follows the analogue
+  prototype up to Nyquist at the base rate, instead of bilinear's squashed top
+  octave ("cramping": a bilinear bell at 16 kHz is off by up to 13 dB at
+  44.1 kHz; a 15 kHz high cut forced to silence at Nyquist). Phase is not
+  matched: near the top a matched low pass turns more than a bilinear one.
+
+  Method: Yuriy Ivantsov, "On the ideal bilinear and biquadratic digital
+  filter" (16 Apr 2025, revised 15 Mar 2026), https://ivantsovy.com/research/paper1.pdf.
+  Every first- or second-order factor of the analogue prototype, poles AND
+  zeros, is mapped with one free parameter sigma; algebraic, square roots only.
+  Below 80 kHz: sigma fixed at sqrt(2)/pi and the frequency compensated (his
+  eq. 2.10); from 80 kHz up: the plain frequency and sigma from eq. 2.11.
+  A factor (w2, zeta^2) gives t = w2 (2 zeta^2 - 1),
+  v = sqrt(w2^2 + sigma^2 (2 t + sigma^2)), r = sqrt(v + t + sigma^2), and the
+  section IS a Simper SVF: g = 1 / sqrt(2 v), k = 2 g r (no cancellation at
+  low frequencies). The per-factor maps follow his reference code
+  (github.com/yIvantsov/ivantsov-filters, filters.h, read at efa4648638cd),
+  re-expressed here in SVF form; licence below. The first-order sigma 1/pi is
+  EON's analogy to eq. 2.10, verified by measurement.
+
+  Measured (R12, 2026-10-20; the shipped-build test is .dev_tests/quezy/
+  qz_decramp.py): the top end comes out about 5 to 20 times closer to the
+  analogue curve than bilinear and never worse in any tested case at 44.1, 48
+  and 96 kHz; a bell's gain at its frequency is exact; a boost and the same cut
+  cancel exactly; a notch's zero sits exactly on its frequency.
+
+  Use: import AFTER rk_svf.jsfx-inc. Each function writes TARGET coefficients
+  into an rk_svf instance through rk_svf_set_coeffs, so rk_svf's 30 ms glide
+  and its process code run unchanged, and rk_svf itself (and every plugin that
+  imports it) sounds exactly as before. Units as rk_svf: A = 10^(dB/40) for
+  bells and shelves (peak / shelf gain A^2); tilt and Pultec take dB.
+  fs = the rate the filter RUNS at, always an argument: never rk_svf's
+  plugin-wide SAMPLE_RATE, which a second bank at another rate would race.
+  Every frequency is clamped at Nyquist inside the map.
+  Threads: locals and the instance's own members only (ms, mw2, mv, mr are
+  scratch members of the stage being set); a display bank in @gfx and an audio
+  bank in @block may both call these on their own objects.
+  The All Pass stays bilinear (rk_svf's own: phase only); the listen filters are
+  matched too (rk_svfm_listen_eq / _bs), so a listen plays the band's own filters.
+
+================================================================================
+  ivantsov-filters LICENSE (the reference code the maps follow)
+================================================================================
+
+  MIT License
+
+  Copyright (c) 2025 Yuriy Ivantsov
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+================================================================================
+  EON STUDIOS - ReaKit Suite
+  Copyright (c) 2026 EON Studios
+================================================================================
+*/
+
+@init
+
+RKSVFM_S2 = sqrt(2) / $pi;      // second-order sigma below 80 kHz (eq. 2.10)
+RKSVFM_S1 = 1 / $pi;            // first-order sigma (EON's analogy, all rates)
+RKSVFM_SQ2 = sqrt(2);
+
+/*
+ * Map a corner frequency to (mw2, ms) on this stage: theta = pi f / fs (f clamped at Nyquist), c = cot(theta);
+ * below 80 kHz sigma = sqrt(2)/pi and w2 = sigma^2 + c^2/2 (the frequency compensated, eq. 2.10); from 80 kHz up
+ * sigma^2 = (1/theta^2 - c^2)/2, so w2 = 1/(2 theta^2) (the plain frequency, eq. 2.11; sigma = sqrt(2)/pi again at
+ * Nyquist). Larger w2 = a lower corner.
+ */
+function rk_svfm_map(freq, fs)
+  instance(mw2, ms)
+  local(th, c)
+(
+  th = $pi * max(1, min(freq, 0.5 * fs)) / fs;
+  c = 1 / tan(th);
+  ms = fs < 80000 ? RKSVFM_S2 : sqrt(max(0, 0.5 / (th * th) - 0.5 * c * c));
+  mw2 = ms * ms + 0.5 * c * c;
+);
+
+/*
+ * One quadratic factor (w2, zeta^2) at sigma s -> (mv, mr) on this stage. Every square root's argument is guarded:
+ * a zero-damping factor (a notch's zeros) rounds v + t + s^2 to about -1e-16 without it.
+ */
+function rk_svfm_fac(w2, z2, s)
+  instance(mv, mr)
+  local(t)
+(
+  t = w2 * (2 * z2 - 1);
+  mv = sqrt(max(0, w2 * w2 + s * s * (2 * t + s * s)));
+  mr = sqrt(max(0, mv + t + s * s));
+);
+
+function rk_svfm_set(g, k, m0, m1, m2)
+  local(a1, a2)
+(
+  a1 = 1 / (1 + g * (g + k));
+  a2 = g * a1;
+  this.rk_svf_set_coeffs(g, k, a1, a2, g * a2, m0, m1, m2);
+);
+
+/*
+ * Bell (peaking EQ), rk_svf_eq's prototype: denominator damping 1/(2 Q A), numerator A/(2 Q). The two factors share
+ * the denominator's g and k; the mix m0 = v_num / v_den, m1 = 2 g (r_num - m0 r_den), m2 = 1 - m0 gives unity at DC,
+ * exactly A^2 at f, and makes a +x dB band and a -x dB band exact inverses.
+ */
+function _rk_svfm_eq(freq, q, A, fs)
+  instance(mw2, ms, mv, mr)
+  local(z2, pk, v, r, g, m0)
+(
+  this.rk_svfm_map(freq, fs);
+  z2 = 0.25 / (q * q);
+  pk = A * A;                    // the peak gain ("G" would BE the local g: EEL2 names are case-insensitive)
+  this.rk_svfm_fac(mw2, z2 / pk, ms); v = mv; r = mr;
+  this.rk_svfm_fac(mw2, z2 * pk, ms);
+  g = 1 / sqrt(2 * v);
+  m0 = mv / v;
+  this.rk_svfm_set(g, 2 * g * r, m0, 2 * g * (mr - m0 * r), 1 - m0);
+);
+
+function rk_svfm_eq(freq, q, A, fs)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svfm_eq(freq, q, A, fs);
+);
+
+/*
+ * Shelves, rk_svf's prototypes: shelf gain A^2, poles at f * A^(-1/2) (low) or f * A^(1/2) (high), zeros mirrored;
+ * Q as rk_svf (k = 1/Q on the pole pair). The low shelf's mix carries its DC gain A^2.
+ */
+function _rk_svfm_shelf(freq, q, A, low, fs)
+  instance(mw2, ms, mv, mr)
+  local(z2, v, r, g, m0, dc)
+(
+  this.rk_svfm_map(freq, fs);
+  z2 = 0.25 / (q * q);
+  this.rk_svfm_fac(low ? mw2 * A : mw2 / A, z2, ms); v = mv; r = mr;
+  this.rk_svfm_fac(low ? mw2 / A : mw2 * A, z2, ms);
+  dc = low ? A * A : 1;
+  g = 1 / sqrt(2 * v);
+  m0 = mv / v;
+  this.rk_svfm_set(g, 2 * g * r, dc * m0, dc * 2 * g * (mr - m0 * r), dc * (1 - m0));
+);
+
+function _rk_svfm_ls(freq, q, A, fs) ( this._rk_svfm_shelf(freq, q, A, 1, fs); );
+function _rk_svfm_hs(freq, q, A, fs) ( this._rk_svfm_shelf(freq, q, A, 0, fs); );
+
+function rk_svfm_ls(freq, q, A, fs)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svfm_shelf(freq, q, A, 1, fs);
+);
+
+function rk_svfm_hs(freq, q, A, fs)
+  instance(nlp, onepole)
+(
+  nlp = 1;
+  onepole = 0;
+  this._rk_svfm_shelf(freq, q, A, 0, fs);
+);
+
+/*
+ * Second-order low / high pass on one stage, from a map already made (w2, s: one map per band, one factor per
+ * stage, so a Butterworth cascade costs one tan). Low pass: unity at DC, m0 = 2 s^2 g^2, m1 = 2 s g (sqrt2 - k s g),
+ * m2 = 1 - m0. High pass: m0 = 2 w2 g^2, m1 = -k m0, m2 = -m0.
+ */
+function _rk_svfm_lp_w(w2, s, q)
+  instance(mv, mr)
+  local(g, k, m0)
+(
+  this.rk_svfm_fac(w2, 0.25 / (q * q), s);
+  g = 1 / sqrt(2 * mv);
+  k = 2 * g * mr;
+  m0 = 2 * s * s * g * g;
+  this.rk_svfm_set(g, k, m0, 2 * s * g * (RKSVFM_SQ2 - k * s * g), 1 - m0);
+);
+
+function _rk_svfm_hp_w(w2, s, q)
+  instance(mv, mr)
+  local(g, k, m0)
+(
+  this.rk_svfm_fac(w2, 0.25 / (q * q), s);
+  g = 1 / sqrt(2 * mv);
+  k = 2 * g * mr;
+  m0 = 2 * w2 * g * g;
+  this.rk_svfm_set(g, k, m0, -k * m0, -m0);
+);
+
+/*
+ * First order on a one-pole object (rk_svf_onepole's DF1: y = B0 x + B1 x' - A1 y'), sigma1 = 1/pi,
+ * w^2 = sigma1^2 + c^2/4. mode 0 = low pass, 1 = high pass. EEL2 names are case-insensitive: a local "b0" would BE
+ * the instance's B0, hence "d".
+ */
+function rk_svfm_onepole(mode, freq, fs)
+  instance(B0, B1, A1, passtype)
+  local(c, w2, d)
+(
+  passtype = mode;
+  c = 1 / tan($pi * max(1, min(freq, 0.5 * fs)) / fs);
+  w2 = RKSVFM_S1 * RKSVFM_S1 + 0.25 * c * c;
+  d = 1 / (0.5 + sqrt(w2 + RKSVFM_S1 * RKSVFM_S1));
+  mode == 0 ? (
+    B0 = d * (0.5 + RKSVFM_S1);
+    B1 = d * (0.5 - RKSVFM_S1);
+  ) : (
+    B0 = d * sqrt(w2);
+    B1 = -B0;
+  );
+  A1 = d - 1;
+);
+
+/*
+ * The cut cascades, as rk_svf_lp / _hp / _lpb / _hpb: slope = rk_svf's slope index (nlp; stage i runs while
+ * nlp > 2i; an odd order adds the one-pole). The resonant ones put the same Q on every stage; the Butterworth ones
+ * take rk_svf's own pole Q list (_rk_svf_update_splane). Only the stages that run are set: a stage that comes back
+ * into use later is set by that retarget.
+ */
+function _rk_svfm_cut(freq, q, slope, hp, bw, fs)
+  instance(nlp, onepole, cutoff, mw2, ms, op0, op1, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9,
+           q0, q1, q2, q3, q4, q5, q6, q7, q8, q9)
+(
+  nlp = slope;
+  onepole = (slope + 1) & 1;
+  cutoff = freq;
+  this.rk_svfm_map(freq, fs);
+  bw ? this._rk_svf_update_splane(slope) : ( q0 = q1 = q2 = q3 = q4 = q5 = q6 = q7 = q8 = q9 = q; );
+  hp ? (
+    nlp > 0 ? this._rk_svfm_hp_w(mw2, ms, q0);
+    nlp > 2 ? cas1._rk_svfm_hp_w(mw2, ms, q1);
+    nlp > 4 ? cas2._rk_svfm_hp_w(mw2, ms, q2);
+    nlp > 6 ? cas3._rk_svfm_hp_w(mw2, ms, q3);
+    nlp > 8 ? cas4._rk_svfm_hp_w(mw2, ms, q4);
+    nlp > 10 ? cas5._rk_svfm_hp_w(mw2, ms, q5);
+    nlp > 12 ? cas6._rk_svfm_hp_w(mw2, ms, q6);
+    nlp > 14 ? cas7._rk_svfm_hp_w(mw2, ms, q7);
+    nlp > 16 ? cas8._rk_svfm_hp_w(mw2, ms, q8);
+    nlp > 18 ? cas9._rk_svfm_hp_w(mw2, ms, q9);
+  ) : (
+    nlp > 0 ? this._rk_svfm_lp_w(mw2, ms, q0);
+    nlp > 2 ? cas1._rk_svfm_lp_w(mw2, ms, q1);
+    nlp > 4 ? cas2._rk_svfm_lp_w(mw2, ms, q2);
+    nlp > 6 ? cas3._rk_svfm_lp_w(mw2, ms, q3);
+    nlp > 8 ? cas4._rk_svfm_lp_w(mw2, ms, q4);
+    nlp > 10 ? cas5._rk_svfm_lp_w(mw2, ms, q5);
+    nlp > 12 ? cas6._rk_svfm_lp_w(mw2, ms, q6);
+    nlp > 14 ? cas7._rk_svfm_lp_w(mw2, ms, q7);
+    nlp > 16 ? cas8._rk_svfm_lp_w(mw2, ms, q8);
+    nlp > 18 ? cas9._rk_svfm_lp_w(mw2, ms, q9);
+  );
+  onepole ? (
+    op0.rk_svfm_onepole(hp, freq, fs);
+    op1.rk_svfm_onepole(hp, freq, fs);
+  );
+);
+
+function rk_svfm_lp(freq, q, slope, fs) ( this._rk_svfm_cut(freq, q, slope, 0, 0, fs); );
+function rk_svfm_hp(freq, q, slope, fs) ( this._rk_svfm_cut(freq, q, slope, 1, 0, fs); );
+function rk_svfm_lpb(freq, slope, fs) ( this._rk_svfm_cut(freq, 0.7071, slope, 0, 1, fs); );
+function rk_svfm_hpb(freq, slope, fs) ( this._rk_svfm_cut(freq, 0.7071, slope, 1, 1, fs); );
+
+// one second-order low pass stage at its own corner (the analog high cut's 12 dB stage), as rk_svf_single_lp
+function rk_svfm_single_lp(freq, q, fs)
+  instance(mw2, ms, cutoff)
+(
+  cutoff = freq;
+  this.rk_svfm_map(freq, fs);
+  this._rk_svfm_lp_w(mw2, ms, q);
+);
+
+/*
+ * Notch: zeros exactly at f (w2 - sigma^2 = c^2/2), m0 = c^2 g^2, m1 = -k m0, m2 = 1 - m0.
+ * Band pass, rk_svf_bp2's 0 dB peak (ReEQ's type 8): m0 = 4 s sigma g^2 with s = sqrt(w2 zeta^2),
+ * m1 = 2 sqrt2 s g - k m0, m2 = -m0.
+ */
+function rk_svfm_bs(freq, q, fs)
+  instance(nlp, onepole, mw2, ms, mv, mr)
+  local(g, k, m0)
+(
+  nlp = 1;
+  onepole = 0;
+  this.rk_svfm_map(freq, fs);
+  this.rk_svfm_fac(mw2, 0.25 / (q * q), ms);
+  g = 1 / sqrt(2 * mv);
+  k = 2 * g * mr;
+  m0 = 2 * (mw2 - ms * ms) * g * g;
+  this.rk_svfm_set(g, k, m0, -k * m0, 1 - m0);
+);
+
+function rk_svfm_bp2(freq, q, fs)
+  instance(nlp, onepole, mw2, ms, mv, mr)
+  local(z2, g, k, m0, s)
+(
+  nlp = 1;
+  onepole = 0;
+  this.rk_svfm_map(freq, fs);
+  z2 = 0.25 / (q * q);
+  this.rk_svfm_fac(mw2, z2, ms);
+  g = 1 / sqrt(2 * mv);
+  k = 2 * g * mr;
+  s = sqrt(mw2 * z2);
+  m0 = 4 * s * ms * g * g;
+  this.rk_svfm_set(g, k, m0, 2 * RKSVFM_SQ2 * s * g - k * m0, -m0);
+);
+
+/*
+ * Tilt shelf, as rk_svf_st: a high shelf up by gain/2 dB on the main stage and a low shelf down by it on cas1.
+ */
+function rk_svfm_st(freq, q, gain, fs)
+  instance(nlp, onepole, cas1)
+(
+  nlp = 3;
+  onepole = 0;
+  this._rk_svfm_shelf(freq, q, 10 ^ (gain / 40), 0, fs);
+  cas1._rk_svfm_shelf(freq, q, 10 ^ (-gain / 40), 1, fs);
+);
+
+/*
+ * Pultec boost and cut, as rk_svf_pultecls: a low shelf at 1.5 f and a bell at 1.5 f whose cut deepens with Q and
+ * with the boost (both at Q 0.701). The caller keeps 1.5 f under Nyquist (the map would clamp it there anyway).
+ */
+function rk_svfm_pultecls(freq, q, gain, fs)
+  instance(nlp, onepole, cas1)
+  local(f2, amm, cut)
+(
+  f2 = freq * 1.5;
+  amm = max(0, min(10, gain)) / 10;
+  cut = 10 ^ (-((q / 40) * 10 * amm) / 40);
+  this._rk_svfm_shelf(f2, 0.701, 10 ^ (gain / 40), 1, fs);
+  cas1._rk_svfm_eq(f2, 0.701, cut, fs);
+  nlp = 3;
+  onepole = 0;
+);
+
+/*
+ * Low cut analog, as rk_svf_analog_lowcut: a low shelf at 1.25 f (Q 0.701) and a first-order high pass at f.
+ */
+function rk_svfm_analog_lowcut(freq, q, gain, fs)
+  instance(nlp, onepole, cutoff, op0, op1)
+(
+  this._rk_svfm_shelf(freq * 1.25, 0.701, 10 ^ (gain / 40), 1, fs);
+  cutoff = freq;
+  op0.rk_svfm_onepole(1, freq, fs);
+  op1.rk_svfm_onepole(1, freq, fs);
+  nlp = 1;
+  onepole = 1;
+);
+
+/*
+ * Listen filters, as rk_svf_listen_eq / rk_svf_listen_bs (the same caps, the same stage layout): the main stage a
+ * bell (or a notch), cas1 + cas2 a 24 dB/oct Butterworth high pass at leftfreq, cas3 + cas4 the low pass at rightfreq.
+ * Matched like the bands they audition, so a listen plays exactly what the band's own filters would.
+ */
+function _rk_svfm_window(leftfreq, rightfreq, fs)
+  instance(cas1, cas2, cas3, cas4, mw2, ms, q0, q1, q2, q3, q4, q5, q6, q7, q8, q9)
+(
+  this._rk_svf_update_splane(3);
+  this.rk_svfm_map(leftfreq, fs);
+  cas1._rk_svfm_hp_w(mw2, ms, q0);
+  cas2._rk_svfm_hp_w(mw2, ms, q1);
+  this.rk_svfm_map(rightfreq, fs);
+  cas3._rk_svfm_lp_w(mw2, ms, q0);
+  cas4._rk_svfm_lp_w(mw2, ms, q1);
+);
+
+function rk_svfm_listen_eq(leftfreq, rightfreq, bellfreq, bellq, bellgain, fs)
+  instance(nlp, onepole)
+(
+  this._rk_svfm_window(max(leftfreq, 10), min(rightfreq, 20000), fs);
+  this._rk_svfm_eq(min(max(bellfreq, 10), 20000), bellq, bellgain, fs);
+  nlp = 9;
+  onepole = 0;
+);
+
+function rk_svfm_listen_bs(leftfreq, rightfreq, bellfreq, bellq, fs)
+  instance(nlp, onepole)
+  local(f)
+(
+  this._rk_svfm_window(max(leftfreq, 10), min(rightfreq, 44000), fs);
+  f = min(max(bellfreq, 10), 44000);
+  this.rk_svfm_bs(f, bellq, fs);
+  nlp = 9;
+  onepole = 0;
+);
+
+/*
+ * Magnitude of the whole cascade at freq, for a curve: every running stage (the SVF's exact response from g, k and
+ * the mix, any coefficients) times the one-pole's exact DF1 response, |H|^2 = (B0^2 + B1^2 + 2 B0 B1 cos w) /
+ * (1 + A1^2 + 2 A1 cos w). rk_svf_magnitude draws the one-pole with bilinear's formula and reads the plugin-wide
+ * rate; this one takes fs and computes the angle's sines once for all stages. Reads the CURRENT coefficients
+ * (snap the filter to its target first for a settled curve).
+ */
+function rk_svfm_mag1(c1, s1, c2, s2)
+  instance(g, k, m0, m1, m2)
+  local(gsq, gm1, gk, p, nr, ni, dr, di, n2, x, y)
+(
+  gsq = g * g;
+  gm1 = g * m1;
+  gk = g * k;
+  p = gsq - gk + 1;
+  nr = gsq * m2 * (c2 + 2 * c1 + 1) - gm1 * (c2 - 1);
+  ni = gsq * m2 * (s2 + 2 * s1) - gm1 * s2;
+  dr = gsq + gk + c2 * p + c1 * (2 * gsq - 2) + 1;
+  di = s2 * p + s1 * (2 * gsq - 2);
+  n2 = dr * dr + di * di;
+  x = m0 + (nr * dr + ni * di) / n2;
+  y = (ni * dr - nr * di) / n2;
+  sqrt(x * x + y * y);
+);
+
+function rk_svfm_magnitude(freq, fs)
+  instance(nlp, onepole, op0, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9)
+  local(w, c1, s1, c2, s2, m, num, den)
+(
+  w = 2 * $pi * freq / fs;
+  c1 = cos(w);
+  s1 = sin(w);
+  c2 = cos(2 * w);
+  s2 = sin(2 * w);
+  m = 1;
+  nlp > 0 ? m *= this.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 2 ? m *= cas1.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 4 ? m *= cas2.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 6 ? m *= cas3.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 8 ? m *= cas4.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 10 ? m *= cas5.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 12 ? m *= cas6.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 14 ? m *= cas7.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 16 ? m *= cas8.rk_svfm_mag1(c1, s1, c2, s2);
+  nlp > 18 ? m *= cas9.rk_svfm_mag1(c1, s1, c2, s2);
+  onepole ? (
+    num = op0.B0 * op0.B0 + op0.B1 * op0.B1 + 2 * op0.B0 * op0.B1 * c1;
+    den = 1 + op0.A1 * op0.A1 + 2 * op0.A1 * c1;
+    m *= den > 0 ? sqrt(max(0, num) / den) : 0;
+  );
+  m;
+);

@@ -1,0 +1,114 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_helper.jsfx-inc -- Gumbo's side of the Gumbo helper (EON/Eon_JSFX/Scripts/Gumbo/Gumbo helper.lua). A dropped .sfz
+// goes to the helper through the EON_GUMBO_HELPER mailbox in Swing_Media_Transfer (.refs/gmem_regions_supplement.tsv;
+// the offsets are gumbo_helper_core.lua's, checked against this file by .dev_tests/gumbo_helper_test.py); the converted
+// instrument comes back and loads. Also: is the helper running, and did the browser list change (reload it).
+// Called from @gfx only (gbh_watch / gbh_tick every pass, gbh_request on a drop): the mailbox is never touched from
+// @block. One request at a time for ALL Gumbos: a Gumbo takes the LOCK cell (atomic_setifequal with its token), writes
+// the request (REQ_SEQ last), waits for REP_SEQ == its seq with its token, reads the reply, releases the lock.
+
+@init
+GBH_BAND = 31600000;
+GBH_HB = 0; GBH_PROTO = 1; GBH_LIBGEN = 2; GBH_LOCK = 3;
+GBH_REQ_SEQ = 16; GBH_REQ_KIND = 17; GBH_REQ_TOKEN = 18; GBH_REQ_LEN = 19; GBH_REQ_PATH = 20;
+GBH_REP_SEQ = 1024; GBH_REP_STATUS = 1025; GBH_REP_TOKEN = 1026; GBH_REP_REGIONS = 1027; GBH_REP_LEN = 1028;
+GBH_REP_PATH = 1029; GBH_REP_REASON = 2029;
+GBH_PATH_MAX = 1000; GBH_PROTO_VERSION = 1; GBH_KIND_IMPORT = 1;
+GBH_KIND_FAV = 2;                    // toggle this instrument in Data/EON_Gumbo/favourites.txt (a JSFX cannot write files)
+gbh_kind = GBH_KIND_IMPORT;
+GBH_ST_IDLE = 0; GBH_ST_WAITLOCK = 1; GBH_ST_WAITREPLY = 2;
+// what this Gumbo plays, for the helper to name, colour and icon the track: the EON_GUMBO_TRACKS band, one slot per
+// track index (.refs/gmem_regions_supplement.tsv; the offsets are gumbo_helper_core.lua's M.TRACKS)
+GBT_BAND = 31610000; GBT_STRIDE = 640; GBT_SLOTS = 512;
+GBT_GEN = 0; GBT_FAM = 1; GBT_R = 2; GBT_G = 3; GBT_B = 4; GBT_NLEN = 5; GBT_NAME = 6; GBT_NAME_MAX = 120;
+GBT_PLEN = 126; GBT_PATH = 127; GBT_PATH_MAX = 500;
+gbt_key = -1;
+// what the display says (gbh_err): 0 nothing; 1 no helper running; 2 the helper stopped mid-import; 3 the path is too
+// long; 10 + n the helper's error -n (1 unknown kind, 2 not a .sfz, 3 could not convert, 4 list not written); 30 + w a
+// failed conversion with its reason w (1 sound files missing, 2 unreadable, 3 nothing playable, 4 bad sound files)
+gbh_state = GBH_ST_IDLE; gbh_err = 0; gbh_seq = 0; gbh_t = 0; gbh_lock_seen_t = 0; gbh_loadpend = 0;
+gbh_hb_last = -1; gbh_hb_t = -100; gbh_running = 0; gbh_libgen_seen = -1;
+// this instance's token: the clock's fraction and a random part, never 0
+gbh_token = ((((time_precise() * 1000) | 0) % 1000000000 + rand(1000000)) | 0) + 1;
+
+// every @gfx pass: the helper is running while its heartbeat moves (seen move within 2 s) and its protocol is ours;
+// a new browser-list generation makes the face reload library.txt
+function gbh_watch() local(hb, now, lg) (
+  now = time_precise();
+  hb = gmem[GBH_BAND + GBH_HB];
+  gbh_hb_last < 0 ? gbh_hb_last = hb                       // first look: a stale count does not prove a running helper
+  : hb != gbh_hb_last ? ( gbh_hb_last = hb; gbh_hb_t = now; );
+  gbh_running = gmem[GBH_BAND + GBH_PROTO] == GBH_PROTO_VERSION && now - gbh_hb_t < 2;
+  gbh_err == 1 && gbh_running ? gbh_err = 0;               // "start the helper" goes once it is started
+  lg = gmem[GBH_BAND + GBH_LIBGEN];
+  lg != gbh_libgen_seen ? ( gbh_libgen_seen >= 0 ? ( gbf_idx_loaded = 0; gbf_cur_for = -1; ); gbh_libgen_seen = lg; );
+);
+
+// a dropped .sfz: queued here, sent by gbh_tick once the mailbox is ours
+function gbh_request(path) (
+  gbh_state != GBH_ST_IDLE ? 0 : (
+    gbh_err = 0;
+    !gbh_running ? gbh_err = 1 : (
+      strcpy(#gbh_path, path); gbh_kind = GBH_KIND_IMPORT; gbh_state = GBH_ST_WAITLOCK; gbh_t = time_precise(); gbh_lock_seen_t = 0;
+    );
+  );
+);
+// a star clicked in the browser: the helper keeps the favourites file (5 = no helper to keep it; the star changes for
+// this session). Returns 1 when the star may change: taken, or no helper; 0 while another request is on its way.
+function gbh_request_fav(path) (
+  gbh_state != GBH_ST_IDLE ? 0 : (
+    gbh_err = 0;
+    !gbh_running ? gbh_err = 5 : (
+      strcpy(#gbh_path, path); gbh_kind = GBH_KIND_FAV; gbh_state = GBH_ST_WAITLOCK; gbh_t = time_precise(); gbh_lock_seen_t = 0;
+    );
+    1;
+  );
+);
+
+function gbh_release() ( atomic_setifequal(gmem[GBH_BAND + GBH_LOCK], gbh_token, 0); );
+
+function gbh_tick() local(now, n, i, cur, st) (
+  now = time_precise();
+  gbh_state == GBH_ST_WAITLOCK ? (
+    !gbh_running ? ( gbh_state = GBH_ST_IDLE; gbh_err = 2; )
+    : atomic_setifequal(gmem[GBH_BAND + GBH_LOCK], 0, gbh_token) == 0 ? (
+      n = strlen(#gbh_path);
+      n > GBH_PATH_MAX ? ( gbh_release(); gbh_state = GBH_ST_IDLE; gbh_err = 3; ) : (
+        i = 0; loop(n, gmem[GBH_BAND + GBH_REQ_PATH + i] = str_getchar(#gbh_path, i, 'cu'); i += 1; );
+        gmem[GBH_BAND + GBH_REQ_KIND] = gbh_kind; gmem[GBH_BAND + GBH_REQ_TOKEN] = gbh_token;
+        gmem[GBH_BAND + GBH_REQ_LEN] = n;
+        gbh_seq = max(gmem[GBH_BAND + GBH_REQ_SEQ], gmem[GBH_BAND + GBH_REP_SEQ]) + 1;
+        gmem[GBH_BAND + GBH_REQ_SEQ] = gbh_seq;              // LAST: the request is complete
+        gbh_state = GBH_ST_WAITREPLY; gbh_t = now;
+      );
+    ) : (
+      // another Gumbo holds the lock. One that answered and never let go (deleted mid-import) is taken over after 5 s
+      cur = gmem[GBH_BAND + GBH_LOCK];
+      gmem[GBH_BAND + GBH_REQ_SEQ] == gmem[GBH_BAND + GBH_REP_SEQ] ? (
+        gbh_lock_seen_t == 0 ? gbh_lock_seen_t = now
+        : now - gbh_lock_seen_t > 5 ? ( atomic_setifequal(gmem[GBH_BAND + GBH_LOCK], cur, 0); gbh_lock_seen_t = 0; );
+      ) : gbh_lock_seen_t = 0;
+    );
+  ) : gbh_state == GBH_ST_WAITREPLY ? (
+    gmem[GBH_BAND + GBH_REP_SEQ] == gbh_seq && gmem[GBH_BAND + GBH_REP_TOKEN] == gbh_token ? (
+      st = gmem[GBH_BAND + GBH_REP_STATUS];
+      n = min(GBH_PATH_MAX, max(0, gmem[GBH_BAND + GBH_REP_LEN] | 0));
+      #gbh_out = ""; i = 0; loop(n, str_setchar(#gbh_out, i, gmem[GBH_BAND + GBH_REP_PATH + i], 'cu'); i += 1; );
+      gbh_release(); gbh_state = GBH_ST_IDLE;
+      gbh_kind == GBH_KIND_FAV ? (
+        st != 1 ? gbh_err = 6;                             // the file could not be written (the helper bumps LIBGEN on success)
+      ) : (
+        // done -> load it; -4 = converted but the browser list could not be written: load it too, and say so
+        (st == 1 || st == -4) && n > 0 ? gbh_loadpend = 1;
+        st != 1 ? ( gbh_err = (st < 0 ? 10 - st : 13); );
+        st == -3 && gmem[GBH_BAND + GBH_REP_REASON] >= 1 && gmem[GBH_BAND + GBH_REP_REASON] <= 4 ? (
+          gbh_err = 30 + (gmem[GBH_BAND + GBH_REP_REASON] | 0);
+        );
+      );
+    ) : !gbh_running ? ( gbh_release(); gbh_state = GBH_ST_IDLE; gbh_err = 2; );
+  );
+  // the converted instrument loads when the loader is free (it is shared with @serialize)
+  gbh_loadpend && gb_lock_try() ? (
+    strcpy(#gb_want, #gbh_out); gb_job_start(#gb_want); gb_unlock(); gbh_loadpend = 0;
+  );
+);

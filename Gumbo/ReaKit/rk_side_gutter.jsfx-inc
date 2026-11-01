@@ -1,0 +1,38 @@
+// rk_side_gutter.jsfx-inc -- the handle of a collapsible side panel (EON Studios, 2026-10-31; MIT, as the ReaKit
+// library). Lifted from Swing's mini browser (swing_fb_gutter_paint, rk_swing_ui_minibrowser_p3, and its geometry
+// note in rk_swing_ui_minibrowser): the handle lives in its OWN gutter on the window's OUTER edge, so the toggle stays
+// put whether the panel is out or away ("a drawer whose handle moves with it is the thing that makes collapsible
+// sidebars feel broken"); a seam, a short grip above and below a double chevron that points the way the panel will go.
+// Gumbo's browser wears it first (the owner, 2026-10-31: "collapsible on the side like we do with Swing"); Swing's
+// own copy moves onto this file later, under the copy script and drift check (the one-master rule).
+//
+//   rk_gutter_paint(gx, y, w, h, side, hot, open, s, br, bg, bb, lr, lg, lb, tc, ar, ag, ab, light)
+//     gx, y, w, h  the gutter's box; side 1 = on the window's right edge (the panel opens to its left), -1 = on the left
+//     edge (the panel opens to its right); hot = the mouse is over it; open = the panel is out; s = the face's scale;
+//     br/bg/bb the panel ground, lr/lg/lb the seam line, tc the text grey (0..1), ar/ag/ab the accent (the chevron
+//     when hot); light = a light theme (a lighter shade on the ground).
+//   rk_gutter_hit(gx, y, w, h)  the mouse is over the gutter (mouse_x / mouse_y).
+// The caller owns the open state, its saving and the click (typically: hot and a press edge = toggle).
+
+@init
+
+function rk_gutter_hit(gx, y, w, h) ( mouse_x >= gx && mouse_x < gx + w && mouse_y >= y && mouse_y < y + h; );
+
+function rk_gutter_paint(gx, y, w, h, side, hot, open, s, br, bg, bb, lr, lg, lb, tc, ar, ag, ab, light)
+local(cx, cy, d, k, sx)
+(
+  k = light ? 0.06 : 0.22;
+  gfx_set(br * (1 - k), bg * (1 - k), bb * (1 - k), 1); gfx_rect(gx, y, w, h);
+  sx = side > 0 ? gx : gx + w - 1;                       // the seam on the panel's side
+  gfx_set(lr, lg, lb, 1); gfx_rect(sx, y, 1, h);
+  hot ? ( gfx_set(tc, tc, tc, 0.10); gfx_rect(side > 0 ? gx + 1 : gx, y, w - 1, h); );
+  cx = gx + w * 0.5; cy = y + h * 0.5;
+  // a short grip above and below the chevron, so the column reads as a handle and not as the window's margin
+  gfx_set(tc, tc, tc, hot ? 0.42 : 0.20);
+  gfx_rect(cx - s, cy - 34 * s, 2 * s, 18 * s); gfx_rect(cx - s, cy + 16 * s, 2 * s, 18 * s);
+  hot ? gfx_set(ar, ag, ab, 1) : gfx_set(tc, tc, tc, 0.62);
+  // the chevron points where a click sends the panel: open -> back toward the edge, closed -> out of it
+  d = (open ? -side : side) * s;
+  gfx_line(cx + 2 * d, cy - 5 * s, cx - 2 * d, cy, 1); gfx_line(cx - 2 * d, cy, cx + 2 * d, cy + 5 * s, 1);
+  gfx_line(cx + 3 * d, cy - 5 * s, cx - d, cy, 1);     gfx_line(cx - d, cy, cx + 3 * d, cy + 5 * s, 1);
+);

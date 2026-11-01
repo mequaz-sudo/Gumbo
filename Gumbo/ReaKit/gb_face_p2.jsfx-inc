@@ -1,0 +1,832 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_face_p2.jsfx-inc -- Gumbo's face, part 2 (v1 "official" round, step 4; plan
+// .docs/specs/Plan_Gumbo_v1_Official_Round_2026-10-30.md, mockup .docs/specs/mockups/Gumbo_v1_mockup_*.png):
+//   * the tabs under the display: SOUND (the eight knobs), CONTROLS (the library's own named knobs, label_ccN, or the
+//     mod wheel and expression when it names none), SETTINGS (voices, bend range, transpose, velocity, A4, mono,
+//     track naming) -- tab logic from buttons_kbsg's btn_tab_interact, toggles drawn with btn_pill_draw
+//   * on the display: the playing styles as chips (the library's sw_label names; click = that keyswitch), and the mod
+//     wheel / expression bars with the sustain-pedal lamp
+//   * the window layout and the @gfx pass (gbf_window, gbf_strip, gb_face_frame), moved here from gb_face so they
+//     can call the pages (EEL2 needs a function defined before the code that calls it)
+// Imported AFTER gb_face (it uses gbf_knob, gbf_display, gbf_browser ...). Talks to the audio thread only through the
+// designed channels: gb_kb_note / gb_kb_vel (a mouse note, also the chips' keyswitch and the pads; its velocity) and
+// gb_ui_cc_* (a CONTROLS knob turned:
+// gb_voice applies it as a controller once per change).
+
+@init
+GBF_K_CTL = 9; GBF_K_SET = 17; GBF_K_EQ = 22; GBF_NK2 = 17;   // knob memory after gb_face's nine: 8 CONTROLS, 5 SETTINGS, 4 EQ
+memset(gbf_km + GBF_KS * GBF_NK, 0, GBF_KS * GBF_NK2);
+GBF_BM = 1721000;                    // widget memory for the tabs and the toggles, 8 cells each
+memset(GBF_BM, 0, 64);
+gbf_tab = 0;                         // 0 SOUND, 1 EQ, 2 CONTROLS, 3 SETTINGS, 4 PADS (a drum kit only; not saved)
+// the EQ page's buffers (rk_curve's caller-owned arrays): 5 curves x GBF_EQN points (the four bands + TONE), their
+// sum, colours, on/off, the node block (8 + 5 hover cells), the four nodes' frequencies and gains, the points' frequencies
+GBF_EQ = 1722000; GBF_EQN = 96;
+GBF_KN_W = 1740700;                  // 2 x 128: each key's name width in its name image (0 = none); window, strip
+GBF_KN_C = 1741000;                  // 2 x 4: what each name image was drawn for (size, length, load, typeface)
+GBF_PAD = 1741100;                   // 128: the kit's named keys low to high, one a pad (gbf_npad of them)
+GBF_PGL = 1741300;                   // 128: each key's pad glow 0..1 (lit on a hit, fading)
+gbf_npad = 0; gbf_pad_gen = -1; gbf_pbank = 0; gbf_pad_note = -1; gbf_pad_vel = 100;
+gbf_eq_b = GBF_EQ; gbf_eq_s = GBF_EQ + 500; gbf_eq_c = GBF_EQ + 600; gbf_eq_e = GBF_EQ + 620; gbf_eq_m = GBF_EQ + 630;
+gbf_eq_f = GBF_EQ + 650; gbf_eq_d = GBF_EQ + 660; gbf_eq_fq = GBF_EQ + 700;
+memset(GBF_EQ, 0, 800); gbf_eq_m[0] = -1; gbf_eq_sig = -1;
+// the bands bold, low to high: red, yellow, green, blue (the owner, 2026-10-31); TONE violet, the high-cut colour of the
+// house EQ palette (rk_curve_band_rgb), apart from all four
+gbf_eq_c[0] = 0.96; gbf_eq_c[1] = 0.22; gbf_eq_c[2] = 0.22;   gbf_eq_c[3] = 1.00; gbf_eq_c[4] = 0.82; gbf_eq_c[5] = 0.10;
+gbf_eq_c[6] = 0.20; gbf_eq_c[7] = 0.86; gbf_eq_c[8] = 0.30;   gbf_eq_c[9] = 0.22; gbf_eq_c[10] = 0.50; gbf_eq_c[11] = 1.00;
+gbf_eq_c[12] = 0.70; gbf_eq_c[13] = 0.42; gbf_eq_c[14] = 0.98;
+i = 0; loop(GBF_EQN, gbf_eq_fq[i] = 20 * (22000 / 20) ^ (i / (GBF_EQN - 1)); i += 1; );
+gbf_chip_note = -1;                  // the keyswitch a chip holds while the mouse is down on it
+gbf_mod_sent = -1; gbf_smod = -1;    // the mod wheel's last value sent while dragged (-1 = none): the window's, a strip's
+gbf_kbn_w = -1; gbf_kbn_s = -1;      // the mouse note the window holds, and a strip's (gb_kb_note = the strip's, else the window's)
+
+// ── the tabs ──
+function gbf_tab_label(i) ( i == 0 ? "SOUND" : i == 1 ? "EQ" : i == 2 ? "CONTROLS" : i == 3 ? "SETTINGS" : "PADS"; );
+function gbf_tabs(x, y, tw, h, n) local(i, sel, tx) (
+  !gbf_menu_block ? gbf_tab = btn_tab_interact(GBF_BM, x, y, tw, h, n, 4 * gbf_s, gbf_tab);
+  i = 0;
+  loop(n,
+    tx = x + i * (tw + 4 * gbf_s); sel = i == gbf_tab;
+    sel ? gfx_set(gbf_pn_r * 1.45, gbf_pn_g * 1.45, gbf_pn_b * 1.45, 1) : gfx_set(gbf_pn_r * 0.8, gbf_pn_g * 0.8, gbf_pn_b * 0.8, 1);
+    gfx_rect(tx, y, tw, h);
+    sel ? ( gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_rect(tx, y, tw, 2 * gbf_s); );
+    gbf_font(max(7, floor(9 * gbf_s)), 'b');
+    sel ? gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+    i == 2 && gb_ready && gb_nlbl > 0 ? sprintf(#gbf_tl, "CONTROLS  %d", gb_nlbl) : strcpy(#gbf_tl, gbf_tab_label(i));
+    gfx_measurestr(#gbf_tl, gbf_tw, gbf_th_); gfx_x = tx + (tw - gbf_tw) * 0.5; gfx_y = y + (h - gbf_th_) * 0.5 + gbf_s;
+    gfx_drawstr(#gbf_tl);
+    i += 1;
+  );
+);
+
+// ── SOUND: seven knobs (TONE is on the EQ page, beside the curve it draws: the owner, 2026-10-31) ──
+function gbf_page_sound(cx, dy, cw, kr, yb) local(kx, nv, bw, bh, bx, by, d, th) (
+  kx = cw / 7;
+  nv = gbf_knob(1, cx + kx * 0.5, dy, kr, slider8, 0, 100, 0, 101, "DRIVE", sprintf(#gbf_v, "%.0f%%", slider8), 0);
+  nv = floor(nv + 0.5); nv != slider8 ? ( slider8 = nv; slider_automate(slider8); );
+  // under DRIVE: its curve (EON Saturation's, rk_sat) with the sound's level riding it, and where it sits -- before the
+  // EQ or after it (slider19)
+  th = max(16 * gbf_s, 9 * gbf_s * gbf_tk + 6 * gbf_s);
+  bw = min(kx * 0.86, 120 * gbf_s); bx = cx + kx * 0.5 - bw * 0.5;
+  by = dy + kr * 1.25 + 26 * gbf_s * gbf_tk;
+  bh = min(bw * 0.5, yb - by - th - 4 * gbf_s);
+  bh >= 18 * gbf_s ? (
+    d = slider8 * 0.01;
+    rk_sat_curve_draw(bx, by, bw, bh, max(0.001, d * RK_SAT_HP), 1 + 3 * d, 1 / (1 + d), d > 0 ? gbx_drv_pk : 0, gbf_s,
+                      gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_bg_r * 0.8, gbf_bg_g * 0.8, gbf_bg_b * 0.8);
+    // the switch (gbf_opt_btn's look; that is defined further down)
+    by += bh + 4 * gbf_s; nv = !gbf_menu_block && gbf_hit(bx, by, bw, th);
+    gfx_set(gbf_pn_r * 1.35, gbf_pn_g * 1.35, gbf_pn_b * 1.35, 1); gfx_rect(bx, by, bw, th);
+    nv ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(bx, by, bw, th); );
+    gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, th);
+    gbf_fit(slider19 >= 0.5 ? "DRIVE AFTER EQ" : "DRIVE BEFORE EQ", bw - 8 * gbf_s, 9 * gbf_s, 'b');
+    gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1); gfx_x = bx + (bw - gbf_tw) * 0.5; gfx_y = by + (th - gbf_th_) * 0.5;
+    gfx_drawstr(slider19 >= 0.5 ? "DRIVE AFTER EQ" : "DRIVE BEFORE EQ");
+    nv && lmb_down ? ( lmb_down = 0; slider19 = slider19 >= 0.5 ? 0 : 1; slider_automate(slider19); );
+  );
+  // ATTACK: 0..2 s added, on a square-law knob so the short times get room
+  nv = gbf_knob(3, cx + kx * 1.5, dy, kr, sqrt(slider9 / 2), 0, 1, 0, 0, "ATTACK", slider9 < 1 ? sprintf(#gbf_v, "+%.0f ms", slider9 * 1000) : sprintf(#gbf_v, "+%.2f s", slider9), 0);
+  nv = nv * nv * 2; abs(nv - slider9) > 0.00001 ? ( slider9 = nv; slider_automate(slider9); );
+  nv = gbf_knob(4, cx + kx * 2.5, dy, kr, log(slider3) / log(2), -2, 2, 0, 0, "RELEASE", sprintf(#gbf_v, "%.0f%%", slider3 * 100), 0);
+  nv = 2 ^ nv; abs(nv - slider3) > 0.0001 ? ( slider3 = nv; slider_automate(slider3); );
+  // GLIDE: 0..2 s, square law (0 = off; it slides over held notes, or every note in MONO)
+  nv = gbf_knob(5, cx + kx * 3.5, dy, kr, sqrt(slider12 / 2), 0, 1, 0, 0, "GLIDE", slider12 <= 0 ? "off" : slider12 < 1 ? sprintf(#gbf_v, "%.0f ms", slider12 * 1000) : sprintf(#gbf_v, "%.2f s", slider12), 0);
+  nv = nv * nv * 2; nv < 0.001 ? nv = 0; abs(nv - slider12) > 0.00001 ? ( slider12 = nv; slider_automate(slider12); );
+  nv = gbf_knob(7, cx + kx * 4.5, dy, kr, slider10, 0, 200, 100, 201, "WIDTH", sprintf(#gbf_v, "%.0f%%", slider10), 0);
+  nv = floor(nv + 0.5); nv != slider10 ? ( slider10 = nv; slider_automate(slider10); );
+  // PAN (the old PUNCH slot's knob memory): centre at 12 o'clock
+  nv = gbf_knob(2, cx + kx * 5.5, dy, kr, slider11, -100, 100, 0, 201, "PAN", slider11 == 0 ? "C" : sprintf(#gbf_v, slider11 < 0 ? "%.0f L" : "%.0f R", abs(slider11)), 0);
+  nv = floor(nv + 0.5); nv != slider11 ? ( slider11 = nv; slider_automate(slider11); );
+  // VOLUME: unity at 12 o'clock (left half -60..0 dB, right half 0..+12)
+  nv = gbf_knob(8, cx + kx * 6.5, dy, kr, slider1 < 0 ? slider1 / 60 : slider1 / 12, -1, 1, 0, 0, "VOLUME", sprintf(#gbf_v, "%.1f dB", slider1), 0);
+  nv = nv < 0 ? nv * 60 : nv * 12; abs(nv - slider1) > 0.0001 ? ( slider1 = nv; slider_automate(slider1); );
+);
+
+
+// ── the drawn menu (rk_menu, the EON menus: Quezy's and Swing's look), in the theme's colours ──
+function gbf_rgb(r, g, b) ( (max(0, min(1, r)) * 255 | 0) * 65536 + (max(0, min(1, g)) * 255 | 0) * 256 + (max(0, min(1, b)) * 255 | 0); );
+function gbf_menu(items, x, y, what) (
+  rkm_style(gbf_rgb(gbf_pn_r * 1.3, gbf_pn_g * 1.3, gbf_pn_b * 1.3), gbf_rgb(gbf_bd_r, gbf_bd_g, gbf_bd_b),
+            gbf_rgb(gbf_bd_r, gbf_bd_g, gbf_bd_b), gbf_rgb(gbf_tx_r, gbf_tx_g, gbf_tx_b),
+            gbf_rgb(gbf_td_r, gbf_td_g, gbf_td_b), gbf_rgb(gbf_ac_r, gbf_ac_g, gbf_ac_b));
+  rkm_open(items, x, y, gbf_s);
+  gbf_mwhat = what;
+);
+
+// ── EQ: four bands on Quezy's engine (gb_eq), drawn with the one EQ painter (rk_curve) ──
+// band k's sliders: shape 23 + 13k, freq 24 + 13k, gain 25 + 13k, Q 26 + 13k (Quezy's layout); written here with their
+// names so each change is automated (slider_automate needs the slider itself). Every band can be a bell, a shelf or a
+// cut (the owner, 2026-10-31); its shape is Quezy's shape number: 0 bell, 3 low shelf, 4 high shelf, 1 low cut,
+// 5 high cut (qz_band_shape). A changed shape crossfades in the audio (qz_band_step), so it never clicks.
+function gbf_eq_sh(k) ( k == 0 ? slider23 : k == 1 ? slider36 : k == 2 ? slider49 : slider62; );
+function gbf_eq_fr(k) ( k == 0 ? slider24 : k == 1 ? slider37 : k == 2 ? slider50 : slider63; );
+function gbf_eq_gn(k) ( k == 0 ? slider25 : k == 1 ? slider38 : k == 2 ? slider51 : slider64; );
+function gbf_eq_qv(k) ( k == 0 ? slider26 : k == 1 ? slider39 : k == 2 ? slider52 : slider65; );
+function gbf_eq_cut(k) local(sh) ( sh = gbf_eq_sh(k) | 0; sh == 1 || sh == 5; );
+function gbf_eq_set(k, f, g) (
+  k == 0 ? ( slider24 = f; slider25 = g; slider_automate(slider24); slider_automate(slider25); )
+  : k == 1 ? ( slider37 = f; slider38 = g; slider_automate(slider37); slider_automate(slider38); )
+  : k == 2 ? ( slider50 = f; slider51 = g; slider_automate(slider50); slider_automate(slider51); )
+  : ( slider63 = f; slider64 = g; slider_automate(slider63); slider_automate(slider64); );
+);
+function gbf_eq_q(k, q) (
+  k == 0 ? ( slider26 = q; slider_automate(slider26); ) : k == 1 ? ( slider39 = q; slider_automate(slider39); )
+  : k == 2 ? ( slider52 = q; slider_automate(slider52); ) : ( slider65 = q; slider_automate(slider65); );
+);
+function gbf_eq_shape_set(k, sh) (
+  k == 0 ? ( slider23 = sh; slider_automate(slider23); ) : k == 1 ? ( slider36 = sh; slider_automate(slider36); )
+  : k == 2 ? ( slider49 = sh; slider_automate(slider49); ) : ( slider62 = sh; slider_automate(slider62); );
+);
+function gbf_eq_sh_name(sh) (
+  sh == 0 ? "BELL" : sh == 3 ? "LOW SHELF" : sh == 4 ? "HIGH SHELF" : sh == 1 ? "LOW CUT" : sh == 5 ? "HIGH CUT" : "BAND";
+);
+// one band's knob: gain for a bell or a shelf, frequency for a cut (a cut has no gain); its label is the shape and a
+// click on the label opens the shape menu
+function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly) (
+  sh = gbf_eq_sh(k) | 0; cut = gbf_eq_cut(k); f = gbf_eq_fr(k); g = gbf_eq_gn(k);
+  sprintf(#gbf_eql, "%s ▾", gbf_eq_sh_name(sh));
+  cut ? (
+    nv = gbf_knob_c(GBF_K_EQ + k, x, y, r, log(f / 20) / log(1000), 0, 1, k == 0 ? 0.26 : 0.9, 0, #gbf_eql,
+                    f < 1000 ? sprintf(#gbf_v, "%.0f Hz", f) : sprintf(#gbf_v, "%.1f kHz", f / 1000), 0,
+                    gbf_eq_c[k * 3], gbf_eq_c[k * 3 + 1], gbf_eq_c[k * 3 + 2]);
+    abs(nv - log(f / 20) / log(1000)) > 0.0005 ? gbf_eq_set(k, 20 * 1000 ^ max(0, min(1, nv)), g);
+  ) : (
+    nv = gbf_knob_c(GBF_K_EQ + k, x, y, r, g, -15, 15, 0, 61, #gbf_eql, sprintf(#gbf_v, "%+.1f dB", g), 0,
+                    gbf_eq_c[k * 3], gbf_eq_c[k * 3 + 1], gbf_eq_c[k * 3 + 2]);
+    abs(nv - g) > 0.01 ? gbf_eq_set(k, f, floor(nv * 2 + 0.5) / 2);
+  );
+  lw = r * 3.2; ly = y + r * 1.45;
+  !gbf_menu_block && lmb_down && gbf_hit(x - lw / 2, ly - 2 * gbf_s, lw, gbf_lf + 4 * gbf_s) ? (
+    sprintf(#gbf_eqm, "%sBell|%sLow shelf|%sHigh shelf|%sLow cut|%sHigh cut",
+      sh == 0 ? "!" : "", sh == 3 ? "!" : "", sh == 4 ? "!" : "", sh == 1 ? "!" : "", sh == 5 ? "!" : "");
+    gbf_menu(#gbf_eqm, x - lw / 2, ly + gbf_lf + 2 * gbf_s, 1 + k);
+  );
+);
+// the menu's answer, from rkm_run at the end of the pass (gb_face_frame): what = 1..4 a band's shape
+function gbf_menu_pick(what, r) (
+  what >= 1 && what <= 4 ? gbf_eq_shape_set(what - 1, r == 1 ? 0 : r == 2 ? 3 : r == 3 ? 4 : r == 4 ? 1 : 5);
+);
+function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, kx0, ky2, q, nv) (
+  gx = cx; gw = cw * 0.55; gh = ph; dr = 15;
+  // the curves, refilled when a band's setting or TONE (slider7) changed
+  sig = slider24 + slider25 * 3 + slider37 * 7 + slider38 * 11 + slider50 * 13 + slider51 * 17 + slider63 * 19 + slider64 * 23
+        + slider7 * 29 + slider26 * 31 + slider39 * 37 + slider52 * 41 + slider65 * 43
+        + slider23 * 47 + slider36 * 53 + slider49 * 59 + slider62 * 61;
+  sig !== gbf_eq_sig ? (
+    gbf_eq_sig = sig; gb_eq_display_apply(max(-1, min(1, slider7 * 0.01)));
+    i = 0; loop(GBF_EQN, gbf_eq_s[i] = 0; i += 1; );
+    k = 0;
+    loop(5,
+      i = 0;
+      loop(GBF_EQN, gbf_eq_b[k * GBF_EQN + i] = gb_eq_display_db(k, gbf_eq_fq[i]); gbf_eq_s[i] += gbf_eq_b[k * GBF_EQN + i]; i += 1; );
+      k += 1;
+    );
+  );
+  gbf_eq_e[0] = gbf_eq_e[1] = gbf_eq_e[2] = gbf_eq_e[3] = 1; gbf_eq_e[4] = slider7 != 0;
+  k = 0;
+  loop(4, gbf_eq_f[k] = gbf_eq_fr(k); gbf_eq_d[k] = gbf_eq_cut(k) ? 0 : gbf_eq_gn(k); k += 1; );
+  gfx_set(gbf_bg_r * 0.7, gbf_bg_g * 0.7, gbf_bg_b * 0.7, 1); gfx_rect(gx, top, gw, gh);
+  rk_curve_font(max(7, floor(8 * gbf_s * gbf_tk)));
+  rk_curve_grid(gx, top, gw, gh, dr, gbf_pn_r * 1.6, gbf_pn_g * 1.6, gbf_pn_b * 1.6, gbf_td_r, gbf_td_g, gbf_td_b, 0);
+  rk_curve_draw(gx, top, gw, gh, gbf_eq_b, GBF_EQN, 5, dr, gbf_eq_c, gbf_eq_e, gbf_eq_m + 8, -1, 0,
+                gbf_eq_s, gbf_ac_r, gbf_ac_g, gbf_ac_b, 1);
+  // the nodes: drag a band (a cut moves sideways only), double-click = flat, the wheel = its width (Q; up narrower)
+  !gbf_menu_block ? (
+    rk_curve_nodes(gbf_eq_m, gx, top, gw, gh, dr, gbf_eq_f, gbf_eq_d, 4);
+    rk_curve_ni >= 0 && rk_curve_moved ? (
+      k = rk_curve_ni;
+      gbf_eq_set(k, max(20, min(20000, rk_curve_nf)), gbf_eq_cut(k) ? gbf_eq_gn(k) : max(-15, min(15, rk_curve_ndb)));
+    );
+    rk_curve_ni >= 0 && rk_curve_dblclk ? (
+      k = rk_curve_ni; gbf_eq_set(k, gbf_eq_f[k], 0);
+    );
+    rk_curve_nwheel != 0 ? (
+      k = rk_curve_ni;
+      q = gbf_eq_qv(k) * 1.15 ^ rk_curve_nwheel;
+      gbf_eq_q(k, floor(max(0.3, min(gbf_eq_sh(k) == 0 ? 12 : 4, q)) * 100 + 0.5) / 100);
+    );
+  );
+  rk_curve_nodes_draw_rgb(gbf_eq_m, gx, top, gw, gh, dr, gbf_eq_f, gbf_eq_d, 4, -1, gbf_eq_c);
+  // the hovered or held band: its shape, frequency and width
+  k = gbf_eq_m[0] >= 0 ? gbf_eq_m[0] : rk_curve_hov;
+  k >= 0 && k < 4 ? (
+    gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1); gbf_font(max(9, floor(10 * gbf_s)), 0);
+    sprintf(#gbf_v, gbf_eq_fr(k) < 1000 ? "%s  %.0f Hz  Q %.2f" : "%s  %.2f kHz  Q %.2f", gbf_eq_sh_name(gbf_eq_sh(k) | 0),
+            gbf_eq_fr(k) < 1000 ? gbf_eq_fr(k) : gbf_eq_fr(k) / 1000, gbf_eq_qv(k));
+    gfx_x = gx + 6 * gbf_s; gfx_y = top + gh - 14 * gbf_s; gfx_drawstr(#gbf_v);
+  );
+  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(gx, top, gw, gh);
+  // the knobs: the four bands, then TONE (its curve is the teal one)
+  kx = (cw - gw - 10 * gbf_s) / 5; kx0 = gx + gw + 10 * gbf_s; ky2 = top + kr * 1.4;
+  k = 0;
+  loop(4, gbf_eq_band_knob(k, kx0 + kx * (k + 0.5), ky2, kr * 0.8); k += 1; );
+  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gfx_rect(kx0 + kx * 4, top + 6 * gbf_s, max(1, gbf_s), kr * 3.4);
+  nv = gbf_knob_c(0, kx0 + kx * 4.5, ky2, kr * 0.95, slider7, -100, 100, 0, 201, "TONE",
+                  slider7 == 0 ? "flat" : sprintf(#gbf_v, slider7 < 0 ? "dark %.0f" : "bright %.0f", abs(slider7)), 0,
+                  gbf_eq_c[12], gbf_eq_c[13], gbf_eq_c[14]);
+  nv = floor(nv + 0.5); nv != slider7 ? ( slider7 = nv; slider_automate(slider7); );
+);
+
+// ── CONTROLS: the library's own knobs (its label_ccN names), else the mod wheel and expression ──
+// A turned knob is sent to the audio thread as that controller (gb_ui_cc_*: the value and number first, the counter
+// last; gb_voice applies each change once), so it moves the sound exactly as the controller from MIDI would.
+function gbf_page_controls(cx, dy, cw, kr) local(n, i, kx, c, nv) (
+  n = gb_ready && gb_nlbl > 0 ? min(8, gb_nlbl) : 2;
+  kx = cw / 8;
+  i = 0;
+  loop(n,
+    gb_ready && gb_nlbl > 0 ? ( c = GB_LBL[i * 3]; gb_name_str(GB_LBL, i); strcpy(#gbf_cl, #gb_ls); )
+                            : ( c = i == 0 ? 1 : 11; strcpy(#gbf_cl, i == 0 ? "MOD WHEEL" : "EXPRESSION"); );
+    nv = gbf_knob(GBF_K_CTL + i, cx + kx * (i + 0.5), dy, kr, gb_cc[c], 0, 127, gb_cc_init[c], 128, #gbf_cl,
+                  sprintf(#gbf_v, "CC%d  %d", c, gb_cc[c]), 0);
+    nv = floor(nv + 0.5);
+    nv != gb_cc[c] && gb_ready ? ( gb_ui_cc_n = c; gb_ui_cc_v = nv; gb_ui_cc_seq += 1; );
+    i += 1;
+  );
+  gbf_font(max(7, floor(9 * gbf_s)), 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_x = cx + kx * n + 6 * gbf_s; gfx_y = dy - kr;
+  gfx_drawstr(gb_ready && gb_nlbl > 0 ? "The library's own controls. Your MIDI controllers move them too."
+              : "This library names no controls of its own: the mod wheel and expression pedal still play it.",
+              0, cx + cw, dy + kr * 2);
+);
+
+// ── SETTINGS: this instance ──
+function gbf_page_settings(cx, dy, cw, kr) local(kx, nv, px, pw, ph) (
+  kx = cw / 8;
+  nv = gbf_knob(GBF_K_SET, cx + kx * 0.5, dy, kr, slider15, 8, 64, 64, 57, "VOICES", sprintf(#gbf_v, "%d", slider15), 0);
+  nv = floor(nv + 0.5); nv != slider15 ? ( slider15 = nv; slider_automate(slider15); );
+  nv = gbf_knob(GBF_K_SET + 1, cx + kx * 1.5, dy, kr, slider14, 1, 24, 2, 24, "BEND", sprintf(#gbf_v, "+/- %d", slider14), 0);
+  nv = floor(nv + 0.5); nv != slider14 ? ( slider14 = nv; slider_automate(slider14); );
+  nv = gbf_knob(GBF_K_SET + 2, cx + kx * 2.5, dy, kr, slider2, -24, 24, 0, 49, "TRANSPOSE", sprintf(#gbf_v, "%+d st", slider2), 0);
+  nv = floor(nv + 0.5); nv != slider2 ? ( slider2 = nv; slider_automate(slider2); );
+  nv = gbf_knob(GBF_K_SET + 3, cx + kx * 3.5, dy, kr, slider4, 0, 100, 100, 101, "VELOCITY", sprintf(#gbf_v, "%.0f%%", slider4), 0);
+  nv = floor(nv + 0.5); nv != slider4 ? ( slider4 = nv; slider_automate(slider4); );
+  nv = gbf_knob(GBF_K_SET + 4, cx + kx * 4.5, dy, kr, slider16, 415, 466, 440, 0, "TUNING", sprintf(#gbf_v, "A4 %.1f", slider16), 0);
+  nv = floor(nv * 10 + 0.5) / 10; abs(nv - slider16) > 0.01 ? ( slider16 = nv; slider_automate(slider16); );
+  // MONO and NAME TRACKS: toggles
+  px = cx + kx * 5.2; pw = min(kx * 2.6, 170 * gbf_s); ph = 22 * gbf_s;
+  btn_set_housing(gbf_bg_r * 0.8, gbf_bg_g * 0.8, gbf_bg_b * 0.8);
+  gbf_font(max(7, floor(9 * gbf_s)), 'b');
+  nv = gbf_menu_block ? slider13 : btn_pill_interact(GBF_BM + 8, px, dy - kr, pw, ph, slider13 >= 0.5);
+  btn_pill_draw(px, dy - kr, pw, ph, nv, "MONO (one note)", (GBF_BM + 8)[0], gbf_ac_r, gbf_ac_g, gbf_ac_b);
+  nv != (slider13 >= 0.5) ? ( slider13 = nv; slider_automate(slider13); );
+  nv = gbf_menu_block ? slider17 : btn_pill_interact(GBF_BM + 16, px, dy - kr + ph + 8 * gbf_s, pw, ph, slider17 >= 0.5);
+  btn_pill_draw(px, dy - kr + ph + 8 * gbf_s, pw, ph, nv, "NAME TRACKS", (GBF_BM + 16)[0], gbf_ac_r, gbf_ac_g, gbf_ac_b);
+  nv != (slider17 >= 0.5) ? ( slider17 = nv; slider_automate(slider17); );
+);
+
+// ── on the display: the playing styles (chips), then the mod wheel / expression bars and the sustain lamp ──
+// a chip held down plays its keyswitch through the mouse-note channel (gb_kb_note), as the keyboard does
+function gbf_chips(x, y, w, h) local(i, cx, cw, on, cn) (
+  gb_ready && gb_nswl > 0 ? (
+    gbf_font(max(7, floor(9 * gbf_s)), 'b');
+    cx = x; i = 0; gbf_chip_hit = -1;
+    while (i < gb_nswl && cx < x + w - 30 * gbf_s) (
+      cn = GB_SWL[i * 3]; gb_name_str(GB_SWL, i);
+      gfx_measurestr(#gb_ls, gbf_tw, gbf_th_); cw = gbf_tw + 16 * gbf_s;
+      cx + cw <= x + w ? (
+        on = gb_sw_cur == cn;
+        on ? gbf_scr(1, 0.48, 0.24, 1) : gbf_scr(0.20, 0.13, 0.09, 1);
+        // a filled pill: two round ends and the body between them
+        gfx_circle(cx + h * 0.5, y + h * 0.5, h * 0.5, 1); gfx_circle(cx + cw - h * 0.5, y + h * 0.5, h * 0.5, 1);
+        gfx_rect(cx + h * 0.5, y, cw - h, h);
+        on ? gbf_scr(0.11, 0.05, 0.02, 1) : gbf_scr(0.79, 0.54, 0.35, 1);
+        gfx_x = cx + 8 * gbf_s; gfx_y = y + (h - gbf_th_) * 0.5; gfx_drawstr(#gb_ls);
+        gbf_hit(cx, y, cw, h) ? gbf_chip_hit = cn;
+      );
+      cx += cw + 5 * gbf_s; i += 1;
+    );
+    lmb_down && !gbf_menu_block && gbf_chip_hit >= 0 ? gbf_chip_note = gbf_chip_hit;
+  );
+  !LMB ? gbf_chip_note = -1;
+);
+function gbf_perf_row(x, y, w) local(bw, v, i, c, d) (
+  gbf_font(max(7, floor(8 * gbf_s)), 'b');
+  d = (gbf_tk - 1) * 8 * gbf_s;        // the labels' growth at this TEXT SIZE: the bars sit under them
+  bw = (w - 96 * gbf_s) * 0.5; i = 0;    // two bars, then room for the pedal lamp
+  loop(2,
+    c = i == 0 ? 1 : 11; v = gb_cc[c] / 127;
+    gbf_scr(0.79, 0.54, 0.35, 1); gfx_x = x + i * (bw + 8 * gbf_s); gfx_y = y; gfx_drawstr(i == 0 ? "MOD WHEEL" : "EXPRESSION");
+    gbf_scr(0.23, 0.16, 0.12, 1); gfx_rect(x + i * (bw + 8 * gbf_s), y + 12 * gbf_s + d, bw, 5 * gbf_s);
+    gbf_scr(1, 0.69, 0.40, 1); gfx_rect(x + i * (bw + 8 * gbf_s), y + 12 * gbf_s + d, bw * v, 5 * gbf_s);
+    i += 1;
+  );
+  // the sustain pedal: lit while it is down (CC64 >= 64)
+  gb_cc[64] >= 64 ? gbf_scr(1, 0.69, 0.40, 1) : gbf_scr(0.29, 0.20, 0.15, 1);
+  gfx_circle(x + w - 60 * gbf_s, y + 14 * gbf_s, 4 * gbf_s, 1);
+  gbf_scr(0.79, 0.54, 0.35, 1); gfx_x = x + w - 52 * gbf_s; gfx_y = y + 9 * gbf_s; gfx_drawstr("SUSTAIN");
+);
+
+// ── the window ──
+// ── the wheels left of the keyboard: pitch bend (springs back to the centre on release) and the mod wheel (stays) ──
+// Drawn by the shared ReaKit wheel (rk_wheel); a press jumps it to the mouse and a drag moves it. The
+// bend goes to the audio thread through its own mailbox (gb_ui_bend_*), the mod wheel as controller 1 through the
+// CONTROLS page's (gb_ui_cc_*); both show what MIDI does to them too (gb_bend, gb_cc[1]).
+function gbf_wheels(x, y, w, h, ctx) local(ww, x2, h1, h2, p, v, whl, sent) (
+  whl = ctx ? gbf_swhl : gbf_whl; sent = ctx ? gbf_smod : gbf_mod_sent;
+  ww = (w - (ctx ? 3 : 6) * gbf_s) * 0.5; x2 = x + ww + (ctx ? 3 : 6) * gbf_s;
+  h1 = !gbf_menu_block && !_srf_foreign && gbf_hit(x, y, ww, h); h2 = !gbf_menu_block && !_srf_foreign && gbf_hit(x2, y, ww, h);
+  lmb_down && h1 ? whl = 1; lmb_down && h2 ? whl = 2;
+  p = rk_wheel_at(y, h, my, gbf_s);
+  whl == 1 && !_srf_foreign ? (
+    v = (8192 + (p * 2 - 1) * 8192) | 0; v = max(0, min(16383, v));
+    v != gb_ui_bend_v ? ( gb_ui_bend_v = v; gb_ui_bend_seq += 1; );
+  );
+  whl == 2 && !_srf_foreign ? (
+    v = (p * 127 + 0.5) | 0;
+    v != sent ? ( sent = v; gb_ui_cc_n = 1; gb_ui_cc_v = v; gb_ui_cc_seq += 1; );
+  );
+  !LMB && whl && !_srf_foreign ? (
+    whl == 1 ? ( gb_ui_bend_v = 8192; gb_ui_bend_seq += 1; );   // the bend wheel springs back
+    whl = 0; sent = -1;
+  );
+  ctx ? ( gbf_swhl = whl; gbf_smod = sent; ) : ( gbf_whl = whl; gbf_mod_sent = sent; );
+  gbf_wh_x = x; gbf_wh_x2 = x2; gbf_wh_w = ww; gbf_wh_h1 = h1; gbf_wh_h2 = h2;
+);
+function gbf_wheels_draw(y, h, ctx) local(whl, sent) (
+  whl = ctx ? gbf_swhl : gbf_whl; sent = ctx ? gbf_smod : gbf_mod_sent;
+  rk_wheel_draw(gbf_wh_x, y, gbf_wh_w, h, whl == 1 ? gb_ui_bend_v / 16383 : 0.5 + 0.5 * gb_bend / max(1, gb_bend_rng), 1,
+                (gbf_wh_h1 || whl == 1) ? 1 : 0, gbf_s, gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_bg_r, gbf_bg_g, gbf_bg_b);
+  rk_wheel_draw(gbf_wh_x2, y, gbf_wh_w, h, whl == 2 ? sent / 127 : gb_cc[1] / 127, 0,
+                (gbf_wh_h2 || whl == 2) ? 1 : 0, gbf_s, gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_bg_r, gbf_bg_g, gbf_bg_b);
+);
+
+// ── the OPTIONS sheet (Swing's pad-editor sheet, swing_grid_opt_draw): over the page, a row a setting ──
+function gbf_opt_btn(bx, by, bw, bh, lbl, on) local(hot, tw, th) (
+  hot = !gbf_menu_block && gbf_hit(bx, by, bw, bh);
+  on ? gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1) : gfx_set(gbf_pn_r * 1.35, gbf_pn_g * 1.35, gbf_pn_b * 1.35, 1);
+  gfx_rect(bx, by, bw, bh);
+  hot ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(bx, by, bw, bh); );
+  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, bh);
+  gbf_font(10 * gbf_s, 'b'); on ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+  gfx_measurestr(lbl, tw, th); gfx_x = bx + (bw - tw) * 0.5; gfx_y = by + (bh - th) * 0.5; gfx_drawstr(lbl);
+  hot && lmb_down ? ( lmb_down = 0; 1 ) : 0;
+);
+function gbf_opt_label(x, y, bh, lbl) (
+  gbf_font(10 * gbf_s, 'b'); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_measurestr(lbl, gbf_tw, gbf_th_); gfx_x = x; gfx_y = y + (bh - gbf_th_) * 0.5; gfx_drawstr(lbl);
+);
+function gbf_options(x, y, w, h) local(s, bh, bw, rx, ry, lx, vx, nv) (
+  s = gbf_s; bh = 22 * s; bw = 30 * s;
+  gfx_set(gbf_pn_r, gbf_pn_g, gbf_pn_b, 1); gfx_rect(x, y, w, h);
+  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(x, y, w, h);
+  lx = x + 14 * s; vx = x + 130 * s; rx = x + min(w - 14 * s, 470 * s);
+  // TYPEFACE: the five faces, its name shown in it, < / >
+  ry = y + 12 * s;
+  gbf_opt_label(lx, ry, bh, "TYPEFACE");
+  gbf_font(13 * s, 0); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+  gfx_measurestr(rk_font_fname(slider86), gbf_tw, gbf_th_); gfx_x = vx; gfx_y = ry + (bh - gbf_th_) * 0.5; gfx_drawstr(rk_font_fname(slider86));
+  nv = slider86;
+  gbf_opt_btn(rx - 2 * bw - 6 * s, ry, bw, bh, "<", 0) ? nv = ((slider86 | 0) + 4) % 5;
+  gbf_opt_btn(rx - bw, ry, bw, bh, ">", 0) ? nv = ((slider86 | 0) + 1) % 5;
+  nv != slider86 ? ( slider86 = nv; slider_automate(slider86); );
+  // TEXT SIZE: the step and - / +
+  ry += bh + 12 * s;
+  gbf_opt_label(lx, ry, bh, "TEXT SIZE");
+  gbf_font(13 * s, 'b'); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1); sprintf(#gbf_tmp, "%s%d", slider87 > 0 ? "+" : "", slider87);
+  gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_); gfx_x = vx; gfx_y = ry + (bh - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp);
+  nv = slider87;
+  gbf_opt_btn(rx - 2 * bw - 6 * s, ry, bw, bh, "-", 0) ? nv = max(-3, slider87 - 1);
+  gbf_opt_btn(rx - bw, ry, bw, bh, "+", 0) ? nv = min(6, slider87 + 1);
+  nv != slider87 ? ( slider87 = nv; slider_automate(slider87); );
+  // SCREEN: EMBER (Gumbo's own) / LCD (Swing's teal) / THEME
+  ry += bh + 12 * s;
+  gbf_opt_label(lx, ry, bh, "SCREEN");
+  nv = slider88;
+  gbf_opt_btn(rx - 3 * 70 * s - 12 * s, ry, 70 * s, bh, "EMBER", slider88 == 0) ? nv = 0;
+  gbf_opt_btn(rx - 2 * 70 * s - 6 * s, ry, 70 * s, bh, "LCD", slider88 == 1) ? nv = 1;
+  gbf_opt_btn(rx - 70 * s, ry, 70 * s, bh, "THEME", slider88 == 2) ? nv = 2;
+  nv != slider88 ? ( slider88 = nv; slider_automate(slider88); );
+  // DONE
+  ry += bh + 16 * s;
+  gbf_opt_btn(lx, ry, rx - lx, bh, "DONE", 0) ? gbf_opt = 0;
+);
+
+// ── drum kits: each key's sound named up the key (the owner, 2026-10-31: "On drum kits can we put the name of the sound
+// on the keyboard?"). The names come from the file (gb_key_name: "// label_key"). They are drawn once into an image,
+// one square cell per key (16 x 8; a turned blit stays inside its own destination rectangle, so the source must be a
+// square as long as the name) -- dark ink for a white key, light for a black one -- and blitted turned a quarter, reading
+// bottom to top: a white key's name runs up its middle (clear of the black keys beside it at this width), a black key's up the
+// black key. Too narrow a key for a readable size: no names on the keys, the tag over the pointed-at key still says it.
+GBF_KN_IMG = 52;                     // gfx image slots 52 (window) and 53 (strip); 40..51 are the family icons
+// the window and a strip draw at different sizes, so each keeps its own image (ctx 0 window, 1 strip)
+function gbf_kn_build(fh, wl, bl, ctx) local(n, k, rh, tw, th, img, kw) (
+  rh = fh + 2; img = GBF_KN_IMG + ctx; kw = GBF_KN_W + ctx * 128;
+  wl = max(8, wl);
+  gfx_setimgdim(img, 16 * wl, 8 * wl);
+  gfx_dest = img;
+  gfx_set(0, 0, 0, 1); gfx_a2 = 0; gfx_rect(0, 0, 16 * wl, 8 * wl); gfx_a2 = 1;
+  gfx_setfont(1, rk_font_fname(slider86), fh, 0);
+  n = 0;
+  loop(128,
+    kw[n] = 0;
+    gb_key_name(n) > 0 ? (
+      k = rk_piano_is_black(n) ? bl : wl;
+      gfx_measurestr(#gb_ls, tw, th);
+      while (tw > k && strlen(#gb_ls) > 1) ( str_setlen(#gb_ls, strlen(#gb_ls) - 1); gfx_measurestr(#gb_ls, tw, th); );
+      rk_piano_is_black(n) ? gfx_set(0.88, 0.88, 0.92, 1) : gfx_set(0.10, 0.10, 0.13, 1);
+      gfx_x = (n % 16) * wl; gfx_y = floor(n / 16) * wl + floor((wl - rh) * 0.5) + 1; gfx_drawstr(#gb_ls);
+      kw[n] = min(tw, k);
+    );
+    n += 1;
+  );
+  gfx_dest = -1;
+);
+function gbf_key_names(x, y, w, h, ctx) local(wsz, fh, rh, bb, wl, bl, n, wi, cx, yb, tw, m, c, kw) (
+  gb_ready && gb_nkey > 0 ? (
+    wsz = w / rk_piano_white_count(gbf_lo, gbf_hi);
+    fh = floor(min(9 * gbf_s * gbf_tk, wsz * 0.38));   // a white key's middle is clear of black keys for 0.38 of its width
+    bb = h * 0.60;
+    wl = floor(h - 8 * gbf_s); bl = floor(bb - 6 * gbf_s);
+    fh >= 7 && bl > 4 * fh ? (
+      c = GBF_KN_C + ctx * 4; kw = GBF_KN_W + ctx * 128;
+      fh != c[0] || wl != c[1] || gb_load_gen != c[2] || slider86 != c[3] ? (
+        c[0] = fh; c[1] = wl; c[2] = gb_load_gen; c[3] = slider86;
+        gbf_kn_build(fh, wl, bl, ctx);
+      );
+      m = gfx_mode; gfx_mode = 0; gfx_a = 1;
+      n = gbf_lo;
+      while (n <= gbf_hi) (
+        tw = kw[n];
+        tw > 0 ? (
+          wi = rk_piano_whites_before(gbf_lo, n);
+          rk_piano_is_black(n) ? ( cx = x + wi * wsz; yb = y + bb - 3 * gbf_s; )
+                               : ( cx = x + (wi + 0.5) * wsz; yb = y + h - 4 * gbf_s; );
+          // the key's square cell turned -90 degrees about its centre: the name's start lands at the square's bottom (yb),
+          // its middle line on the key's centre line
+          gfx_blit(GBF_KN_IMG + ctx, 1, -$pi * 0.5, (n % 16) * wl, floor(n / 16) * wl, wl, wl, cx - wl * 0.5, yb - wl, wl, wl);
+        );
+        n += 1;
+      );
+      gfx_mode = m;
+    );
+  );
+);
+// the pointed-at key's name in a tag above the keyboard (any width)
+function gbf_key_tag(x, w, ky, n) local(cx, tw, th, bx, s) (
+  s = gbf_s;
+  gb_ready && gb_nkey > 0 && gb_key_name(n) > 0 ? (
+    gbf_font(9 * s, 'b'); gfx_measurestr(#gb_ls, tw, th);
+    cx = gbf_key_x(x, w, gbf_lo, gbf_hi, n);
+    bx = max(x, min(x + w - tw - 10 * s, cx - tw * 0.5 - 5 * s));
+    gfx_set(0, 0, 0, 0.85); gfx_rect(bx, ky - th - 9 * s, tw + 10 * s, th + 4 * s);
+    gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_rect(bx, ky - 5 * s - 1, tw + 10 * s, 1);
+    gfx_set(1, 1, 1, 1); gfx_x = bx + 5 * s; gfx_y = ky - th - 7 * s; gfx_drawstr(#gb_ls);
+  );
+);
+
+// ── PADS: a drum kit's sounds as 16 pads a bank (the owner, 2026-10-31: "we never did do the drum pads for drums";
+// 2026-11-01: a tab of its own, 16 pads with banks). The pads are the kit's named keys, low to high (gb_key_name, the
+// converter's "// label_key" lines), so a 52-sound kit has banks A-D. A pad plays through the mouse-note channel
+// (gb_kb_note), harder the higher it is struck (gb_kb_vel 30..127); it lights on every hit of its note (MIDI, the
+// keyboard or the pad) and fades.
+function gbf_pads_build() local(n) (
+  gb_ready && gbf_pad_gen != gb_load_gen ? (
+    gbf_pad_gen = gb_load_gen; gbf_npad = 0; gbf_pbank = 0;
+    n = 0; loop(128, GBF_PGL[n] = 0; GB_KLB[n * 2 + 1] > 0 ? ( GBF_PAD[gbf_npad] = n; gbf_npad += 1; ); n += 1; );
+    gbf_npad > 0 ? gbf_tab = 4 : gbf_tab == 4 ? gbf_tab = 0;   // a kit opens on its pads; a pitched sound leaves them
+  );
+);
+function gbf_note_name(n) local(pc) (
+  pc = n % 12;
+  sprintf(#gbf_nn, "%s%d", pc == 0 ? "C" : pc == 1 ? "C#" : pc == 2 ? "D" : pc == 3 ? "D#" : pc == 4 ? "E" : pc == 5 ? "F"
+                 : pc == 6 ? "F#" : pc == 7 ? "G" : pc == 8 ? "G#" : pc == 9 ? "A" : pc == 10 ? "A#" : "B", floor(n / 12) - 1);
+);
+function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k, n, gl, hot, sp, l, cut, tw2, th2, ly, e) (
+  s = gbf_s; g = 6 * s;
+  nb = min(8, ceil(gbf_npad / 16));
+  gbf_pbank = min(gbf_pbank, max(0, nb - 1));
+  e = gbf_idx_loaded ? gbf_idx_current_cached() : -1;
+  e >= 0 ? gbf_fam_col((GBF_IDX_BASE + e * GBF_IS)[0]) : ( gbf_fc_r = gbf_ac_r; gbf_fc_g = gbf_ac_g; gbf_fc_b = gbf_ac_b; );
+  // the banks, when there are more than 16 sounds
+  bh = max(18 * s, 9 * s * gbf_tk + 8 * s);
+  nb > 1 ? (
+    bw = 34 * s; i = 0;
+    loop(nb,
+      sprintf(#gbf_bk, "%c", 'A' + i);
+      gbf_opt_btn(x + i * (bw + 4 * s), y, bw, bh, #gbf_bk, i == gbf_pbank) ? gbf_pbank = i;
+      i += 1;
+    );
+    sprintf(#gbf_bk, "%d SOUNDS", gbf_npad); gbf_font(9 * s, 'b'); gfx_measurestr(#gbf_bk, gbf_tw, gbf_th_);
+    gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1); gfx_x = x + w - gbf_tw; gfx_y = y + (bh - gbf_th_) * 0.5; gfx_drawstr(#gbf_bk);
+    y += bh + g; h -= bh + g;
+  );
+  pw = (w - 3 * g) / 4; ph = (h - 3 * g) / 4;
+  gbf_pad_hit = -1;
+  k = 0;
+  loop(16,
+    px = x + (k % 4) * (pw + g); py = y + (3 - floor(k / 4)) * (ph + g);   // pad 1 bottom left, as on a drum machine
+    i = gbf_pbank * 16 + k;
+    i < gbf_npad ? (
+      n = GBF_PAD[i];
+      GB_NT[n] || gbf_pad_note == n ? GBF_PGL[n] = 1 : GBF_PGL[n] *= 0.86;
+      gl = GBF_PGL[n];
+      hot = !gbf_menu_block && gbf_hit(px, py, pw, ph);
+      hot ? ( gbf_pad_hit = n; gbf_pad_vel = 30 + 97 * max(0, min(1, (py + ph - my) / max(1, ph))); );
+      // the pad: dark rubber, lit in the family colour by a hit, a lip on top
+      gfx_set(gbf_pn_r * 1.2 + (gbf_fc_r - gbf_pn_r * 1.2) * gl * 0.85, gbf_pn_g * 1.2 + (gbf_fc_g - gbf_pn_g * 1.2) * gl * 0.85,
+              gbf_pn_b * 1.2 + (gbf_fc_b - gbf_pn_b * 1.2) * gl * 0.85, 1);
+      gfx_rect(px, py, pw, ph);
+      hot ? ( gfx_set(1, 1, 1, 0.07); gfx_rect(px, py, pw, ph); );
+      gfx_set(gbf_fc_r, gbf_fc_g, gbf_fc_b, 0.55 + 0.45 * gl); gfx_rect(px, py, pw, max(2, 2 * s));
+      gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(px, py, pw, ph);
+      // its sound's name, two lines when one will not fit even shrunk
+      gb_key_name(n); strcpy(#gbf_pn, #gb_ls);
+      gbf_fit(#gbf_pn, pw - 12 * s, 11 * s, 'b');
+      gl > 0.5 ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+      gbf_tw > pw - 12 * s ? (
+        l = strlen(#gbf_pn); cut = -1; sp = 0;
+        while (sp < l) ( str_getchar(#gbf_pn, sp) == ' ' && (cut < 0 || abs(sp - l * 0.5) < abs(cut - l * 0.5)) ? cut = sp; sp += 1; );
+        cut > 0 ? (
+          strcpy_substr(#gbf_pn2, #gbf_pn, cut + 1); str_setlen(#gbf_pn, cut);
+          gfx_measurestr(#gbf_pn, gbf_tw, gbf_th_); gfx_measurestr(#gbf_pn2, tw2, th2);
+          ly = py + (ph - gbf_th_ * 2) * 0.45;
+          gfx_x = px + (pw - gbf_tw) * 0.5; gfx_y = ly; gfx_drawstr(#gbf_pn, 0, px + pw - 4 * s, py + ph);
+          gfx_x = px + (pw - tw2) * 0.5; gfx_y = ly + gbf_th_; gfx_drawstr(#gbf_pn2, 0, px + pw - 4 * s, py + ph);
+        ) : ( gfx_x = px + 6 * s; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn, 0, px + pw - 4 * s, py + ph); );
+      ) : ( gfx_x = px + (pw - gbf_tw) * 0.5; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn); );
+      // its key, small in the corner
+      ph >= 34 * s ? (
+        gbf_note_name(n); gbf_font(8 * s, 0);
+        gl > 0.5 ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 0.8) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+        gfx_measurestr(#gbf_nn, gbf_tw, gbf_th_); gfx_x = px + 5 * s; gfx_y = py + ph - gbf_th_ - 4 * s; gfx_drawstr(#gbf_nn);
+      );
+    ) : (
+      gfx_set(gbf_pn_r * 0.75, gbf_pn_g * 0.75, gbf_pn_b * 0.75, 1); gfx_rect(px, py, pw, ph);
+      gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 0.6); gbf_box(px, py, pw, ph);
+    );
+    k += 1;
+  );
+  lmb_down && gbf_pad_hit >= 0 ? ( gbf_pad_note = gbf_pad_hit; gbf_pad_vv = gbf_pad_vel; );
+  !LMB ? gbf_pad_note = -1;
+);
+
+function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, ky, kr, ka, hit, cur, compact, thx, thy, x0, tby, tbh, nyy, gw, bwt, bh, hot)
+(
+  s = gbf_s; tb = 46 * s; pad = 10 * s;
+  // the window (re)opened (no window pass for half a second): read the lists again, so sound packages installed or
+  // removed while Gumbo was closed show (ReaPack tells Gumbo nothing; the helper's own imports move LIBGEN)
+  time_precise() - gbf_win_t > 0.5 ? ( gbf_idx_loaded = 0; gbf_cur_for = -1; gbf_bw_snap = 1; gbf_kbn_w = -1; );
+  gbf_win_t = time_precise();
+  !gbf_idx_loaded ? gbf_idx_load();
+  !gbf_icons_loaded ? gbf_icons_load();
+  gbf_range(); gbf_rec_build();
+  gbf_menu_block = rkth_cl_open || rkm_on;   // an open THEME panel or menu takes the clicks under it
+  // ── top bar ──
+  gfx_set(gbf_pn_r, gbf_pn_g, gbf_pn_b, 1); gfx_rect(0, 0, gfx_w, tb);
+  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gfx_rect(0, tb - 1, gfx_w, 1);
+  fs = max(12, floor(20 * s));
+  gbf_font(fs, 'b');
+  gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.25); gfx_x = pad + 1; gfx_y = (tb - fs) * 0.5 + 1; gfx_drawstr("GUMBO");
+  gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_x = pad; gfx_y = (tb - fs) * 0.5; gfx_drawstr("GUMBO");
+  x0 = gfx_x + 14 * s;
+  // the instrument box: < FAMILY  name  >
+  pw = min(320 * s, gfx_w * 0.36); ph = 30 * s; px = x0; dy = (tb - ph) * 0.5;
+  gfx_set(gbf_bg_r * 0.8, gbf_bg_g * 0.8, gbf_bg_b * 0.8, 1); gfx_rect(px, dy, pw, ph);
+  gfx_set(gbf_pn_r * 1.5, gbf_pn_g * 1.5, gbf_pn_b * 1.5, 1); gfx_rect(px + 4 * s, dy + 4 * s, 22 * s, ph - 8 * s); gfx_rect(px + pw - 26 * s, dy + 4 * s, 22 * s, ph - 8 * s);
+  gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1); gbf_font(max(9, floor(13 * s)), 'b');
+  gfx_x = px + 11 * s; gfx_y = dy + (ph - 13 * s) * 0.5; gfx_drawstr("<");
+  gfx_x = px + pw - 19 * s; gfx_drawstr(">");
+  lmb_down && !gbf_menu_block && gbf_hit(px + 4 * s, dy + 4 * s, 22 * s, ph - 8 * s) ? gbf_step(-1);
+  lmb_down && !gbf_menu_block && gbf_hit(px + pw - 26 * s, dy + 4 * s, 22 * s, ph - 8 * s) ? gbf_step(1);
+  cur = gbf_idx_current_cached();
+  gbf_font(max(7, floor(9 * s)), 'b'); gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1);
+  gfx_x = px + 32 * s; gfx_y = dy + (ph - 9 * s) * 0.5;
+  cur >= 0 ? gfx_drawstr(gbf_fam_name((GBF_IDX_BASE + cur * GBF_IS)[0]));
+  gbf_name(); gbf_font(max(9, floor(13 * s)), 'b'); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+  gfx_measurestr(strlen(#gb_want) ? #gbf_name : "No instrument", gbf_tw, gbf_th_);
+  gfx_x = px + max(90 * s, (pw - gbf_tw) * 0.5); gfx_y = dy + (ph - gbf_th_) * 0.5;
+  gfx_drawstr(strlen(#gb_want) ? #gbf_name : "No instrument", 0, px + pw - 30 * s, dy + ph);
+  // right side: voices, memory, THEME
+  rkth_scale = s;
+  thx = gfx_w - pad - (rkth_cl_hdr_w > 0 ? rkth_cl_hdr_w : 56 * s); thy = (tb - ((RKTH_H_CHIP * rkth_scale) | 0)) / 2;
+  // OPTIONS (typeface, text size, screen: the sheet over the page), left of THEME
+  gbf_obw = 70 * s; gbf_obx = thx - 10 * s - gbf_obw;
+  gbf_opt_btn(gbf_obx, thy, gbf_obw, (RKTH_H_CHIP * rkth_scale) | 0, "OPTIONS", gbf_opt) ? gbf_opt = !gbf_opt;
+  // voices and memory left of it, measured in the font they are drawn in (a larger TEXT SIZE moves them left)
+  gbf_font(max(8, floor(11 * s)), 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  sprintf(#gbf_tmp, "VOICES %d/%d     MEMORY %.0f MB", gbf_voices(), gb_vmax, gb_loaded_cells * 8 / 1048576);
+  gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_);
+  gbf_obx - 16 * s - gbf_tw > px + pw + 10 * s ? ( gfx_x = gbf_obx - 16 * s - gbf_tw; gfx_y = (tb - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp); );
+  rkth_namebar(gb_name_bar); rkth_embedrow();
+  rkth_cluster_hdr(thx, thy, 0, 0);
+  rkth_nb_pick >= 0 ? ( gb_name_bar = rkth_nb_pick; slider_automate(gb_name_bar); rkth_nb_pick = -1; );
+
+  // ── body: browser | display + tabs + page; keyboard along the bottom ──
+  compact = gfx_w < 760 * s;          // a narrow window drops the browser and its handle; the arrows still step
+  kh = max(44 * s, min(90 * s, gfx_h * 0.16)); ky = gfx_h - kh - 6 * s;
+  // the browser folds away behind a handle pinned to the left edge (Swing's drawer: rk_side_gutter; the owner,
+  // 2026-10-31). Its width slides; while it moves the panel draws as plain ground, the list only once it has landed.
+  gw = compact ? 0 : 18 * s;
+  bwt = compact || slider18 < 0.5 ? 0 : max(220 * s, min(270 * s, gfx_w * 0.26));
+  gbf_bw_snap ? ( gbf_bw_a = bwt; gbf_bw_snap = 0; ) : gbf_bw_a += (bwt - gbf_bw_a) * min(1, dt * 16);
+  abs(bwt - gbf_bw_a) < 0.5 * s ? gbf_bw_a = bwt;
+  bw = gw + gbf_bw_a; bh = ky - tb - 6 * s;
+  !compact ? (
+    hot = !gbf_menu_block && rk_gutter_hit(0, tb, gw, bh);
+    rk_gutter_paint(0, tb, gw, bh, -1, hot, slider18 >= 0.5, s, gbf_pn_r, gbf_pn_g, gbf_pn_b, gbf_bd_r, gbf_bd_g, gbf_bd_b,
+                    gbf_td_r, gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_bg_r * 0.2126 + gbf_bg_g * 0.7152 + gbf_bg_b * 0.0722 > 0.5);
+    hot && lmb_down ? ( slider18 = slider18 >= 0.5 ? 0 : 1; slider_automate(slider18); );
+    gbf_bw_a == bwt && bwt > 0 ? gbf_browser(gw, tb, gbf_bw_a, bh)
+    : gbf_bw_a >= 1 ? (
+      gfx_set(gbf_pn_r * 0.92, gbf_pn_g * 0.92, gbf_pn_b * 0.92, 1); gfx_rect(gw, tb, gbf_bw_a, bh);
+      gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.8); gfx_rect(gw + gbf_bw_a - 2 * s, tb, 2 * s, bh);   // the lit leading edge
+    );
+  );
+  cx = bw + pad; cw = gfx_w - cx - pad;
+  tbh = max(20 * s, 9 * s * gbf_tk + 10 * s);   // the tab strip, taller when its text is
+  // the knobs take what the width allows (and fit the height); the display gets the rest
+  kr = max(12 * s, min(min(cw / 8 * 0.30, 30 * s), (ky - tb - 2 * pad - 120 * s - tbh - 16 * s) / (1.4 + 1.45 + 0.95)));
+  gbf_lf = max(8, floor(kr * 0.36)); gbf_vf = max(8, floor(kr * 0.32));
+  ka = kr * (1.4 + 1.45) + gbf_lf + gbf_vf + 10 * s;              // the knob row's height
+  dh = max(120 * s, min(230 * s, ky - tb - 2 * pad - ka - tbh - 14 * s));
+  gbf_display(cx, tb + pad, cw, dh);
+  // on the display: the playing-style chips under the name, the controllers under the output meter
+  fs = max(12, floor(min(26 * s, dh * 0.15)));
+  gbf_chips(cx + 16 * s, tb + pad + 12 * s + fs * gbf_tk + 22 * s, cw * 0.47, 18 * gbf_tk * s);
+  nyy = tb + pad + 136 * s + 2 * (gbf_tk - 1) * 9 * s;   // under OUT, which moves down as its labels grow
+  dh >= 162 * s ? gbf_perf_row(cx + cw * 0.52, nyy, cw * 0.45);
+  // the tabs and the page
+  tby = tb + pad + dh + 6 * s;
+  gbf_pads_build();
+  gbf_npad == 0 && gbf_tab == 4 ? gbf_tab = 0;
+  gbf_tabs(cx, tby, min(110 * s, (cw - (gbf_npad > 0 ? 16 : 12) * s) / (gbf_npad > 0 ? 5 : 4)), tbh, gbf_npad > 0 ? 5 : 4);
+  gbf_tab != gbf_tab_was ? ( gbf_opt = 0; gbf_tab_was = gbf_tab; );   // a tab picked closes the OPTIONS sheet
+  gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.35); gfx_rect(cx, tby + tbh, cw, 1);
+  dy = tby + tbh + 8 * s + 1.4 * kr;
+  gbf_opt ? gbf_options(cx, tby + tbh + 4 * s, cw, ky - 8 * s - (tby + tbh + 4 * s))
+  : gbf_tab == 0 ? gbf_page_sound(cx, dy, cw, kr, ky - 8 * s)
+  : gbf_tab == 1 ? gbf_page_eq(cx, tby + tbh + 6 * s, cw, ky - 8 * s - (tby + tbh + 6 * s), kr)
+  : gbf_tab == 2 ? gbf_page_controls(cx, dy, cw, kr)
+  : gbf_tab == 4 ? gbf_page_pads(cx, tby + tbh + 8 * s, cw, ky - 14 * s - (tby + tbh + 8 * s)) : gbf_page_settings(cx, dy, cw, kr);
+  gbf_tab != 4 || gbf_opt ? gbf_pad_note = -1;
+
+  // ── the keyboard: recorded keys dotted above, held keys lit, play it with the mouse ──
+  gbf_wheels(pad, ky, 48 * s, kh, 0); gbf_wheels_draw(ky, kh, 0);   // pitch bend and mod wheel at the keyboard's left end
+  gbf_kx = pad + 56 * s; gbf_kw = gfx_w - pad - gbf_kx;
+  hit = gbf_menu_block || gbf_whl ? -1 : rk_piano_hit(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0);
+  lmb_down && hit >= 0 ? gbf_kb_drag = 1;
+  !LMB ? gbf_kb_drag = 0;
+  // the mouse note: a key held on the keyboard, else a playing-style chip held down (its keyswitch), else a drum pad
+  gbf_kbn_w = gbf_kb_drag ? ( hit >= 0 ? hit : gbf_kbn_w ) : gbf_chip_note >= 0 ? gbf_chip_note : gbf_pad_note;
+  // its velocity, set before the note it belongs to (the audio thread reads it when the note changes)
+  gbf_kbn_s < 0 && !gbf_kb_drag && gbf_chip_note < 0 && gbf_pad_note >= 0 ? gb_kb_vel = gbf_pad_vv : gb_kb_vel = 100;
+  gb_kb_note = gbf_kbn_s >= 0 ? gbf_kbn_s : gbf_kbn_w;
+  gbf_keys_prep(gbf_lo, gbf_hi);
+  rk_piano_draw_ex(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0, -1, gbf_kb_drag ? -1 : hit, gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
+  gbf_key_names(gbf_kx, ky, gbf_kw, kh, 0);
+  cur = gbf_kb_drag ? gbf_kbn_w : hit;
+  gb_ready && gbf_rec_gen == gb_load_gen ? (
+    gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1);
+    hit = gbf_lo; loop(gbf_hi - gbf_lo + 1, GBF_REC[hit] ? gfx_circle(gbf_key_x(gbf_kx, gbf_kw, gbf_lo, gbf_hi, hit), ky - 3 * s, max(1.5, 1.8 * s), 1); hit += 1; );
+  );
+  cur >= 0 ? gbf_key_tag(gbf_kx, gbf_kw, ky, cur);
+);
+
+// ── the mixer-strip face: the instrument's name, its status, a small keyboard when there is room ──
+// ── the strip (a track panel or mixer slot) ──
+// The keys and the wheels play there (the owner, 2026-10-31: "can the keys be played in the embedded mode?"), so a single
+// click no longer opens the window: the OPEN bar along the top does (Swing's and Quezy's strip, the house rule's form for
+// a strip with live controls). Its geometry is set on every strip pass (two strips of one instance share these globals).
+function gbf_strip_geom() local(s, fs, y, kh, ww) (
+  s = gbf_s; fs = max(8, floor(min(gfx_w * 0.11, 14 * s)));
+  gbf_sfs = fs;
+  gbf_ebh = max(9 * s, min(18 * s, floor(gfx_h * 0.09)));
+  y = 4 * s + fs * gbf_tk * 1.8 + 8 * s;
+  kh = gfx_h - y - 4 * s;
+  // the keys take the strip's height (a tall mixer pane: long keys, not an empty plate under short ones), up to a
+  // piano's proportions
+  gbf_sk_y = y; gbf_sk_h = kh >= 14 * s ? min(kh, 160 * s) : 0;
+  // the wheels when the strip is wide enough, wider on a wide strip (a 32-channel track's)
+  ww = gbf_sk_h > 0 && gfx_w >= 120 * s ? max(22 * s, min(36 * s, gfx_w * 0.09)) : 0;
+  gbf_sw_w = ww; gbf_sk_x = 4 * s + (ww > 0 ? ww + 4 * s : 0); gbf_sk_w = gfx_w - 4 * s - gbf_sk_x;
+);
+// on EVERY strip pass (outside the redraw skip, which would otherwise leave the 0x200 decision to a stale pass)
+function gbf_strip_input() local(hit, in) (
+  gbf_strip_geom();
+  in = gbf_hit(0, 0, gfx_w, gfx_h) && !_srf_foreign;
+  gbf_sw_w > 0 ? gbf_wheels(4 * gbf_s, gbf_sk_y, gbf_sw_w, gbf_sk_h, 1);
+  hit = in && gbf_sk_h > 0 && !gbf_swhl ? rk_piano_hit(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, gbf_lo, gbf_hi, 0) : -1;
+  gbf_shit = hit;
+  // the OPEN bar: the pointer in the top band and no key or wheel held
+  gbf_eopen = in && my < gbf_ebh && !gbf_skb_drag && !gbf_swhl;
+  !_srf_foreign ? (
+    lmb_down && hit >= 0 && !gbf_eopen ? gbf_skb_drag = 1;
+    !LMB ? gbf_skb_drag = 0;
+    gbf_kbn_s = gbf_skb_drag ? ( hit >= 0 ? hit : gbf_kbn_s ) : -1;
+  );
+  // a window closed while it held a note gives it up (no window pass for half a second)
+  time_precise() - gbf_win_t > 0.5 ? gbf_kbn_w = -1;
+  gbf_kbn_s >= 0 ? gb_kb_vel = 100;    // a strip key plays at the keyboard's velocity
+  gb_kb_note = gbf_kbn_s >= 0 ? gbf_kbn_s : gbf_kbn_w;
+  // the bar fades in as the pointer nears the top (an approach zone of three bars, eased), out while a key or wheel is held
+  gbf_ebw = in && !gbf_skb_drag && !gbf_swhl ? max(0, min(1, (gbf_ebh * 3 - my) / (gbf_ebh * 3))) : 0;
+  gbf_ebt += (gbf_ebw - gbf_ebt) * 0.35; abs(gbf_ebw - gbf_ebt) < 0.02 ? gbf_ebt = gbf_ebw;
+);
+function gbf_strip() local(s, fs, i, fill) (
+  s = gbf_s; fs = gbf_sfs;
+  gbf_name(); gbf_status();
+  gbf_font(fs, 'b');
+  strlen(#gb_want) ? gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_x = 4 * s; gfx_y = 4 * s;
+  gfx_drawstr(strlen(#gb_want) ? #gbf_name : "Gumbo", 0, gfx_w - 4 * s, gfx_h);
+  gbf_font(max(7, floor(fs * 0.8)), 0);
+  gbf_warn ? gfx_set(1, 0.62, 0.28, 1) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_x = 4 * s; gfx_y = 4 * s + fs * gbf_tk + 2 * s;
+  // the playing style when the library has named ones (its sw_label), else the status
+  gb_job == GB_J_SAMPLES && gb_nsmp > 0 ? sprintf(#gbf_st, "Loading %d%%", 100 * gb_js / gb_nsmp)
+  : gb_ready ? (
+    strcpy(#gbf_st, "Ready");
+    i = 0; while (i < gb_nswl) ( GB_SWL[i * 3] == gb_sw_cur ? ( gb_name_str(GB_SWL, i); strcpy(#gbf_st, #gb_ls); i = gb_nswl; ); i += 1; );
+  ) : 0;
+  gfx_drawstr(#gbf_st, 0, gfx_w - 4 * s, gfx_h);
+  gbf_sk_h > 0 ? (
+    gbf_range(); gbf_rec_build(); gbf_keys_prep(gbf_lo, gbf_hi);
+    rk_piano_draw_ex(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, gbf_lo, gbf_hi, 0, -1, gbf_skb_drag ? -1 : gbf_shit,
+                     gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
+    gbf_key_names(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, 1);
+    gbf_sw_w > 0 ? gbf_wheels_draw(gbf_sk_y, gbf_sk_h, 1);
+  );
+  // the OPEN bar over the top: the accent line from the start of the approach, the fill and the label once close
+  gbf_ebt > 0.01 ? (
+    fill = max(0, min(1, (gbf_ebt - 0.45) * 1.818));
+    fill > 0 ? ( gfx_set(gbf_pn_r, gbf_pn_g, gbf_pn_b, fill * 0.92); gfx_rect(0, 0, gfx_w, gbf_ebh); );
+    gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_ebt * (gbf_eopen ? 1 : 0.8)); gfx_rect(0, gbf_ebh - max(1, floor(s)), gfx_w, max(1, floor(s)));
+    gbf_ebh >= 10 * s && fill > 0.25 ? (
+      gfx_setfont(1, rk_font_fname(slider86), max(8, floor(gbf_ebh - 3 * s)), 'b');
+      gfx_measurestr("OPEN", gbf_tw, gbf_th_);
+      gbf_tw < gfx_w - 8 * s ? ( gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, fill); gfx_x = (gfx_w - gbf_tw) * 0.5; gfx_y = (gbf_ebh - gbf_th_) * 0.5; gfx_drawstr("OPEN"); );
+    );
+  );
+);
+
+function gbf_picture_key() local(i, h) (
+  h = gb_job * 7 + gb_js * 13 + gb_ready * 3 + gb_nreg + gb_load_gen * 101 + gb_sw_cur * 17
+      + gb_cc[1] * 7.7 + gb_bend * 13.1 + gbf_swhl * 3.3 + floor(gbf_ebt * 40) * 1.9 + gbf_eopen * 5.3 + gbf_shit * 0.37
+      + gbf_skb_drag * 11.9 + (gbf_wh_h1 + 2 * gbf_wh_h2) * 2.1; i = 0;
+  loop(128, GB_NT[i] ? h += (i + 1) * 31; i += 1; );
+  h;
+);
+
+// ── NAME TRACKS: tell the Gumbo helper what plays on this track (slot = the track's index), once per instrument, switch
+// or move; the helper names, colours and icons the track (gumbo_helper_core.lua; it keeps a name the user typed) ──
+function gbt_publish() local(t, p, f, e, k, b, i, n, g) (
+  p = 0; f = 0; t = get_host_placement(p, f);
+  e = gb_ready && gbf_idx_loaded ? gbf_idx_current_cached() : -1;
+  // not from a take, nor from a project in a background tab (flags 4: the helper names the active project's tracks)
+  k = slider17 >= 0.5 && t >= 0 && t < GBT_SLOTS && !(f & 5) && e >= 0 ? gb_load_gen * 1024 + t + 1 : 0;
+  k != gbt_key ? (
+    gbt_key = k;
+    k > 0 ? (
+      b = GBT_BAND + t * GBT_STRIDE; e = GBF_IDX_BASE + e * GBF_IS;
+      g = max(0, gmem[b + GBT_GEN] | 0); gmem[b + GBT_GEN] = -1;   // FIRST: busy, so a half-written record is never taken
+      gmem[b + GBT_FAM] = e[0]; gbf_fam_col(e[0]);
+      gmem[b + GBT_R] = gbf_fc_r; gmem[b + GBT_G] = gbf_fc_g; gmem[b + GBT_B] = gbf_fc_b;
+      n = min(e[3], GBT_NAME_MAX); gmem[b + GBT_NLEN] = n;
+      i = 0; loop(n, gmem[b + GBT_NAME + i] = (GBF_ICH_BASE + e[2])[i]; i += 1; );
+      n = min(e[5], GBT_PATH_MAX); gmem[b + GBT_PLEN] = n;
+      i = 0; loop(n, gmem[b + GBT_PATH + i] = (GBF_ICH_BASE + e[4])[i]; i += 1; );
+      gmem[b + GBT_GEN] = g + 1;                            // LAST: the record is whole
+    );
+  );
+);
+
+// ── one @gfx pass ──
+function gb_face_frame() (
+  rk_theme_apply();
+  gb_native != rkth_local_off ? ( gb_native = rkth_local_off; slider_automate(gb_native); );
+  gbf_colours();
+  gbf_tk = rk_text_k(slider87);       // TEXT SIZE, for every gbf_font this pass (the strip's too)
+  rk_scr_look(slider88, gbf_bg_r * 0.6, gbf_bg_g * 0.6, gbf_bg_b * 0.6, gbf_tx_r, gbf_tx_g, gbf_tx_b, gbf_ac_r, gbf_ac_g, gbf_ac_b);
+  mx = mouse_x; my = mouse_y; LMB = mouse_cap & 1; RMB = mouse_cap & 2;
+  is_embedded = gfx_ext_flags & 1;
+  rk_srf_load();
+  CTRL = _srf_cap & 4; SHIFT = _srf_cap & 8;
+  lmb_down = LMB && !prev_LMB; rmb_down = RMB && !prev_RMB;
+  frame_wheel = rk_srf_wheel();
+  gbf_t = time_precise(); dt = min(gbf_t - gbf_last_t, 0.05); gbf_last_t = gbf_t; hv_speed = 11;
+  ret = max(1, gfx_ext_retina);
+  gbf_s = is_embedded ? ret : ret * max(0.7, min(3, min(gfx_w / (1000 * ret), gfx_h / (640 * ret))));
+  gbf_skip = is_embedded && rk_embed_idle(gbf_picture_key()) && frame_wheel == 0;
+  !gbf_skip ? ( gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 1); gfx_rect(0, 0, gfx_w, gfx_h); );
+  is_embedded ? (
+    gbf_strip_input();
+    !gbf_skip ? gbf_strip();
+    // a click opens the window only on the OPEN bar; the keys and wheels below keep theirs
+    rk_srf_in() ? ( gbf_eopen ? gfx_ext_flags |= 0x200 : (gfx_ext_flags & 0x200) ? gfx_ext_flags -= 0x200; );
+    rkm_on ? rkm_close();                  // a strip pass drops an open menu
+  ) : (
+    !(gfx_ext_flags & 2) ? gfx_ext_flags |= 0x200;            // house rule 3: a click on the strip closes the window
+    rkm_gate();                           // while a menu is open nothing below sees the mouse
+    gbf_window();
+  );
+  gbt_publish();
+  rkth_cluster_overlay();
+  !is_embedded ? (
+    gbf_mr = rkm_run(rkm_on ? gfx_getchar() : 0);   // last: the menu over everything; a pick acts now
+    gbf_mr > 0 ? gbf_menu_pick(gbf_mwhat, gbf_mr);
+    gbf_mr != 0 || !rkm_on ? gbf_mwhat = 0;
+  );
+  !(gfx_ext_flags & 2) ? ( gb_name_bar ? ( gfx_ext_flags = (gfx_ext_flags | 0x100) - 0x100; ) : ( gfx_ext_flags |= 0x100; ); );
+  rk_srf_store();
+);

@@ -1,0 +1,14 @@
+// gumbo-index 1
+Drums|Timpani|137.4|28|EON_Gumbo/Library/VSCO 2 CE Starter/Timpani.gumbo.txt
+Keys|Organ Loud|173.5|21|EON_Gumbo/Library/VSCO 2 CE Starter/OrganLoud.gumbo.txt
+Keys|Upright Piano|644.9|69|EON_Gumbo/Library/VSCO 2 CE Starter/UprightPiano.gumbo.txt
+Strings|Cello Section Sustain Vibrato|184.6|27|EON_Gumbo/Library/VSCO 2 CE Starter/CelloEnsSusVib.gumbo.txt
+Strings|Violin Section Pizzicato|34.4|44|EON_Gumbo/Library/VSCO 2 CE Starter/ViolinEnsPizz.gumbo.txt
+Strings|Violin Section Sustain Vibrato|175.3|22|EON_Gumbo/Library/VSCO 2 CE Starter/ViolinEnsSusVib.gumbo.txt
+Brass|French Horn Sustain|193.1|29|EON_Gumbo/Library/VSCO 2 CE Starter/FHornSus.gumbo.txt
+Brass|Trumpet Sustain|154.7|20|EON_Gumbo/Library/VSCO 2 CE Starter/TrumpetSus.gumbo.txt
+Winds|Clarinet Sustain|226.4|33|EON_Gumbo/Library/VSCO 2 CE Starter/ClarinetSus.gumbo.txt
+Winds|Flute Sustain Vibrato|64.0|13|EON_Gumbo/Library/VSCO 2 CE Starter/FluteSusVib.gumbo.txt
+Plucks|Harp|134.7|23|EON_Gumbo/Library/VSCO 2 CE Starter/Harp.gumbo.txt
+Plucks|Marimba|29.9|10|EON_Gumbo/Library/VSCO 2 CE Starter/Marimba.gumbo.txt
+// end

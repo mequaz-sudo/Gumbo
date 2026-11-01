@@ -1,0 +1,225 @@
+desc:EON: Gumbo
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// Gumbo -- EON's SFZ instrument player (spec Spec_EON_GM_Player_2026-10-26.md §0b, v1: one instrument per instance).
+// Reads a flat ".gumbo.txt" that the converter (EON/Eon_JSFX/Scripts/Gumbo/gumbo_sfz.lua) writes; its WAV/FLAC samples
+// load from disk. Drop a .gumbo.txt on the window. The face is the Lite layout on the ReaKit library (gb_face).
+// Libraries (masters in EON/ReaKit): gb_sfz (read the file), gb_load (load it as a job), gb_voice (MIDI and voices),
+// gb_face + gb_face_p2 (the window, its tabs and pages, and the strip). Research: .docs/specs/Research_Gumbo_PreBuild_2026-10-30.md.
+// SFZ rules: .docs/refs/SFZ_As_Gumbo_Reads_It_2026-10-30.md.
+
+slider1:0<-60,12,0.1>-Volume (dB)
+slider2:0<-24,24,1>-Tune (semitones)
+slider3:1<0.25,4,0.01>-Release (x)
+slider4:100<0,100,1>-Velocity (%)
+slider5:gb_name_bar=0<0,1,1>-Name bar (internal; the THEME panel's NAME BAR row; 0 = borderless embed, house rule 1)
+slider6:gb_native=1<0,1,1>-Native look (internal; default 1 = a new Gumbo wears its own look, as @init sets; the THEME panel's NATIVE row; rk_theme's hidden-slider pattern)
+slider7:0<-100,100,1>-Tone (dark .. bright, 0 = flat)
+slider8:0<0,100,1>-Drive (%)
+slider9:0<0,2,0.001>-Attack (s added)
+slider10:100<0,200,1>-Width (%)
+slider11:0<-100,100,1>-Pan
+slider12:0<0,2,0.001>-Glide (s)
+slider13:0<0,1,1{Off,On}>-Mono
+slider14:2<1,24,1>-Pitch bend range (semitones)
+slider15:64<8,64,1>-Voices
+slider16:440<415,466,0.1>-Tuning A4 (Hz)
+slider17:1<0,1,1{Off,On}>-Name tracks after the instrument
+slider18:1<0,1,1{Hidden,Shown}>-Browser shown (the side handle)
+// the EQ (sliders 21..72: low shelf, low-mid bell, high-mid bell, high shelf) and TONE (73..85): Quezy's band layout, 13 sliders a band (gb_eq.jsfx-inc)
+slider19:0<0,1,1{Before EQ,After EQ}>-Drive position
+slider21:2<0,4,1>-EQ low mode
+slider22:0<0,4,1>-EQ low place
+slider23:3<0,16,1>-EQ low shape
+slider24:120<10,22050,0.01:log>-EQ low freq (Hz)
+slider25:0<-30,30,0.01>-EQ low gain (dB)
+slider26:0.7071<0.1,40,0.0001:log>-EQ low Q
+slider27:1<0,19,1>-EQ low slope
+slider28:-24<-80,0,0.1>-EQ low threshold (unused)
+slider29:4<1,20,0.01:log>-EQ low ratio (unused)
+slider30:-6<-30,30,0.01>-EQ low range (unused)
+slider31:10<0.1,500,0.01:log>-EQ low attack (unused)
+slider32:100<5,2000,0.1:log>-EQ low release (unused)
+slider33:0<0,21,1>-EQ low release sync (unused)
+slider34:2<0,4,1>-EQ low mid mode
+slider35:0<0,4,1>-EQ low mid place
+slider36:0<0,16,1>-EQ low mid shape
+slider37:400<10,22050,0.01:log>-EQ low mid freq (Hz)
+slider38:0<-30,30,0.01>-EQ low mid gain (dB)
+slider39:0.8<0.1,40,0.0001:log>-EQ low mid Q
+slider40:1<0,19,1>-EQ low mid slope
+slider41:-24<-80,0,0.1>-EQ low mid threshold (unused)
+slider42:4<1,20,0.01:log>-EQ low mid ratio (unused)
+slider43:-6<-30,30,0.01>-EQ low mid range (unused)
+slider44:10<0.1,500,0.01:log>-EQ low mid attack (unused)
+slider45:100<5,2000,0.1:log>-EQ low mid release (unused)
+slider46:0<0,21,1>-EQ low mid release sync (unused)
+slider47:2<0,4,1>-EQ high mid mode
+slider48:0<0,4,1>-EQ high mid place
+slider49:0<0,16,1>-EQ high mid shape
+slider50:2500<10,22050,0.01:log>-EQ high mid freq (Hz)
+slider51:0<-30,30,0.01>-EQ high mid gain (dB)
+slider52:0.8<0.1,40,0.0001:log>-EQ high mid Q
+slider53:1<0,19,1>-EQ high mid slope
+slider54:-24<-80,0,0.1>-EQ high mid threshold (unused)
+slider55:4<1,20,0.01:log>-EQ high mid ratio (unused)
+slider56:-6<-30,30,0.01>-EQ high mid range (unused)
+slider57:10<0.1,500,0.01:log>-EQ high mid attack (unused)
+slider58:100<5,2000,0.1:log>-EQ high mid release (unused)
+slider59:0<0,21,1>-EQ high mid release sync (unused)
+slider60:2<0,4,1>-EQ high mode
+slider61:0<0,4,1>-EQ high place
+slider62:4<0,16,1>-EQ high shape
+slider63:10000<10,22050,0.01:log>-EQ high freq (Hz)
+slider64:0<-30,30,0.01>-EQ high gain (dB)
+slider65:0.7071<0.1,40,0.0001:log>-EQ high Q
+slider66:1<0,19,1>-EQ high slope
+slider67:-24<-80,0,0.1>-EQ high threshold (unused)
+slider68:4<1,20,0.01:log>-EQ high ratio (unused)
+slider69:-6<-30,30,0.01>-EQ high range (unused)
+slider70:10<0.1,500,0.01:log>-EQ high attack (unused)
+slider71:100<5,2000,0.1:log>-EQ high release (unused)
+slider72:0<0,21,1>-EQ high release sync (unused)
+slider73:0<0,4,1>-Tone mode
+slider74:0<0,4,1>-Tone place
+slider75:15<0,16,1>-Tone shape
+slider76:1000<10,22050,0.01:log>-Tone freq (Hz)
+slider77:0<-30,30,0.01>-Tone gain (dB)
+slider78:0.7071<0.1,40,0.0001:log>-Tone Q
+slider79:1<0,19,1>-Tone slope
+slider80:-24<-80,0,0.1>-Tone threshold (unused)
+slider81:4<1,20,0.01:log>-Tone ratio (unused)
+slider82:-6<-30,30,0.01>-Tone range (unused)
+slider83:10<0.1,500,0.01:log>-Tone attack (unused)
+slider84:100<5,2000,0.1:log>-Tone release (unused)
+slider85:0<0,21,1>-Tone release sync (unused)
+// the face's OPTIONS sheet (rk_textopts; the owner, 2026-10-31): typeface, text size, screen look
+slider86:0<0,4,1{Arial,Verdana,Tahoma,Segoe UI,Consolas}>-Typeface
+slider87:0<-3,6,1>-Text size
+slider88:0<0,2,1{Ember,LCD,Theme}>-Screen look
+
+options:gmem=Swing_Media_Transfer,maxmem=134217728,gfx_hz=60,gfx_idle,no_meter
+in_pin:none
+out_pin:left
+out_pin:right
+
+import ../../ReaKit/utils_kbsg.jsfx-inc
+import ../../ReaKit/knobs_kbsg.jsfx-inc
+import ../../ReaKit/knobs_kbsg_p2.jsfx-inc
+import ../../ReaKit/knobs_kbsg_p3.jsfx-inc
+import ../../ReaKit/knobs_kbsg_p4.jsfx-inc
+import ../../ReaKit/meters_kbsg.jsfx-inc
+import ../../ReaKit/buttons_kbsg.jsfx-inc
+import ../../ReaKit/rk_theme.jsfx-inc
+import ../../ReaKit/rk_srf.jsfx-inc
+import ../../ReaKit/rk_menu.jsfx-inc
+import ../../ReaKit/rk_side_gutter.jsfx-inc
+import ../../ReaKit/rk_textopts.jsfx-inc
+import ../../ReaKit/rk_textin.jsfx-inc
+import ../../ReaKit/rk_wheel.jsfx-inc
+import ../../ReaKit/rk_piano.jsfx-inc
+import ../../ReaKit/rk_svf.jsfx-inc
+import ../../ReaKit/rk_svf_match.jsfx-inc
+import ../../ReaKit/qz_engine.jsfx-inc
+import ../../ReaKit/rk_curve.jsfx-inc
+import ../../ReaKit/rk_sat.jsfx-inc
+import ../../ReaKit/gb_sfz.jsfx-inc
+import ../../ReaKit/gb_load.jsfx-inc
+import ../../ReaKit/gb_helper.jsfx-inc
+import ../../ReaKit/gb_voice.jsfx-inc
+import ../../ReaKit/gb_eq.jsfx-inc
+import ../../ReaKit/gb_face.jsfx-inc
+import ../../ReaKit/gb_face_p2.jsfx-inc
+
+@init
+ext_noinit = 1;                      // @init never re-runs on play or enable: the loaded instrument stays (wiki §3.2)
+ext_nodenorm = 1;
+rkth_free_only = 1;                  // the free plugins list EON / Dark / Light only (rk_theme)
+// NATIVE: a new Gumbo starts in its own look -- the approved mockup's dark face, whatever the suite theme (the owner,
+// 2026-10-30: the face we rendered); THEME > NATIVE off follows the suite. A saved instance's slider is restored over this.
+gb_native = 1; rkth_local_off = 1;
+gfx_ext_retina = 1;
+gfx_ext_flags |= 0x400;              // no MCP hover tooltip
+gb_name_bar ? ( gfx_ext_flags = (gfx_ext_flags | 0x100) - 0x100; ) : ( gfx_ext_flags |= 0x100; );   // row ON = 0x100 CLEARED
+tau = 2 * $pi;
+freemem = 500;                       // the ReaKit widgets' memory, far under gb_sfz's tables (GB_REG = 200000)
+meter_init(freemem); freemem += 1380;
+qz_xscr = freemem; freemem += QZ_XSCR_N;   // Quezy's band engine: the crossfade hand-back scratch (@block only)
+freemem = rkm_setup(freemem);        // the drawn menus' row tables (rk_menu: the EON menus Quezy and Swing wear)
+gb_eq_init(); gb_eq_display_init();
+rk_curve_init(20, 22000);
+
+@slider
+rkth_local_off = gb_native;          // NATIVE restored (rk_theme's hidden-slider pattern)
+
+@block
+// @@GUMBO_TEST_HOOK@@ (the offline tests insert note/CC events here; the shipping file has nothing on this line)
+// the face's controls reach the sound here, every block (REAPER does not run @slider after a face change)
+gb_tune_st = slider2 + 12 * log(max(415, min(466, slider16)) / 440) / log(2);   // TUNE + the A4 tuning
+gb_relx = max(0.25, min(4, slider3)); gb_vsens = max(0, min(1, slider4 * 0.01));
+gb_pan = max(-100, min(100, slider11)); gb_glide = max(0, min(2, slider12)); gb_mono = slider13 >= 0.5;
+gb_bend_rng = max(1, min(24, slider14 | 0)); gb_vmax = max(8, min(GB_MAXV, slider15 | 0));
+gb_tone = max(-1, min(1, slider7 * 0.01)); gb_drive = max(0, min(1, slider8 * 0.01));
+gb_att_add = max(0, min(2, slider9)); gb_width = max(0, min(2, slider10 * 0.01)); gb_drv_post = slider19 >= 0.5;
+gb_midi_block();
+gb_voices_block(slider1);
+gb_eq_block(gb_tone);                // TONE and the EQ on Quezy's engine (gb_eq)
+rkth_native_tick();
+gb_native != rkth_local_off ? ( gb_native = rkth_local_off; slider_automate(gb_native); );
+
+@sample
+gb_render();
+gb_eq_sample();
+gbx_pos_s > 0.0001 ? ( gb_drive_run(spl0, spl1, gbx_pos_s); spl0 = gbx_dl; spl1 = gbx_dr; );   // DRIVE after the EQ (its share)
+meter_process_sample(spl0, spl1);
+
+@serialize
+// v1: the instrument the user chose. v2 (2026-10-30): + the theme this instance painted itself. Gates are immutable
+// once shipped (wiki §3.4): new fields only in new gates, after rkth_self_serialize (its block never grows).
+// Read: a project opening (or undo) -- load the instrument right here, unless it is the one already loaded, so it is
+// in memory before any play or render (Research R7); an undo that does not change the path costs nothing.
+gb_ser_ver = 2; file_var(0, gb_ser_ver);
+file_avail(0) >= 0 ? (
+  file_string(0, #gb_sread);
+  gb_lock_wait();                    // @gfx may be in the middle of a load: let it finish its piece, then take over
+  strcpy(#gb_want, #gb_sread);
+  strlen(#gb_want) == 0 ? (
+    gb_unload(); strcpy(#gb_path, "");   // saved with no instrument: none plays (undo back to an empty Gumbo)
+  ) : strcmp(#gb_want, #gb_path) != 0 || !gb_ready ? (
+    gb_job_abort();
+    gb_job_start(#gb_want);
+    gb_ser_guard = 0;
+    while (!gb_job_step(200000000, 2000000) && gb_ser_guard < 100000) ( gb_ser_guard += 1; );
+    gb_job == GB_J_DONE ? strcpy(#gb_path, #gb_want);
+  );
+  gb_unlock();
+  gb_ser_ver >= 2 ? rkth_self_serialize();
+) : (
+  file_string(0, #gb_want);
+  rkth_self_serialize();
+);
+
+@gfx 1000 580
+gfx_clear = -1;
+// the loader is shared with @serialize (another thread): only when it is free; a waiting drop stays queued
+gb_lock_try() ? (
+  // a dropped file: .gumbo.txt loads; anything else gets a note in the display (window only: strips get no drops)
+  gfx_getdropfile(0, #gb_drop) ? (
+    gb_dn = strlen(#gb_drop);
+    strcpy(#gb_ext, "");
+    gb_dn > 4 ? strcpy_substr(#gb_ext, #gb_drop, gb_dn - 4, 4);
+    stricmp(#gb_ext, ".txt") == 0 ? ( gbh_err = 0; strcpy(#gb_want, #gb_drop); gb_job_start(#gb_want); )
+    : stricmp(#gb_ext, ".sfz") == 0 ? gbh_request(#gb_drop)    // the Gumbo helper converts it (gb_helper.jsfx-inc)
+    : ( gbh_err = 0; gb_job = GB_J_FAILED; gb_err = GB_E_NOTTEXT; );
+    gfx_getdropfile(-1);
+  );
+  // a load from the window runs a little per pass (never in @block: a cold disk read can stall); with the window
+  // closed REAPER keeps calling @gfx (options:gfx_idle, about 13 passes a second, gfx_ext_flags & 2), so it finishes
+  gb_job == GB_J_PARSE || gb_job == GB_J_SAMPLES ? (
+    gb_job_step(1048576, 500) ? ( gb_job == GB_J_DONE ? strcpy(#gb_path, #gb_want); );
+  );
+  gb_unlock();
+);
+// the Gumbo helper: is it running, did the list change, a sent .sfz's reply (every pass, idle ones too, so an import
+// finishes with the window closed)
+gbh_watch(); gbh_tick();
+!(gfx_ext_flags & 2) ? gb_face_frame();   // an idle pass (no window, no strip showing) draws nothing

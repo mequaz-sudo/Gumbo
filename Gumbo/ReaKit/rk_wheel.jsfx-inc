@@ -1,0 +1,64 @@
+// rk_wheel.jsfx-inc -- a performance wheel, the pitch-bend / mod wheel of a hardware keyboard (EON Studios, 2026-10-31;
+// MIT, as the ReaKit library). Built for Gumbo's keyboard (the owner, 2026-10-31: "a physical mod wheel at the end of the
+// keyboard", then "a little polish on those wheels" and "put that in ReaKit"), drawn in code at any size.
+//
+// The look: a dark recess in the housing, and in it a ribbed cylinder seen edge-on -- its face lit in the middle and
+// falling off toward the top and bottom (the curve), the ribs bunching toward the ends as they turn away, a lit marker
+// rib that rolls with the value, and the rim's two rails down the sides. A detent wheel (pitch bend) shows its centre
+// notch on the housing.
+//
+//   rk_wheel_draw(x, y, w, h, pos, detent, hot, s, ar, ag, ab, br, bg, bb)
+//     pos 0..1 (0 = all the way down, 1 = up; a bend wheel rests at 0.5); detent = draw the centre notch; hot 0..1 the
+//     hover / held glow; s the face's scale; ar/ag/ab the marker's accent; br/bg/bb the housing it sits in.
+//   rk_wheel_hit(x, y, w, h)       the mouse (mouse_x / mouse_y) is over it
+//   rk_wheel_at(y, h, my, s)       the value 0..1 a mouse y stands for (the face's own drag uses it: a press jumps there)
+// The caller owns the value, the drag, the spring-back and where the value goes (a MIDI controller, a mailbox).
+
+@init
+
+function rk_wheel_hit(x, y, w, h) ( mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h; );
+function rk_wheel_at(y, h, my, s) ( max(0, min(1, (y + h - 4 * s - my) / max(1, h - 8 * s))); );
+
+function rk_wheel_draw(x, y, w, h, pos, detent, hot, s, ar, ag, ab, br, bg, bb)
+local(ix, iw, iy, ih, cy, R, yy, ph, b, i, rot, a, ry, rw, k, lt)
+(
+  lt = br * 0.2126 + bg * 0.7152 + bb * 0.0722 > 0.5;    // a light housing: the recess a deeper step
+  // the recess: a rounded slot, its top edge in shadow and its bottom edge catching light
+  k = lt ? 0.42 : 0.50;
+  gfx_set(br * k, bg * k, bb * k, 1); gfx_rect(x + s, y, w - 2 * s, h); gfx_rect(x, y + s, w, h - 2 * s);
+  gfx_set(0, 0, 0, 0.45); gfx_rect(x + s, y, w - 2 * s, max(1, s));
+  gfx_set(1, 1, 1, 0.10); gfx_rect(x + s, y + h - max(1, s), w - 2 * s, max(1, s));
+  // the cylinder: one row a pixel, lit by how squarely it faces you (cos of its angle on the wheel)
+  ix = x + 3 * s; iw = w - 6 * s; iy = y + 3 * s; ih = h - 6 * s;
+  cy = iy + ih * 0.5; R = ih * 0.5;
+  yy = iy;
+  loop(max(1, ih | 0),
+    ph = asin(max(-1, min(1, (yy + 0.5 - cy) / R)));
+    b = 0.07 + 0.25 * cos(ph);
+    gfx_set(b, b, b * 1.06, 1); gfx_rect(ix, yy, iw, 1);
+    yy += 1;
+  );
+  // the ribs: every 12 degrees round the wheel, turning with the value (the marker's own angle), drawn where they face
+  // you -- their spacing closes up toward the ends as a real wheel's does
+  rot = (0.5 - pos) * 2.8;                                // the marker's angle: -1.4 rad (top) .. +1.4 (bottom)
+  i = -16;
+  loop(33,
+    a = rot + i * 0.2094;
+    abs(a) < 1.45 ? (
+      ry = cy + R * sin(a); rw = max(1, s * cos(a));
+      i == 0 ? (
+        gfx_set(ar, ag, ab, 0.55 + 0.45 * cos(a)); gfx_rect(ix, ry - rw, iw, 2 * rw + max(1, s));   // the marker rib
+      ) : (
+        gfx_set(0, 0, 0, 0.55 * cos(a)); gfx_rect(ix, ry, iw, rw);
+        gfx_set(1, 1, 1, 0.08 * cos(a)); gfx_rect(ix, ry + rw, iw, max(1, s * 0.5));
+      );
+    );
+    i += 1;
+  );
+  // the rim: two rails down the sides, a touch lighter, and a soft shade at the ends where the wheel turns away
+  gfx_set(1, 1, 1, 0.10); gfx_rect(ix, iy, max(1, s), ih); gfx_rect(ix + iw - max(1, s), iy, max(1, s), ih);
+  gfx_set(0, 0, 0, 0.35); gfx_rect(ix, iy, iw, max(1, 2 * s)); gfx_rect(ix, iy + ih - max(1, 2 * s), iw, max(1, 2 * s));
+  // the centre notch of a sprung wheel, on the housing either side
+  detent ? ( gfx_set(ar, ag, ab, 0.7); gfx_rect(x, cy - max(1, s) * 0.5, 2 * s, max(1, s)); gfx_rect(x + w - 2 * s, cy - max(1, s) * 0.5, 2 * s, max(1, s)); );
+  hot > 0 ? ( gfx_set(1, 1, 1, 0.07 * hot); gfx_rect(ix, iy, iw, ih); );
+);

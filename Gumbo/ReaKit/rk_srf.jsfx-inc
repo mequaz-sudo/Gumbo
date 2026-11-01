@@ -1,0 +1,134 @@
+// rk_srf.jsfx-inc -- one plugin shown in TWO strips at once (the track panel AND the mixer): per-surface mouse.
+// Part of the ReaKit framework by EON Studios.
+//
+// REAPER runs the @gfx of an instance embedded in BOTH the TCP and the MCP (its window closed) on the two surfaces
+// alternately, pass for pass, and both see gfx_ext_flags & 1 (wiki 4.5). On one shared prev_LMB each pass reads the
+// other's button as a fresh press; on one shared knob memory a pass that sees the button up ends the other's drag; on
+// one shared gfx_ext_flags the unhovered surface's pass arms 0x200 and REAPER turns a click on the other surface into
+// "open the window". MEASURED 2026-10-07 on GainKit (gk_input_run.py --dual, a real mouse): a drag in the track panel
+// pressed on every pass and a double-click reset the gain to 0 dB; the mixer face took no press and a click there
+// opened the window. With the three parts below the same drags, clicks and double-clicks behaved as in one strip.
+//
+// rk_srf_load / rk_srf_store are VERBATIM from Spice.jsfx (itself verbatim from Swing_ReaKit.jsfx's swing_srf_load /
+// swing_srf_store, D-3, Audit D 2026-09-14/15; EON_Output, Tone, Macros, Weld, Drum Strip and Steppa carry copies too).
+// Keep them in step -- `diff` them if either side is touched. ⚠️ A plugin that defines its own rk_srf_load (Spice)
+// must not import this file.
+//   Slot 0 is the window and the idle context (they never run beside each other, and the idle canvas IS the window's);
+//   slots 1 and 2 are the two embeds, told apart by canvas signature (width * 65536 + height). An unhovered embed's pass
+//   is handed the OTHER embed's live press -- still held, at its pointer, with its modifiers, and no edge either way --
+//   and _srf_foreign tells the drag maths (knobs_kbsg honours it) to leave the value alone on that pass. Bounded at half
+//   a second.
+// rk_srf_in is the third part (2026-10-07): whether the REAL pointer is over THIS surface's canvas. Only such a pass may
+// clear or arm 0x200; the other surface's pass leaves the flag to the surface under the pointer.
+//
+// CALLER CONTRACT: set is_embedded, mx/my, LMB and RMB from the real mouse, then rk_srf_load(); take lmb_down /
+// rmb_down off prev_LMB / prev_RMB and the modifiers off _srf_cap (NOT mouse_cap); frame_wheel = rk_srf_wheel()
+// (and no more "mouse_wheel = 0" of the host's own); rk_srf_store() at the frame's tail (it writes prev_LMB / prev_RMB
+// for the next pass: the host's own "prev_LMB = LMB" lines go). In the embedded branch:
+//   rk_srf_in() && (gfx_ext_flags & 0x200) ? gfx_ext_flags -= 0x200;
+//   frame_wheel != 0 ? ( mx = _srf_hx; my = _srf_hy; );   // the wheel-fix: this surface's own last pointer
+//   ... the controls ...
+//   rk_srf_in() && !emb_widget_active ? gfx_ext_flags |= 0x200;
+// and an idle skip (rk_embed_idle) must not swallow a pass that carries a notch: skip only when frame_wheel == 0.
+// Every variable here is @gfx-only (_srf_*): nothing crosses to @block / @sample.
+
+@init
+
+function rk_srf_load()
+  local(_sg, _oth_plmb, _oth_prmb, _oth_mx, _oth_my, _oth_t, _oth_cap)
+(
+  // This pass's effective mouse_cap for the modifiers (the head reads CTRL,
+  // SHIFT and ALT from it): the real one, unless a foreign press is handed over.
+  _srf_cap = mouse_cap;
+  is_embedded ? (
+    _sg = gfx_w * 65536 + gfx_h;
+    _srf = _sg == _srf_sig1 ? 1 : _sg == _srf_sig2 ? 2 : 0;
+    _srf == 0 ? (
+      _srf = _srf_last_emb == 1 ? 2 : 1;
+      _srf == 1 ? ( _srf_sig1 = _sg; _srf_plmb1 = 0; _srf_prmb1 = 0; _srf_t1 = 0; _srf_cap1 = 0; )
+                : ( _srf_sig2 = _sg; _srf_plmb2 = 0; _srf_prmb2 = 0; _srf_t2 = 0; _srf_cap2 = 0; );
+    );
+    _srf_last_emb = _srf;
+    _srf_plmb0 = 0; _srf_prmb0 = 0;
+    _srf == 1 ? (
+      prev_LMB = _srf_plmb1; prev_RMB = _srf_prmb1;
+      _oth_plmb = _srf_plmb2; _oth_prmb = _srf_prmb2;
+      _oth_mx = _srf_mx2; _oth_my = _srf_my2; _oth_t = _srf_t2; _oth_cap = _srf_cap2;
+    ) : (
+      prev_LMB = _srf_plmb2; prev_RMB = _srf_prmb2;
+      _oth_plmb = _srf_plmb1; _oth_prmb = _srf_prmb1;
+      _oth_mx = _srf_mx1; _oth_my = _srf_my1; _oth_t = _srf_t1; _oth_cap = _srf_cap1;
+    );
+    (_oth_plmb || _oth_prmb) && time_precise() - _oth_t > 0.5 ? (
+      // The owner has not run for half a second: its press is over.
+      _srf == 1 ? ( _srf_plmb2 = 0; _srf_prmb2 = 0; ) : ( _srf_plmb1 = 0; _srf_prmb1 = 0; );
+      _oth_plmb = 0; _oth_prmb = 0;
+    );
+    _srf_foreign = (_oth_plmb || _oth_prmb) && !(mouse_cap & 3);
+    _srf_foreign ? (
+      LMB = _oth_plmb; RMB = _oth_prmb;
+      prev_LMB = _oth_plmb; prev_RMB = _oth_prmb;   // held, and no edge either way
+      mx = _oth_mx; my = _oth_my;
+      _srf_cap = _oth_cap;                          // ...with its modifiers
+    );
+  ) : (
+    _srf = 0; _srf_foreign = 0;
+    prev_LMB = _srf_plmb0 || _srf_plmb1 || _srf_plmb2;
+    prev_RMB = _srf_prmb0 || _srf_prmb1 || _srf_prmb2;
+    _srf_plmb1 = 0; _srf_prmb1 = 0; _srf_plmb2 = 0; _srf_prmb2 = 0;
+  );
+);
+
+function rk_srf_store()
+(
+  _srf == 1 ? (
+    _srf_plmb1 = mouse_cap & 1; _srf_prmb1 = mouse_cap & 2;
+    _srf_foreign ? 0 : ( _srf_mx1 = mouse_x; _srf_my1 = mouse_y; _srf_t1 = time_precise(); _srf_cap1 = mouse_cap; );
+  ) : _srf == 2 ? (
+    _srf_plmb2 = mouse_cap & 1; _srf_prmb2 = mouse_cap & 2;
+    _srf_foreign ? 0 : ( _srf_mx2 = mouse_x; _srf_my2 = mouse_y; _srf_t2 = time_precise(); _srf_cap2 = mouse_cap; );
+  ) : (
+    _srf_plmb0 = mouse_cap & 1; _srf_prmb0 = mouse_cap & 2;
+  );
+  prev_LMB = mouse_cap & 1;
+  prev_RMB = mouse_cap & 2;
+);
+
+// Is the REAL pointer over this surface's canvas? (mouse_x / mouse_y as REAPER handed them to this pass, never the
+// handed-over or wheel-cached mx / my.) Only such a pass may clear or arm 0x200.
+function rk_srf_in()
+(
+  mouse_x >= 0 && mouse_x < gfx_w && mouse_y >= 0 && mouse_y < gfx_h;
+);
+
+// The wheel, per surface: this pass's notches (what the host used to read as mouse_wheel / 120), and _srf_hx / _srf_hy,
+// THIS surface's pointer on its last frame without a wheel (the embed wheel-fix's cache: a wheel frame's mouse_x / y can
+// be stale, wiki 4.5). MEASURED 2026-10-08 with real notches (SendInput, gk_input_run.py --wheelonly and its per-pass
+// ring): REAPER hands an embed the wheel only right after a click ON it -- before one no notch reached any pass, in one
+// strip or two (the "none in either strip" seen first was this rule). After a click, one plugin in two strips:
+// mouse_wheel is the INSTANCE's -- every notch over the TRACK-PANEL face (3 of 3) was found first by the MIXER face's
+// pass, its own pointer off its canvas; this code left it there and the track panel's next pass took it. Over the mixer
+// face its own pass found each notch first (3 of 3). The old read-and-zero would have spent those three notches on the
+// wrong surface, and one shared wheel-fix cache would have aimed a notch with the other surface's pointer. So a pass
+// takes the wheel only when its own cached pointer is on its own canvas (a window always does) and otherwise leaves
+// mouse_wheel for the other surface's pass, 0.3 s at most (then it is dropped, as a stray notch always was). The host
+// calls it once per pass, after rk_srf_load(), and stops zeroing mouse_wheel itself.
+function rk_srf_wheel() local(w)
+(
+  mouse_wheel == 0 ? (
+    _srf == 1 ? ( _srf_hx1 = mouse_x; _srf_hy1 = mouse_y; ) :
+    _srf == 2 ? ( _srf_hx2 = mouse_x; _srf_hy2 = mouse_y; ) : ( _srf_hx0 = mouse_x; _srf_hy0 = mouse_y; );
+    _srf_wt = 0;
+  );
+  _srf_hx = _srf == 1 ? _srf_hx1 : _srf == 2 ? _srf_hx2 : _srf_hx0;
+  _srf_hy = _srf == 1 ? _srf_hy1 : _srf == 2 ? _srf_hy2 : _srf_hy0;
+  w = 0;
+  mouse_wheel != 0 ? (
+    !is_embedded || (_srf_hx >= 0 && _srf_hx < gfx_w && _srf_hy >= 0 && _srf_hy < gfx_h) ? (
+      w = mouse_wheel / 120; mouse_wheel = 0; _srf_wt = 0;
+    ) : (
+      _srf_wt == 0 ? _srf_wt = time_precise() : time_precise() - _srf_wt > 0.3 ? ( mouse_wheel = 0; _srf_wt = 0; );
+    );
+  );
+  w;
+);

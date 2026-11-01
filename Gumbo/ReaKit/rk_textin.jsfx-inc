@@ -1,0 +1,58 @@
+// rk_textin.jsfx-inc -- a one-line text box typed into from @gfx (EON Studios, 2026-11-01; MIT, as the ReaKit library).
+// Lifted from Swing's mini-browser filter box (installer/src/Swing/libs/rk_swing_ui_minibrowser*.jsfx-inc) and its
+// MEASURED key contract (wiki 6.1; rk_swing_padname_edit's header, kbprobe 2026-08-04):
+//   * without want_all_kb, letters, digits, backspace and enter reach a floating plugin's gfx_getchar(); SPACE stays
+//     REAPER's transport;
+//   * SEVERAL keys can land in one @gfx frame (measured 3): the queue is drained, never one key a frame;
+//   * the key this frame already took off the queue comes first (Swing's `_char`: a loop that starts at gfx_getchar()
+//     loses the first key of every frame -- "snare" typed fast arrived as "nare");
+//   * an EMBEDDED instance gets no keyboard at all: the box refuses focus there rather than look editable.
+// Swing's copy moves onto this file later, under the copy script and the drift check (the one-master rule).
+//
+//   rk_textin_click(x, y, w, h, embedded)  on a press: inside takes the focus (not when embedded), outside drops it;
+//                                          returns 1 for a press inside
+//   rk_textin_keys(str, first)             typing into str while rk_ti_focus: first = this frame's key already taken
+//                                          (gfx_getchar()'s), then the rest of the queue. Backspace deletes, ESC clears
+//                                          and leaves, Enter leaves. Returns 1 when the text changed.
+//   rk_textin_draw(str, x, y, w, h, hint, s, tr, tg, tb, br, bg, bb, ar, ag, ab)
+//                                          the box: str (its end when too long) or the hint dimmed, a caret blinking
+//                                          while it has the focus. t* text, b* ground, a* the focus line.
+// The caller sets the font before drawing. rk_ti_focus is one box's focus: a face with two boxes keeps its own.
+
+@init
+RK_TI_MAX = 64; rk_ti_focus = 0;
+
+function rk_textin_click(x, y, w, h, embedded) local(in) (
+  in = mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h;
+  rk_ti_focus = in && !embedded;
+  in;
+);
+function rk_textin_keys(str, first) local(c, ch, n) (
+  ch = 0; c = first;
+  while (c > 0) (
+    n = strlen(str);
+    c == 8 ? ( n > 0 ? ( str_setlen(str, n - 1); ch = 1; ); )
+    : c == 27 ? ( n > 0 ? ch = 1; strcpy(str, ""); rk_ti_focus = 0; )
+    : (c == 13 || c == 10) ? rk_ti_focus = 0
+    : c >= 32 && c < 127 && n < RK_TI_MAX ? ( str_setchar(str, n, c); ch = 1; );
+    c = gfx_getchar();
+  );
+  ch;
+);
+function rk_textin_draw(str, x, y, w, h, hint, s, tr, tg, tb, br, bg, bb, ar, ag, ab) local(tw, th, k, cx) (
+  gfx_set(br, bg, bb, 1); gfx_rect(x, y, w, h);
+  gfx_set(tr, tg, tb, rk_ti_focus ? 0.5 : 0.22); gfx_rect(x, y, w, 1); gfx_rect(x, y + h - 1, w, 1); gfx_rect(x, y, 1, h); gfx_rect(x + w - 1, y, 1, h);
+  rk_ti_focus ? ( gfx_set(ar, ag, ab, 1); gfx_rect(x, y + h - max(1, floor(s * 1.5)), w, max(1, floor(s * 1.5))); );
+  strlen(str) > 0 ? (
+    // the end of the text when it is longer than the box: the part being typed stays in view
+    strcpy(#rk_ti_v, str); gfx_measurestr(#rk_ti_v, tw, th); k = 0;
+    while (tw > w - 10 * s && strlen(#rk_ti_v) > 1) ( strcpy_substr(#rk_ti_v, #rk_ti_v, 1); gfx_measurestr(#rk_ti_v, tw, th); );
+    gfx_set(tr, tg, tb, 1); gfx_x = x + 5 * s; gfx_y = y + (h - th) * 0.5; gfx_drawstr(#rk_ti_v);
+    cx = x + 5 * s + tw;
+  ) : (
+    gfx_measurestr(hint, tw, th);
+    gfx_set(tr, tg, tb, 0.4); gfx_x = x + 5 * s; gfx_y = y + (h - th) * 0.5; gfx_drawstr(hint, 0, x + w - 3 * s, y + h);
+    cx = x + 5 * s;
+  );
+  rk_ti_focus && (time_precise() * 2 | 0) % 2 == 0 ? ( gfx_set(tr, tg, tb, 0.9); gfx_rect(cx + s, y + 4 * s, max(1, s), h - 8 * s); );
+);
