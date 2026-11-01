@@ -673,7 +673,7 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, 
   gbf_kbn_s < 0 && !gbf_kb_drag && gbf_chip_note < 0 && gbf_pad_note >= 0 ? gb_kb_vel = gbf_pad_vv : gb_kb_vel = 100;
   gb_kb_note = gbf_kbn_s >= 0 ? gbf_kbn_s : gbf_kbn_w;
   gbf_keys_prep(gbf_lo, gbf_hi);
-  rk_piano_draw_ex(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0, -1, gbf_kb_drag ? -1 : hit, gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
+  rk_piano_draw_ex(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0, gbf_kbn_w, gbf_kb_drag ? -1 : hit, gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
   gbf_key_names(gbf_kx, ky, gbf_kw, kh, 0);
   cur = gbf_kb_drag ? gbf_kbn_w : hit;
   gb_ready && gbf_rec_gen == gb_load_gen ? (
@@ -746,7 +746,8 @@ function gbf_strip() local(s, fs, i, fill) (
   !gbf_s_short ? gfx_drawstr(#gbf_st, 0, gfx_w - 4 * s, gfx_h);   // a short strip: the keys have this line
   gbf_sk_h > 0 ? (
     gbf_range(); gbf_rec_build(); gbf_keys_prep(gbf_lo, gbf_hi);
-    rk_piano_draw_ex(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, gbf_lo, gbf_hi, 0, -1, gbf_skb_drag ? -1 : gbf_shit,
+    // the key the mouse holds is lit at once (sel), not only when the audio thread's held-note table comes back
+    rk_piano_draw_ex(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, gbf_lo, gbf_hi, 0, gbf_kbn_s, gbf_skb_drag ? -1 : gbf_shit,
                      gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
     gbf_key_names(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, 1);
     gbf_sw_w > 0 ? gbf_wheels_draw(gbf_sk_y, gbf_sk_h, 1);
