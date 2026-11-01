@@ -694,9 +694,13 @@ function gbf_strip_geom() local(s, fs, y, kh, ww) (
   gbf_ebh = max(9 * s, min(18 * s, floor(gfx_h * 0.09)));
   y = 4 * s + fs * gbf_tk * 1.8 + 8 * s;
   kh = gfx_h - y - 4 * s;
+  // a short strip (a track whose sends take part of the mixer pane, the owner's picture 2026-11-01): the status line
+  // gives its room to the keys, which may be as short as 8 px
+  gbf_s_short = kh < 14 * s;
+  gbf_s_short ? ( y = 4 * s + fs * gbf_tk + 4 * s; kh = gfx_h - y - 3 * s; );
   // the keys take the strip's height (a tall mixer pane: long keys, not an empty plate under short ones), up to a
   // piano's proportions
-  gbf_sk_y = y; gbf_sk_h = kh >= 14 * s ? min(kh, 160 * s) : 0;
+  gbf_sk_y = y; gbf_sk_h = kh >= 8 * s ? min(kh, 160 * s) : 0;
   // the wheels when the strip is wide enough, wider on a wide strip (a 32-channel track's)
   ww = gbf_sk_h > 0 && gfx_w >= 120 * s ? max(22 * s, min(36 * s, gfx_w * 0.09)) : 0;
   gbf_sw_w = ww; gbf_sk_x = 4 * s + (ww > 0 ? ww + 4 * s : 0); gbf_sk_w = gfx_w - 4 * s - gbf_sk_x;
@@ -739,7 +743,7 @@ function gbf_strip() local(s, fs, i, fill) (
     strcpy(#gbf_st, "Ready");
     i = 0; while (i < gb_nswl) ( GB_SWL[i * 3] == gb_sw_cur ? ( gb_name_str(GB_SWL, i); strcpy(#gbf_st, #gb_ls); i = gb_nswl; ); i += 1; );
   ) : 0;
-  gfx_drawstr(#gbf_st, 0, gfx_w - 4 * s, gfx_h);
+  !gbf_s_short ? gfx_drawstr(#gbf_st, 0, gfx_w - 4 * s, gfx_h);   // a short strip: the keys have this line
   gbf_sk_h > 0 ? (
     gbf_range(); gbf_rec_build(); gbf_keys_prep(gbf_lo, gbf_hi);
     rk_piano_draw_ex(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, gbf_lo, gbf_hi, 0, -1, gbf_skb_drag ? -1 : gbf_shit,

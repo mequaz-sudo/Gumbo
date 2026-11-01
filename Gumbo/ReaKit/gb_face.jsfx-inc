@@ -315,10 +315,10 @@ function gbf_status() (
 );
 
 // one knob in colour cr, cg, cb (the EQ's band knobs wear their node's colour); dim = drawn faded with "soon", no input
-function gbf_knob_c(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim, cr, cg, cb) local(m, nv, lh) (
+// a knob in the colour already in sk_kbr/g/b (gbf_knob: the theme's role colour; gbf_knob_c: its own colour)
+function gbf_knob_raw(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim) local(m, nv, lh) (
   m = gbf_km + k * GBF_KS;
   nv = (gbf_kb_drag || dim || gbf_menu_block) ? val : ssl_knob_interact(m, cx, cy, r, val, vmin, vmax, vdef, ndet);
-  rk_role_col(0, 1, cr, cg, cb);
   rk_knob_draw(gbf_kp, cx, cy, r, nv, vmin, vmax, vmin < 0 && vmax > 0, dim ? 0 : m[0], sk_kbr, sk_kbg, sk_kbb, 11, gbf_bg_r, gbf_bg_g, gbf_bg_b);
   dim ? ( gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 0.62); gfx_circle(cx, cy, r * 1.45, 1); );
   gbf_fit(label, r * 3.1, gbf_lf, 'b'); dim ? gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
@@ -328,9 +328,16 @@ function gbf_knob_c(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, di
   gfx_drawstr(dim ? "soon" : valtxt);
   nv;
 );
-// one knob in the theme's accent
+// a knob in its OWN colour (the EQ bands', matching their nodes), whatever theme is on: an EON theme's knob colour
+// (rk_role_col) would paint every band knob the same (the owner, 2026-11-01: "the eq knobs dont match the colors")
+function gbf_knob_c(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim, cr, cg, cb) (
+  sk_kbr = cr; sk_kbg = cg; sk_kbb = cb;
+  gbf_knob_raw(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim);
+);
+// one knob in the theme's knob colour (else the accent)
 function gbf_knob(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim) (
-  gbf_knob_c(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim, gbf_ac_r, gbf_ac_g, gbf_ac_b);
+  rk_role_col(0, 1, gbf_ac_r, gbf_ac_g, gbf_ac_b);
+  gbf_knob_raw(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim);
 );
 
 // ── the Ember display ──
