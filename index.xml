@@ -158,6 +158,47 @@
         <source type="script" file="gumbo_index.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/f971f7b94573855599b47e6ae4592fd7ea480c3d/Gumbo/Scripts/gumbo_index.lua</source>
         <source type="script" file="gumbo_sfz.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/f971f7b94573855599b47e6ae4592fd7ea480c3d/Gumbo/Scripts/gumbo_sfz.lua</source>
       </version>
+      <version name="1.0.4" author="Quaz (EON Studios)" time="2026-11-01T21:02:59Z">
+        <changelog><![CDATA[New action Gumbo - Dock: the selected track's Gumbo in its own docker tab.]]></changelog>
+        <source file="Eon_JSFX/Instruments/Gumbo_ReaKit.jsfx">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Eon_JSFX/Instruments/Gumbo_ReaKit.jsfx</source>
+        <source file="Gumbo_LICENSE.md">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Gumbo_LICENSE.md</source>
+        <source file="ReaKit/buttons_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/buttons_kbsg.jsfx-inc</source>
+        <source file="ReaKit/gb_eq.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/gb_eq.jsfx-inc</source>
+        <source file="ReaKit/gb_face.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/gb_face.jsfx-inc</source>
+        <source file="ReaKit/gb_face_p2.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/gb_face_p2.jsfx-inc</source>
+        <source file="ReaKit/gb_helper.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/gb_helper.jsfx-inc</source>
+        <source file="ReaKit/gb_load.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/gb_load.jsfx-inc</source>
+        <source file="ReaKit/gb_sfz.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/gb_sfz.jsfx-inc</source>
+        <source file="ReaKit/gb_voice.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/gb_voice.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/knobs_kbsg.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg_p2.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/knobs_kbsg_p2.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg_p3.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/knobs_kbsg_p3.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg_p4.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/knobs_kbsg_p4.jsfx-inc</source>
+        <source file="ReaKit/meters_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/meters_kbsg.jsfx-inc</source>
+        <source file="ReaKit/qz_engine.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/qz_engine.jsfx-inc</source>
+        <source file="ReaKit/rk_curve.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_curve.jsfx-inc</source>
+        <source file="ReaKit/rk_menu.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_menu.jsfx-inc</source>
+        <source file="ReaKit/rk_piano.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_piano.jsfx-inc</source>
+        <source file="ReaKit/rk_sat.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_sat.jsfx-inc</source>
+        <source file="ReaKit/rk_side_gutter.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_side_gutter.jsfx-inc</source>
+        <source file="ReaKit/rk_srf.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_srf.jsfx-inc</source>
+        <source file="ReaKit/rk_svf.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_svf.jsfx-inc</source>
+        <source file="ReaKit/rk_svf_match.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_svf_match.jsfx-inc</source>
+        <source file="ReaKit/rk_textin.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_textin.jsfx-inc</source>
+        <source file="ReaKit/rk_textopts.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_textopts.jsfx-inc</source>
+        <source file="ReaKit/rk_theme.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_theme.jsfx-inc</source>
+        <source file="ReaKit/rk_wheel.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/rk_wheel.jsfx-inc</source>
+        <source file="ReaKit/utils_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/ReaKit/utils_kbsg.jsfx-inc</source>
+        <source type="script" main="main" file="Gumbo - Add a library.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/Gumbo%20-%20Add%20a%20library.lua</source>
+        <source type="script" main="main" file="Gumbo - Dock.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/Gumbo%20-%20Dock.lua</source>
+        <source type="script" main="main" file="Gumbo - Start with REAPER.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/Gumbo%20-%20Start%20with%20REAPER.lua</source>
+        <source type="script" main="main" file="Gumbo helper.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/Gumbo%20helper.lua</source>
+        <source type="script" file="ReaKit FX - Dock following the selected track.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/ReaKit%20FX%20-%20Dock%20following%20the%20selected%20track.lua</source>
+        <source type="script" file="ReaKit FX - Dock icon picker.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/ReaKit%20FX%20-%20Dock%20icon%20picker.lua</source>
+        <source type="script" file="gumbo_helper_core.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/gumbo_helper_core.lua</source>
+        <source type="script" file="gumbo_index.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/gumbo_index.lua</source>
+        <source type="script" file="gumbo_sfz.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/100a9f5395935537e29c4f0fccdbaf0c733caa25/Gumbo/Scripts/gumbo_sfz.lua</source>
+      </version>
     </reapack>
     <reapack name="Gumbo starter sounds" type="data" desc="Gumbo starter sounds - 12 free instruments for Gumbo (piano, strings, brass, winds, harp, organ, marimba, timpani) from VSCO 2 Community Edition">
       <metadata>
