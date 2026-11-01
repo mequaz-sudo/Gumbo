@@ -24,6 +24,9 @@ made.
   sections, plucked violins, French horn, trumpet, flute, clarinet, harp, organ, marimba and timpani.
 - **Gumbo VSCO 2 CE orchestra** (about 530 MB, 1,900 files): the other 63 instruments of VSCO 2 Community Edition,
   strings, woodwinds, brass, keys and percussion, with key-switched versions and a General MIDI style drum kit.
+- **Gumbo GM sounds** (about 45 MB): ten General MIDI instruments from the Discord SFZ GM Bank: acoustic, bright and
+  electric grand pianos, an electric piano, steel-string guitar, finger bass, tremolo and pizzicato strings, sitar and
+  shanai.
 
 ## Install (ReaPack)
 
@@ -34,7 +37,8 @@ made.
    ```
 
 2. **Extensions > ReaPack > Browse packages**, type **Gumbo**, install **Gumbo** and **Gumbo starter sounds** (and
-   **Gumbo VSCO 2 CE orchestra** for the whole orchestra), then click **Apply**.
+   **Gumbo VSCO 2 CE orchestra** for the whole orchestra, **Gumbo GM sounds** for the GM instruments), then click
+   **Apply**.
 3. Add a track, click its **FX** button and add `JS: EON: Gumbo`, then pick an instrument in its browser.
 
 ## Licence and credits
@@ -42,6 +46,8 @@ made.
 Gumbo is free to use; its code stays EON Studios' ([Gumbo_LICENSE.md](Gumbo/Gumbo_LICENSE.md), which also lists the
 MIT and EON Free Licence parts it is built on). The sounds are **VSCO 2 Community Edition** by **Versilian Studios**
 ([versilian-studios.com](https://versilian-studios.com/vsco-community/)), released under **CC0 1.0** (public
-domain); their licence and readme files are beside the samples. EON Studios converted them for Gumbo, every WAV
+domain); their licence and readme files are beside the samples. The GM sounds come from the **Discord SFZ GM Bank**:
+public domain (CC0), except the acoustic grand, the **Salamander Grand Piano** by **Alexander Holm** (CC-BY);
+`LICENSES.txt` beside them credits each one. EON Studios converted them for Gumbo, every WAV
 encoded to FLAC and checked sample for sample against the original. More thanks in
 [THIRD_PARTY_CREDITS.md](THIRD_PARTY_CREDITS.md).

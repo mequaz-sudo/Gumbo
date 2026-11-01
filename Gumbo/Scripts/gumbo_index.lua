@@ -13,7 +13,8 @@
 -- writer so no package ever touches another's list or the user's:
 --     starter.txt      the free starter that comes with Gumbo (VSCO 2 CE Starter, 12 instruments)
 --     pack1.txt        the full VSCO 2 CE orchestra, a free extra download (the 63 instruments not in the starter)
---     pack2..9.txt     free slots for later sound packs: claim one HERE before a package uses it
+--     pack2.txt        the GM sounds: ten General MIDI instruments from the Discord SFZ GM Bank (2026-11-01)
+--     pack3..9.txt     free slots for later sound packs: claim one HERE before a package uses it
 --     library.txt      the user's own imports (the helper, Add a library)
 -- (the packages' lists come from .dev_tests/gumbo_library_build.py, which holds the starter's instrument list)
 -- Families are the browser's tiles, X.TILES -- the SAME names in the same order as gb_face.jsfx-inc's gbf_fam_name
@@ -37,7 +38,9 @@ X.TILES = { "Drums", "808s", "Bass", "Keys", "E-Piano", "Pads", "Leads", "String
 -- Its order is the GUESS priority ("808" before "kit", "pianet" before "piano"), not the display order.
 X.FAMILIES = {
   -- names that hold another family's word come first ("bassoon" is not a bass, "contrabass" is a string)
-  { "Winds",   { "bassoon" } },
+  { "Winds",   { "bassoon", "shanai", "shehnai" } },
+  { "Plucks",  { "sitar" } },
+  { "E-Piano", { "electric piano", "electric grand" } },
   { "Strings", { "contrabass" } },
   { "Bass",    { "upright bass", "upright_bass", "uprightbass" } },   -- before "upright" (a piano)
   { "Keys",    { "upright" } },
@@ -88,7 +91,7 @@ local WORDS = { Ens = "Section", Sus = "Sustain", Stac = "Staccato", Spic = "Spi
 local SOLO = { Violin = true, Viola = true, Cello = true }
 local WHOLE = { VSUpright1 = "Upright Piano 2", ["GM-StylePerc"] = "GM Percussion" }
 function X.pretty(name)
-  name = tostring(name)
+  name = tostring(name):gsub("^%d%d%d%-", "")          -- a General MIDI program number in front ("001-Acoustic Grand Piano")
   if WHOLE[name] then return WHOLE[name] end
   local tail = ""
   local base = name:match("^(.-)%-[Kk][Ss]$")

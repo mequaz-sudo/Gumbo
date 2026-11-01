@@ -1,0 +1,44 @@
+The instruments in this folder and their licences, as each one's original .sfz states them
+(Discord SFZ GM Bank, github.com/kinwie/Discord-SFZ-GM-Bank). Converted for Gumbo by EON Studios.
+
+001-Acoustic Grand Piano
+  Author: Alexander Holm
+  License: Creative Commons CC-BY, Alexander Holm
+  Source: https://github.com/sfzinstruments/SalamanderGrandPiano
+
+002-Bright Acoustic Piano
+  License: Creative Commons CC0, Versilian Studios
+  Source: https://vis.versilstudios.com/vcsl.html
+
+003-Electric Grand Piano
+  Author Greg Sullivan
+  License: Creative Commons CC0, Greg Sullivan
+  Source: https://github.com/sfzinstruments/GregSullivan.E-Pianos
+
+005-Electric Piano 1
+  Author: Jeff Learman: http://github.com/jlearman
+  License: Creative Commons CC0, Jeff Learman
+  Source: http://github.com/sfzinstruments/jlearman.jRhodes3c
+
+026-Acoustic Guitar (steel)
+  Author: Jeff Learman, for Kinwie's Discord SFZ GM: https://github.com/kinwie/Discord-SFZ-GM-Bank
+  License: Creative Commons CC0
+
+034-Electric Bass (finger)
+  From Killer Bass by Karyrofer (http://karoryfer.com)
+  License: CC0
+
+045-Tremolo Strings
+  License: Creative Commons CC0
+  Source: https://vis.versilstudios.com
+
+046-Pizzicato Strings
+  License: Creative Commons CC0
+  Source: https://vis.versilstudios.com
+
+105-Sitar
+  License: CC0, Dr. Narayan Bhagawan Raikar
+
+112-Shanai
+  License: CC), Narayan Bhagawan Raikar
+
