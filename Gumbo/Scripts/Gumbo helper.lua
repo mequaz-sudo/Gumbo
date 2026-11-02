@@ -172,6 +172,30 @@ local function tracks_tick()
 end
 local tracks_t = 0
 
+-- DOCK: a double-click on a Gumbo's logo (C.DOCK_*): the ReaKit FX dock's "Gumbo - Dock" tab takes that Gumbo in, or
+-- pops it out when it holds it already -- the same show request GainKit Plus writes for the other plugins, to the Gumbo
+-- tab's own EXT; the tab is started first when it is closed (its start leaves a request younger than 5 s alone). A
+-- track's own chain only (flags 0). A double-click from before this run is not acted on.
+local dock_seen = gr(C.DOCK_SEQ)
+local function dock_tick()
+  local seq = gr(C.DOCK_SEQ)
+  if seq == dock_seen then return end
+  dock_seen = seq
+  local ti, pos, fl = math.floor(gr(C.DOCK_T) + 0.5), math.floor(gr(C.DOCK_POS) + 0.5), math.floor(gr(C.DOCK_FL) + 0.5)
+  if fl ~= 0 then return end
+  local tr = ti == -1 and r.GetMasterTrack(0) or (ti >= 0 and r.GetTrack(0, ti) or nil)
+  if not tr or pos < 0 or pos >= r.TrackFX_GetCount(tr) then return end
+  local fg = r.TrackFX_GetFXGUID(tr, pos)
+  if not fg then return end
+  local DX = "EON_ReaKitDock_gmb"
+  r.SetExtState(DX, "show_req", r.GetTrackGUID(tr) .. "|" .. fg .. "|" .. string.format("%.3f", r.time_precise()), false)
+  if r.time_precise() - (tonumber(r.GetExtState(DX, "alive")) or 0) < 1.0 then return end   -- the tab is up: it takes it
+  local p = dir .. "/Gumbo - Dock.lua"
+  if not r.file_exists(p) then return end
+  local id = r.AddRemoveReaScript(true, 0, p, true)
+  if id and id ~= 0 then r.Main_OnCommand(id, 0) end
+end
+
 gw(C.PROTO, C.PROTO_VERSION)                             -- Gumbo: a helper of this protocol is here
 local function loop()
   local now = r.time_precise()
@@ -179,6 +203,7 @@ local function loop()
   r.SetExtState(EXT, "alive", tostring(now), false)
   gw(C.HB, gr(C.HB) + 1)                                 -- moving = running
   poll()
+  dock_tick()
   if now - tracks_t > 0.25 then tracks_t = now; tracks_tick() end
   r.defer(loop)
 end

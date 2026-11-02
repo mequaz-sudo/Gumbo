@@ -10,6 +10,7 @@
 @init
 GBH_BAND = 31600000;
 GBH_HB = 0; GBH_PROTO = 1; GBH_LIBGEN = 2; GBH_LOCK = 3;
+GBH_DOCK_SEQ = 4; GBH_DOCK_T = 5; GBH_DOCK_POS = 6; GBH_DOCK_FL = 7;   // a double-click on the GUMBO logo: dock / pop out
 GBH_REQ_SEQ = 16; GBH_REQ_KIND = 17; GBH_REQ_TOKEN = 18; GBH_REQ_LEN = 19; GBH_REQ_PATH = 20;
 GBH_REP_SEQ = 1024; GBH_REP_STATUS = 1025; GBH_REP_TOKEN = 1026; GBH_REP_REGIONS = 1027; GBH_REP_LEN = 1028;
 GBH_REP_PATH = 1029; GBH_REP_REASON = 2029;
@@ -51,6 +52,27 @@ function gbh_request(path) (
     !gbh_running ? gbh_err = 1 : (
       strcpy(#gbh_path, path); gbh_kind = GBH_KIND_IMPORT; gbh_state = GBH_ST_WAITLOCK; gbh_t = time_precise(); gbh_lock_seen_t = 0;
     );
+  );
+);
+// DOCK (2026-11-01, the owner: "Double click should make Gumbo [dock], like all the other plugins"): a double-click
+// on the GUMBO logo asks the helper to dock this Gumbo in its own "Gumbo - Dock" tab, or pop it out when it is docked
+// (the helper hands the ReaKit FX dock the same show request GainKit Plus does for the other plugins). Where this Gumbo
+// sits, then the counter LAST. 7 = no helper to ask. The window only (a strip's double-click is REAPER's).
+function gbh_dock_dbl(x, y, w, h) local(in, now, p, f, t) (
+  !(gfx_ext_flags & 1) ? (
+    (mouse_cap & 1) && !(gbh_dk_cap & 1) ? (
+      in = mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h;
+      now = time_precise();
+      in && gbh_dk_t > 0 && now - gbh_dk_t < 0.4 ? (
+        gbh_dk_t = 0;
+        gbh_running ? (
+          p = 0; f = 0; t = get_host_placement(p, f);
+          gmem[GBH_BAND + GBH_DOCK_T] = t; gmem[GBH_BAND + GBH_DOCK_POS] = p; gmem[GBH_BAND + GBH_DOCK_FL] = f;
+          gmem[GBH_BAND + GBH_DOCK_SEQ] = (gmem[GBH_BAND + GBH_DOCK_SEQ] | 0) + 1;
+        ) : gbh_err = 7;
+      ) : gbh_dk_t = in ? now : 0;
+    );
+    gbh_dk_cap = mouse_cap;
   );
 );
 // a star clicked in the browser: the helper keeps the favourites file (5 = no helper to keep it; the star changes for

@@ -579,6 +579,7 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, 
   gbf_font(fs, 'b');
   gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.25); gfx_x = pad + 1; gfx_y = (tb - fs) * 0.5 + 1; gfx_drawstr("GUMBO");
   gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_x = pad; gfx_y = (tb - fs) * 0.5; gfx_drawstr("GUMBO");
+  !gbf_menu_block ? gbh_dock_dbl(0, 0, gfx_x + 6 * s, tb);   // double-click the logo: dock / pop out (the helper)
   x0 = gfx_x + 14 * s;
   // the instrument box: < FAMILY  name  >
   pw = min(320 * s, gfx_w * 0.36); ph = 30 * s; px = x0; dy = (tb - ph) * 0.5;

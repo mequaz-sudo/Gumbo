@@ -4,7 +4,7 @@
 -- dock ("ReaKit FX - Dock following the selected track.lua"): Gumbo's release copies it (and its icon picker) beside
 -- this file; in the development tree it is found in ../GainKit Plus. This only names the plugin. Windows only; needs
 -- js_ReaScriptAPI (ReaPack).
-REAKIT_DOCK_ONLY = { key = "gmb", title = "Gumbo" }
+REAKIT_DOCK_ONLY = { key = "gmb", title = "Gumbo", close_on_pop = true }   -- a double-click that floats it closes the tab
 local dir = debug.getinfo(1, "S").source:match("^@(.*[\\/])") or ""
 local dock = "ReaKit FX - Dock following the selected track.lua"
 local f = io.open(dir .. dock, "r")

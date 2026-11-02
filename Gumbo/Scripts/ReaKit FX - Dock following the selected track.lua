@@ -244,9 +244,11 @@ local OPT_DEF = { trackno = "1", color = "stripe", icon = "1", labels = "long", 
                                                                -- 2026-10-07: "the tooltips get in the way")
 local function opt_set(k, v) opt[k] = v; r.SetExtState(EXT, "opt_" .. k, v, true) end
 for k, d in pairs(OPT_DEF) do local v = r.GetExtState(EXT, "opt_" .. k); opt[k] = v ~= "" and v or d end
-local fold_open = true                 -- FOLD on: the bar is open (the start), or folded to its handle; a click on the
-                                       -- handle opens it, the bar's chevron folds it; nothing folds or opens it on its
-                                       -- own (the user, 2026-10-05: "i just wanted it to drop down not auto close")
+local fold_open = r.GetExtState(EXT, "fold_open") ~= "0"   -- FOLD on: the bar is open, or folded to its handle; a
+                                       -- click on the handle opens it, the bar's chevron folds it; nothing folds or
+                                       -- opens it on its own (the user, 2026-10-05: "i just wanted it to drop down not
+                                       -- auto close"). Remembered per dock (its EXT) from one start to the next (the
+                                       -- owner, 2026-11-01: "can it remember the top bar open and close?")
 local hover_act, hover_t = nil, 0      -- the tooltip: what is under the pointer, since when (C.TIP_DELAY)
 local want_close = false               -- the X: the dock closes at the end of this tick
 local pub = { tip = nil, drw = nil, beat = -1 }   -- what was last published for tests (ExtState tip / held / view / bar / hover / menu / picker / name_edit / name_hit / ticon_hit, the C.DRW gmem beat): one table, not twelve locals (the 200-local limit)
@@ -719,7 +721,12 @@ local function show_req(req)
   if not k then dbg("show_req: not in this project"); return end
   for _, s in ipairs(slots) do
     if s.fg == fg and s.canvas then
-      if opt.dblclick == "1" then pop_out(s) else dbg("show_req: pop-out off (the gear)") end
+      if opt.dblclick == "1" then
+        pop_out(s)
+        -- a one-plugin tab that asks for it (Gumbo's: ONLY.close_on_pop; the owner, 2026-11-01: "when you float it,
+        -- the dock is still there") closes with the pop-out: the bar's X, at the end of this tick
+        if ONLY and ONLY.close_on_pop and s.away then want_close = true end
+      else dbg("show_req: pop-out off (the gear)") end
       return
     end
   end
@@ -2697,6 +2704,9 @@ local function loop()
   if req ~= "" then
     r.SetExtState(EXT, "fold_req", "", false)
     fold_open = req == "open"
+  end
+  if fold_open ~= C.fold_saved then                                  -- the bar opened or folded: kept for the next start
+    C.fold_saved = fold_open; r.SetExtState(EXT, "fold_open", fold_open and "1" or "0", true)
   end
   req = r.GetExtState(EXT, "slot_req")                             -- tests: the SLOT button, "<n>" | "step:<d>" | "menu:<pick>"
   if req ~= "" then

@@ -12,6 +12,7 @@ local C = {}
 
 C.BAND = 31600000
 C.HB, C.PROTO, C.LIBGEN, C.LOCK = 0, 1, 2, 3
+C.DOCK_SEQ, C.DOCK_T, C.DOCK_POS, C.DOCK_FL = 4, 5, 6, 7   -- a double-click on the GUMBO logo (Gumbo writes SEQ last)
 C.REQ_SEQ, C.REQ_KIND, C.REQ_TOKEN, C.REQ_LEN, C.REQ_PATH = 16, 17, 18, 19, 20
 C.REP_SEQ, C.REP_STATUS, C.REP_TOKEN, C.REP_REGIONS, C.REP_LEN, C.REP_PATH = 1024, 1025, 1026, 1027, 1028, 1029
 C.REP_REASON = 2029                                    -- why a conversion failed (C.WHY_*), written before REP_SEQ

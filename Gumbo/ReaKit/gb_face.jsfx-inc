@@ -289,6 +289,7 @@ function gbf_status() (
     gbh_err == 1 ? strcpy(#gbf_st, "To open a .sfz, start the Gumbo helper (Actions: Gumbo helper)")
     : gbh_err == 2 ? strcpy(#gbf_st, "The Gumbo helper stopped before the .sfz was done")
     : gbh_err == 3 ? strcpy(#gbf_st, "That file's path is too long to send to the helper")
+    : gbh_err == 7 ? strcpy(#gbf_st, "To dock Gumbo with a double-click, start the Gumbo helper")
     : gbh_err == 5 ? strcpy(#gbf_st, "Starred for now. To keep favourites, start the Gumbo helper")
     : gbh_err == 6 ? strcpy(#gbf_st, "The Gumbo helper could not save your favourites")
     : gbh_err == 31 ? strcpy(#gbf_st, "Could not import: its sound files are missing")
