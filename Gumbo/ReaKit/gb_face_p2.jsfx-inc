@@ -26,7 +26,8 @@ GBF_KN_W = 1740700;                  // 2 x 128: each key's name width in its na
 GBF_KN_C = 1741000;                  // 2 x 4: what each name image was drawn for (size, length, load, typeface)
 GBF_PAD = 1741100;                   // 128: the kit's named keys low to high, one a pad (gbf_npad of them)
 GBF_PGL = 1741300;                   // 128: each key's pad glow 0..1 (lit on a hit, fading)
-gbf_npad = 0; gbf_pad_gen = -1; gbf_pbank = 0; gbf_pad_note = -1; gbf_pad_vel = 100;
+GBF_PGMAP = 1698600;                 // 256: the open program menu's rows -> a GB_PRG entry or a group (after GB_PRG, under GB_FN)
+gbf_npad = 0; gbf_pad_gen = -1; gbf_pbank = 0; gbf_pad_note = -1; gbf_pad_vel = 100; gbf_pad_kit = -1;
 gbf_eq_b = GBF_EQ; gbf_eq_s = GBF_EQ + 500; gbf_eq_c = GBF_EQ + 600; gbf_eq_e = GBF_EQ + 620; gbf_eq_m = GBF_EQ + 630;
 gbf_eq_f = GBF_EQ + 650; gbf_eq_d = GBF_EQ + 660; gbf_eq_fq = GBF_EQ + 700;
 memset(GBF_EQ, 0, 800); gbf_eq_m[0] = -1; gbf_eq_sig = -1;
@@ -162,9 +163,77 @@ function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly) (
     gbf_menu(#gbf_eqm, x - lw / 2, ly + gbf_lf + 2 * gbf_s, 1 + k);
   );
 );
+// ── a bank's program menu ──
+// A menu holds RKM_ROWS rows in all (submenus included), fewer than a full GM bank (128 + its kits). So a small bank
+// lists every program at once; a big one first lists its groups -- the 16 GM families by program number, then the drum
+// kits -- and a group opens its programs, with a row back to the groups. GBF_PGMAP: each item's entry (or group;
+// -1 = back to the groups).
+GBF_PG_FLAT = 48;                    // up to this many programs: one list
+function gbf_gm_fam(g) (
+  g == 0 ? "Piano" : g == 1 ? "Chromatic Percussion" : g == 2 ? "Organ" : g == 3 ? "Guitar" : g == 4 ? "Bass"
+  : g == 5 ? "Strings" : g == 6 ? "Ensemble" : g == 7 ? "Brass" : g == 8 ? "Reed" : g == 9 ? "Pipe"
+  : g == 10 ? "Synth Lead" : g == 11 ? "Synth Pad" : g == 12 ? "Synth Effects" : g == 13 ? "Ethnic"
+  : g == 14 ? "Percussive" : g == 15 ? "Sound Effects" : "Drum kits";
+);
+function gbf_pg_drum(i) ( gb_drum_sec > 0 && (GB_PRG + i * 5)[0] == gb_drum_sec; );
+function gbf_pg_group(i) ( gbf_pg_drum(i) ? 16 : ((GB_PRG + i * 5)[1] / 8) | 0; );
+// one program row: its number, its name, ticked when it plays; mapped to entry i
+function gbf_pg_item(i, k, sep) local(q) (
+  q = GB_PRG + i * 5; gb_prog_name(i);
+  sprintf(#gbf_pgi, "%s%s%s%d  %s", k > 0 ? "|" : "", sep ? "|" : "", i == gbf_pg_i ? "!" : "", q[1] + 1, #gb_ls);
+  strcat(#gbf_pgm, #gbf_pgi); GBF_PGMAP[k] = i;
+);
+// the groups (what 11): each with its count, the one playing ticked
+function gbf_prog_groups() local(g, i, c, k, on) (
+  #gbf_pgm = ""; k = 0; g = 0;
+  loop(17,
+    c = 0; on = 0; i = 0;
+    loop(gb_nprg, gbf_pg_group(i) == g ? ( c += 1; i == gbf_pg_i ? on = 1; ); i += 1; );
+    c > 0 ? (
+      sprintf(#gbf_pgi, "%s%s%s%s  (%d)", k > 0 ? "|" : "", g == 16 && k > 0 ? "|" : "", on ? "!" : "", gbf_gm_fam(g), c);
+      strcat(#gbf_pgm, #gbf_pgi); GBF_PGMAP[k] = g; k += 1;
+    );
+    g += 1;
+  );
+  gbf_menu(#gbf_pgm, gbf_pg_x, gbf_pg_y + gbf_pg_h + 2 * gbf_s, 11);
+);
+// group g's programs (what 10), after a row back to the groups
+function gbf_prog_list(g) local(i, k) (
+  strcpy(#gbf_pgm, "◂  All groups");   // (not '<': rk_menu reads a leading '<' as a submenu's end)
+  GBF_PGMAP[0] = -1; k = 1; i = 0;
+  while (i < gb_nprg && k < RKM_ROWS - 2) ( gbf_pg_group(i) == g ? ( gbf_pg_item(i, k, k == 1); k += 1; ); i += 1; );
+  gbf_menu(#gbf_pgm, gbf_pg_x, gbf_pg_y + gbf_pg_h + 2 * gbf_s, 10);
+);
 // the menu's answer, from rkm_run at the end of the pass (gb_face_frame): what = 1..4 a band's shape
-function gbf_menu_pick(what, r) (
+function gbf_menu_pick(what, r) local(e) (
   what >= 1 && what <= 4 ? gbf_eq_shape_set(what - 1, r == 1 ? 0 : r == 2 ? 3 : r == 3 ? 4 : r == 4 ? 1 : 5);
+  // a bank's program (what 10): a GB_PRG entry, or back to the groups; a group (what 11) opens its programs
+  e = r >= 1 && r <= GB_PRG_MAX ? GBF_PGMAP[r - 1] : -2;
+  what == 10 ? ( e == -1 ? gbf_prog_groups() : gbf_prog_pick(e); );
+  what == 11 && e >= 0 ? gbf_prog_list(e);
+);
+// the display's program box (gbf_display): < and > (or the wheel over the box) step through the bank; a click on the
+// name opens its programs (a big bank: its groups first)
+function gbf_prog_click() local(i, k) (
+  gb_ready && gb_nprg > 0 && gbf_pg_h > 0 && !gbf_menu_block && frame_wheel != 0 && gbf_hit(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h) ?
+    gbf_prog_step(frame_wheel > 0 ? -1 : 1);
+  gb_ready && gb_nprg > 0 && gbf_pg_h > 0 && lmb_down && !gbf_menu_block && gbf_hit(gbf_pg_x, gbf_pg_y, gbf_pg_a, gbf_pg_h) ? (
+    lmb_down = 0; gbf_prog_step(-1);
+  );
+  gb_ready && gb_nprg > 0 && gbf_pg_h > 0 && lmb_down && !gbf_menu_block && gbf_hit(gbf_pg_x + gbf_pg_w - gbf_pg_a, gbf_pg_y, gbf_pg_a, gbf_pg_h) ? (
+    lmb_down = 0; gbf_prog_step(1);
+  );
+  gb_ready && gb_nprg > 0 && gbf_pg_h > 0 && lmb_down && !gbf_menu_block && gbf_hit(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h) ? (
+    lmb_down = 0;
+    gb_nprg > GBF_PG_FLAT ? gbf_prog_groups() : (
+      #gbf_pgm = ""; i = 0; k = 0;
+      loop(gb_nprg,                   // a new section (the kits) after a separator
+        gbf_pg_item(i, k, i > 0 && (GB_PRG + i * 5)[0] != (GB_PRG + i * 5 - 5)[0]);
+        k += 1; i += 1;
+      );
+      gbf_menu(#gbf_pgm, gbf_pg_x, gbf_pg_y + gbf_pg_h + 2 * gbf_s, 10);
+    );
+  );
 );
 function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, kx0, ky2, q, nv) (
   gx = cx; gw = cw * 0.55; gh = ph; dr = 15;
@@ -402,6 +471,12 @@ function gbf_options(x, y, w, h) local(s, bh, bw, rx, ry, lx, vx, nv) (
   gbf_opt_btn(lx, ry, rx - lx, bh, "DONE", 0) ? gbf_opt = 0;
 );
 
+// A bank (a GM SoundFont: melodic programs + kits) has key names from its kits only, so the kit's pads and key names
+// show only while channel 1 plays a kit (the owner, 2026-11-04: the MuseScore bank opened on drum pads with a piano
+// playing). gbf_kit_now: an ordinary instrument, or a bank whose channel 1 plays a kit (GB_CHPG, the audio side's).
+function gbf_kit_now() local(e) ( e = GB_CHPG[0]; gb_nprg == 0 || (e >= 128 && gb_drum_sec > 0); );
+function gbf_pads_on() ( gbf_npad > 0 && gbf_kit_now(); );
+
 // ── drum kits: each key's sound named up the key (the owner, 2026-10-31: "On drum kits can we put the name of the sound
 // on the keyboard?"). The names come from the file (gb_key_name: "// label_key"). They are drawn once into an image,
 // one square cell per key (16 x 8; a turned blit stays inside its own destination rectangle, so the source must be a
@@ -433,7 +508,7 @@ function gbf_kn_build(fh, wl, bl, ctx) local(n, k, rh, tw, th, img, kw) (
   gfx_dest = -1;
 );
 function gbf_key_names(x, y, w, h, ctx) local(wsz, fh, rh, bb, wl, bl, n, wi, cx, yb, tw, m, c, kw) (
-  gb_ready && gb_nkey > 0 ? (
+  gb_ready && gb_nkey > 0 && gbf_kit_now() ? (     // (a bank's kit names: only while a kit plays)
     wsz = w / rk_piano_white_count(gbf_lo, gbf_hi);
     fh = floor(min(9 * gbf_s * gbf_tk, wsz * 0.38));   // a white key's middle is clear of black keys for 0.38 of its width
     bb = h * 0.60;
@@ -465,7 +540,7 @@ function gbf_key_names(x, y, w, h, ctx) local(wsz, fh, rh, bb, wl, bl, n, wi, cx
 // the pointed-at key's name in a tag above the keyboard (any width)
 function gbf_key_tag(x, w, ky, n) local(cx, tw, th, bx, s) (
   s = gbf_s;
-  gb_ready && gb_nkey > 0 && gb_key_name(n) > 0 ? (
+  gb_ready && gb_nkey > 0 && gbf_kit_now() && gb_key_name(n) > 0 ? (
     gbf_font(9 * s, 'b'); gfx_measurestr(#gb_ls, tw, th);
     cx = gbf_key_x(x, w, gbf_lo, gbf_hi, n);
     bx = max(x, min(x + w - tw - 10 * s, cx - tw * 0.5 - 5 * s));
@@ -480,12 +555,14 @@ function gbf_key_tag(x, w, ky, n) local(cx, tw, th, bx, s) (
 // converter's "// label_key" lines), so a 52-sound kit has banks A-D. A pad plays through the mouse-note channel
 // (gb_kb_note), harder the higher it is struck (gb_kb_vel 30..127); it lights on every hit of its note (MIDI, the
 // keyboard or the pad) and fades.
-function gbf_pads_build() local(n) (
+function gbf_pads_build() local(n, k) (
   gb_ready && gbf_pad_gen != gb_load_gen ? (
-    gbf_pad_gen = gb_load_gen; gbf_npad = 0; gbf_pbank = 0;
+    gbf_pad_gen = gb_load_gen; gbf_npad = 0; gbf_pbank = 0; gbf_pad_kit = -1;
     n = 0; loop(128, GBF_PGL[n] = 0; GB_KLB[n * 2 + 1] > 0 ? ( GBF_PAD[gbf_npad] = n; gbf_npad += 1; ); n += 1; );
-    gbf_npad > 0 ? gbf_tab = 4 : gbf_tab == 4 ? gbf_tab = 0;   // a kit opens on its pads; a pitched sound leaves them
   );
+  // a kit coming in opens its pads, leaving one closes them; between those the tab stays where the user put it
+  k = gb_ready && gbf_pads_on();
+  k != gbf_pad_kit ? ( gbf_pad_kit = k; k ? gbf_tab = 4 : gbf_tab == 4 ? gbf_tab = 0; );
 );
 function gbf_note_name(n) local(pc) (
   pc = n % 12;
@@ -561,7 +638,7 @@ function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k,
   !LMB ? gbf_pad_note = -1;
 );
 
-function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, ky, kr, ka, hit, cur, compact, thx, thy, x0, tby, tbh, nyy, gw, bwt, bh, hot)
+function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, ky, kr, ka, hit, cur, compact, thx, thy, x0, tby, tbh, nyy, gw, bwt, bh, hot, pon)
 (
   s = gbf_s; tb = 46 * s; pad = 10 * s;
   // the window (re)opened (no window pass for half a second): read the lists again, so sound packages installed or
@@ -642,16 +719,18 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, 
   ka = kr * (1.4 + 1.45) + gbf_lf + gbf_vf + 10 * s;              // the knob row's height
   dh = max(120 * s, min(230 * s, ky - tb - 2 * pad - ka - tbh - 14 * s));
   gbf_display(cx, tb + pad, cw, dh);
-  // on the display: the playing-style chips under the name, the controllers under the output meter
-  fs = max(12, floor(min(26 * s, dh * 0.15)));
-  gbf_chips(cx + 16 * s, tb + pad + 12 * s + fs * gbf_tk + 22 * s, cw * 0.47, 18 * gbf_tk * s);
+  gbf_prog_click();
+  // on the display: the playing-style chips under the name (under a bank's PROGRAM line), the controllers under the
+  // output meter
+  gbf_chips(cx + 16 * s, gbf_chip_y, cw * 0.47, 18 * gbf_tk * s);
   nyy = tb + pad + 136 * s + 2 * (gbf_tk - 1) * 9 * s;   // under OUT, which moves down as its labels grow
   dh >= 162 * s ? gbf_perf_row(cx + cw * 0.52, nyy, cw * 0.45);
   // the tabs and the page
   tby = tb + pad + dh + 6 * s;
   gbf_pads_build();
-  gbf_npad == 0 && gbf_tab == 4 ? gbf_tab = 0;
-  gbf_tabs(cx, tby, min(110 * s, (cw - (gbf_npad > 0 ? 16 : 12) * s) / (gbf_npad > 0 ? 5 : 4)), tbh, gbf_npad > 0 ? 5 : 4);
+  pon = gbf_pads_on();
+  !pon && gbf_tab == 4 ? gbf_tab = 0;
+  gbf_tabs(cx, tby, min(110 * s, (cw - (pon ? 16 : 12) * s) / (pon ? 5 : 4)), tbh, pon ? 5 : 4);
   gbf_tab != gbf_tab_was ? ( gbf_opt = 0; gbf_tab_was = gbf_tab; );   // a tab picked closes the OPTIONS sheet
   gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.35); gfx_rect(cx, tby + tbh, cw, 1);
   dy = tby + tbh + 8 * s + 1.4 * kr;

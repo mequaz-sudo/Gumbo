@@ -2437,21 +2437,36 @@ end
 -- (os.time, the clock a JSFX time() reads; 0 = closed), +9 how many, +16.. (track: 0-based, -1 = the master;
 -- chain position) pairs, 64 at most, the count written last.
 r.gmem_attach("Swing_Media_Transfer")
-local function publish_drawer()
+-- Several docks can be open (the full one and one-plugin tabs): each keeps its own pairs in its ExtState "drwl" and
+-- writes the UNION of every open dock's into the band (the Codex review, 2026-11-04: each overwrote the others').
+-- closing: this dock's own pairs are left out, and the heartbeat stops only when no other dock is open.
+local function publish_drawer(closing)
   local t = {}
-  for _, s in ipairs(slots) do
+  for _, s in ipairs(closing and {} or slots) do
     if s.canvas and s.tr and s.fx and #t < C.DRW_MAX * 2 and r.ValidatePtr2(0, s.tr, "MediaTrack*") then
       local n = r.GetMediaTrackInfo_Value(s.tr, "IP_TRACKNUMBER")   -- 1-based, -1 = the master, 0 = not found
       if n ~= 0 then t[#t + 1] = n < 0 and -1 or n - 1; t[#t + 1] = s.fx end
     end
   end
+  local own = table.concat(t, " ")
+  if own ~= pub.own then pub.own = own; r.SetExtState(EXT, "drwl", own, false) end
+  local now_p, any = r.time_precise(), not closing
+  local function add(x)
+    if x == EXT or now_p - (tonumber(r.GetExtState(x, "alive")) or 0) > 1.0 then return end
+    any = true
+    for a, b in r.GetExtState(x, "drwl"):gmatch("(%-?%d+) (%-?%d+)") do
+      if #t < C.DRW_MAX * 2 then t[#t + 1] = tonumber(a); t[#t + 1] = tonumber(b) end
+    end
+  end
+  add("EON_ReaKitDock")
+  for _, k in ipairs(KINDS) do add("EON_ReaKitDock_" .. k.key) end
   local v = table.concat(t, " ")
   if v ~= pub.drw then
     pub.drw = v
     for i, x in ipairs(t) do r.gmem_write(C.DRW + 16 + i - 1, x) end
     r.gmem_write(C.DRW + 9, #t // 2)
   end
-  local now = os.time()
+  local now = any and os.time() or 0
   if now ~= pub.beat then pub.beat = now; r.gmem_write(C.DRW + 8, now) end
 end
 
@@ -2522,8 +2537,8 @@ local function quit()
   PICK.on, PICK.ctx = false, nil
   NAME.on = false
   for _, k in ipairs({ "menu", "menu_rows", "picker", "picker_cells", "picker_cats", "picker_sel", "colp", "hover", "tip", "name_edit", "name_hit", "ticon_hit" }) do r.SetExtState(EXT, k, "", false) end
-  r.gmem_write(C.DRW + 9, 0)                                         -- holds nothing now (the drawer band)
-  r.gmem_write(C.DRW + 8, 0)
+  r.SetExtState(EXT, "drwl", "", false)                             -- holds nothing now: the band keeps the other docks'
+  pub.own = nil; publish_drawer(true)
   pcall(function() r.set_action_options(8) end)                    -- the toolbar button goes dark
 end
 local function closed_by_user()

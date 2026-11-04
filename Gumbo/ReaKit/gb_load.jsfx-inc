@@ -8,14 +8,24 @@
 //     render (measured: a 2.6M-cell sample loads inside @serialize, Research R7).
 // Each piece of work is bounded under EEL2's 2^20 loop cap (wiki §1.7): lines per step, cells per file_mem call.
 // Audio memory: every sample file once, interleaved as it is on disk (mono stays mono), from GB_AUD up to GB_AUD_END.
+// PACKED (2026-11-04, the owner wanted the Meta Piano, 2.25 GB unpacked, to play): when the file's header says the
+// instrument will not fit at one cell a sample point (gb_hdr_mb), every point is stored as 16 bits and three share a
+// cell (a cell is a 64-bit float: 48 bits of integers are exact), so ~3x the sound fits. Points go in in the same
+// interleaved order; point k sits in cell k/3, lane k%3: cell = u0 + u1 * 2^16 + u2 * 2^32, u = point * 32768 + 32768.
+// A 16-bit file packs exactly (its points are whole numbers of 1/32768); a deeper one is rounded to 16 bits with
+// TPDF dither. Only an instrument that would not fit is packed, so every other one loads and plays as before.
+// Readers: gb_render (gb_voice: each voice keeps 8 cells unpacked, gb_pk_cells; gb_pk at a loop's wrap or a sample's
+// ends) and the face's waveform (gb_pk) when gb_pack is 1.
 // While a job runs gb_ready is 0 and the audio side plays nothing; gb_ready = 1 is written last.
 // Threads: @gfx and @serialize are separate sections with separate function locals (wiki §1.14), but they share
 // these globals; the host never runs both at once on purpose (a @serialize load first stops a @gfx job).
 
 @init
-GB_AUD = 2000000;
+GB_AUD = 4200000;                    // above the region table and its mods (gb_sfz: GB_REG .. 4112144)
 GB_AUD_END = 134000000;              // under maxmem = 134217728, proven backed (Research R3)
 GB_CHUNK = 524288;                   // cells per file_mem call (half the loop cap; file_mem itself has no cap)
+GB_PK_SCR = GB_AUD_END - GB_CHUNK;   // packed loads: each piece is read here as floats, then packed below it
+gb_pack = 0;                         // 1 = the loaded instrument is packed (set before gb_ready, per load)
 GB_J_IDLE = 0; GB_J_PARSE = 1; GB_J_SAMPLES = 2; GB_J_DONE = 3; GB_J_FAILED = -1;
 GB_E_NONE = 0; GB_E_OPEN = 1; GB_E_NOTTEXT = 2; GB_E_FORMAT = 3; GB_E_EMPTY = 4;
 gb_job = GB_J_IDLE;
@@ -37,9 +47,61 @@ function gb_sample_path(k) local(p, n, i, c0, c1, abs_) (
   i = 0; loop(n, sprintf(#gb_ch, "%c", GB_PCH[p[GBS_PATH] + i]); strcat(#gb_sp, #gb_ch); i += 1; );
 );
 
+// ── packing (see the header) ──
+// n points at src (floats -1..1) -> ceil(n / 3) cells at dst; a last short cell's empty lanes hold silence (32768).
+// gb_jex = the open file is exact 16-bit so far: each piece is checked first (a deeper file shows a fraction within
+// its first sounding points, so the check stops early); exact points are rounded only, deeper ones get dither (one
+// rand a point, differenced: high-passed triangular). The loops are written out flat: the load of a 2 GB instrument
+// spends nearly all its time here (measured 2026-11-04: Meta Piano, 3.5 s of reading against ~30 s of packing with
+// a function call a point).
+function gb_pk_put(dst, src, n) local(i, m, y, r, a, b, c) (
+  i = 0;
+  while (gb_jex && i < n) ( y = src[i] * 32768; y - floor(y) > 0.0001 ? gb_jex = 0; i += 1; );
+  m = floor(n / 3); i = 0;
+  gb_jex ? (
+    loop(m,
+      a = max(0, min(65535, floor(src[0] * 32768 + 32768.5)));
+      b = max(0, min(65535, floor(src[1] * 32768 + 32768.5)));
+      c = max(0, min(65535, floor(src[2] * 32768 + 32768.5)));
+      dst[i] = a + b * 65536 + c * 4294967296; src += 3; i += 1;
+    );
+  ) : (
+    loop(m,
+      r = rand(1); a = max(0, min(65535, floor(src[0] * 32768 + r - gb_jrp + 32768.5))); gb_jrp = r;
+      r = rand(1); b = max(0, min(65535, floor(src[1] * 32768 + r - gb_jrp + 32768.5))); gb_jrp = r;
+      r = rand(1); c = max(0, min(65535, floor(src[2] * 32768 + r - gb_jrp + 32768.5))); gb_jrp = r;
+      dst[i] = a + b * 65536 + c * 4294967296; src += 3; i += 1;
+    );
+  );
+  n > 3 * m ? (                       // the file's last, short cell
+    a = max(0, min(65535, floor(src[0] * 32768 + 32768.5)));
+    b = n > 3 * m + 1 ? max(0, min(65535, floor(src[1] * 32768 + 32768.5))) : 32768;
+    dst[i] = a + b * 65536 + 32768 * 4294967296;
+  );
+);
+// point k of a packed sample at p, as -1..1 (cell k / 3, lane k % 3; all arithmetic exact under 2^53)
+function gb_pk(p, k) local(q, l, s, h, g) (
+  q = floor((k + 0.5) / 3); l = k - 3 * q;
+  s = p[q]; h = floor(s * 0.0000152587890625);         // s / 2^16 = u1 + u2 * 2^16
+  l < 0.5 ? (s - h * 65536 - 32768) * 0.000030517578125
+  : ( g = floor(h * 0.0000152587890625);              // u2
+      l < 1.5 ? (h - g * 65536 - 32768) * 0.000030517578125 : (g - 32768) * 0.000030517578125; );
+);
+
+// n cells of a packed sample from cell p on, unpacked into t (3 points a cell, in order): the voices' cache (gb_voice)
+function gb_pk_cells(t, p, n) local(s, h, g) (
+  loop(n,
+    s = p[0]; h = floor(s * 0.0000152587890625); g = floor(h * 0.0000152587890625);
+    t[0] = (s - h * 65536 - 32768) * 0.000030517578125;
+    t[1] = (h - g * 65536 - 32768) * 0.000030517578125;
+    t[2] = (g - 32768) * 0.000030517578125;
+    t += 3; p += 1;
+  );
+);
+
 function gb_job_start(path) (
   gb_job > GB_J_IDLE && gb_jh_open ? ( file_close(gb_jh); gb_jh_open = 0; );
-  gb_ready = 0;
+  gb_ready = 0; gb_pack = 0;
   gb_load_gen += 1;                  // the audio side adopts each load once (gb_voices_block)
   strcpy(#gb_jpath, path);
   gb_dirname();
@@ -64,12 +126,17 @@ function gb_job_step(cells, lines) local(k, p, nch, sr, items, n, left) (
       file_avail(gb_jh) > 0 ? ( file_string(gb_jh, #gb_ln); gb_parse_line(); k += 1; ) : (
         file_close(gb_jh); gb_jh_open = 0;
         gb_nreg == 0 ? ( gb_err = GB_E_EMPTY; gb_job = GB_J_FAILED; )
-        : gb_fmt_ver != 1 && gb_fmt_ver != 2 ? ( gb_err = GB_E_FORMAT; gb_job = GB_J_FAILED; )   // 2 = live controllers
-        : ( gb_js = 0; gb_jpos = 0; gb_job = GB_J_SAMPLES; );
+        : gb_fmt_ver != 1 && gb_fmt_ver != 2 && gb_fmt_ver != 3 ? ( gb_err = GB_E_FORMAT; gb_job = GB_J_FAILED; )   // 2 = live controllers, 3 = a bank
+        : ( gb_js = 0; gb_jpos = 0; gb_job = GB_J_SAMPLES;
+            // too big for one cell a point (the header's MB = cells x 8 / 2^20, rounded to 0.1: a 1 % margin): pack it
+            gb_pack = gb_hdr_mb * 131072 > (GB_AUD_END - GB_AUD) * 0.99 ? 1 : 0; );
       );
     );
   ) : gb_job == GB_J_SAMPLES ? (
-    left = cells;
+    // packing costs about 5x the read (measured: Meta Piano 3.5 s read, ~16 s packed), so a packed load takes a
+    // quarter of the budget: @gfx's step (1,048,576) then stays near the plain one's time instead of stalling the
+    // window ~70 ms a frame; @serialize loops to the end either way
+    left = gb_pack ? cells * 0.25 : cells;
     while (left > 0 && gb_job == GB_J_SAMPLES) (
       gb_js >= gb_nsmp ? ( gb_job = GB_J_DONE; gb_ready = 1; ) : (
         p = GB_SMP + gb_js * GB_SS;
@@ -82,22 +149,28 @@ function gb_job_step(cells, lines) local(k, p, nch, sr, items, n, left) (
             items = file_avail(gb_jh);
             nch < 1 || nch > 2 || items <= 0 ? (
               file_close(gb_jh); p[GBS_STAT] = GB_SS_FORMAT; gb_smp_badfmt += 1; gb_js += 1;
-            ) : gb_aud_top + items > GB_AUD_END ? (
+            ) : (gb_pack ? gb_aud_top + ceil(items / 3) > GB_PK_SCR : gb_aud_top + items > GB_AUD_END) ? (
               file_close(gb_jh); p[GBS_STAT] = GB_SS_NOROOM; gb_smp_noroom += 1; gb_js += 1;
             ) : (
-              gb_jh_open = 1; gb_jpos = 0;
+              gb_jh_open = 1; gb_jpos = 0; gb_jex = 1; gb_jrp = 0;
               p[GBS_PTR] = gb_aud_top; p[GBS_NCH] = nch; p[GBS_SR] = sr > 0 ? sr : srate;
               p[GBS_FRAMES] = (items / nch) | 0;
               gb_jitems = p[GBS_FRAMES] * nch;
             );
           );
         ) : (
-          // read the next piece of the open sample
+          // read the next piece of the open sample (packed: whole cells of 3 points, but for the file's last piece)
           n = min(min(GB_CHUNK, left), gb_jitems - gb_jpos);
-          n > 0 ? ( file_mem(gb_jh, p[GBS_PTR] + gb_jpos, n); gb_jpos += n; left -= n; );
+          gb_pack && gb_jpos + n < gb_jitems ? n -= n % 3;
+          n > 0 ? (
+            gb_pack ? ( file_mem(gb_jh, GB_PK_SCR, n); gb_pk_put(p[GBS_PTR] + gb_jpos / 3, GB_PK_SCR, n); )
+                    : file_mem(gb_jh, p[GBS_PTR] + gb_jpos, n);
+            gb_jpos += n; left -= n;
+          ) : left = 0;                 // (a budget under 3 points: the rest next step)
           gb_jpos >= gb_jitems ? (
             file_close(gb_jh); gb_jh_open = 0;
-            p[GBS_STAT] = GB_SS_OK; gb_aud_top += gb_jitems; gb_loaded_cells += gb_jitems; gb_js += 1;
+            n = gb_pack ? ceil(gb_jitems / 3) : gb_jitems;
+            p[GBS_STAT] = GB_SS_OK; gb_aud_top += n; gb_loaded_cells += n; gb_js += 1;
           );
         );
       );

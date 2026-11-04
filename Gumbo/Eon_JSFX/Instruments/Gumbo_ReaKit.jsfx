@@ -96,6 +96,7 @@ slider85:0<0,21,1>-Tone release sync (unused)
 slider86:0<0,4,1{Arial,Verdana,Tahoma,Segoe UI,Consolas}>-Typeface
 slider87:0<-3,6,1>-Text size
 slider88:0<0,2,1{Ember,LCD,Theme}>-Screen look
+slider89:0<0,255,1>-Program (a bank: 0-127 melodic, 128 + kit; the face's PROGRAM pick)
 
 options:gmem=Swing_Media_Transfer,maxmem=134217728,gfx_hz=60,gfx_idle,no_meter
 in_pin:none
@@ -147,6 +148,7 @@ qz_xscr = freemem; freemem += QZ_XSCR_N;   // Quezy's band engine: the crossfade
 freemem = rkm_setup(freemem);        // the drawn menus' row tables (rk_menu: the EON menus Quezy and Swing wear)
 gb_eq_init(); gb_eq_display_init();
 rk_curve_init(20, 22000);
+gb_prog_last = -1;                   // slider 89 applied at the first block
 
 @slider
 rkth_local_off = gb_native;          // NATIVE restored (rk_theme's hidden-slider pattern)
@@ -160,6 +162,11 @@ gb_pan = max(-100, min(100, slider11)); gb_glide = max(0, min(2, slider12)); gb_
 gb_bend_rng = max(1, min(24, slider14 | 0)); gb_vmax = max(8, min(GB_MAXV, slider15 | 0));
 gb_tone = max(-1, min(1, slider7 * 0.01)); gb_drive = max(0, min(1, slider8 * 0.01));
 gb_att_add = max(0, min(2, slider9)); gb_width = max(0, min(2, slider10 * 0.01)); gb_drv_post = slider19 >= 0.5;
+// a bank's program picked on the face (or automated): every channel takes it (gb_voice, gb_prog_apply)
+gb_prog_pick = max(0, min(255, slider89 | 0));
+gb_prog_pick != gb_prog_last || gb_prog_req != gb_prog_done ? (
+  gb_prog_last = gb_prog_pick; gb_prog_done = gb_prog_req; gb_prog_apply(gb_prog_pick);
+);
 gb_midi_block();
 gb_voices_block(slider1);
 gb_eq_block(gb_tone);                // TONE and the EQ on Quezy's engine (gb_eq)
@@ -173,11 +180,12 @@ gbx_pos_s > 0.0001 ? ( gb_drive_run(spl0, spl1, gbx_pos_s); spl0 = gbx_dl; spl1 
 meter_process_sample(spl0, spl1);
 
 @serialize
-// v1: the instrument the user chose. v2 (2026-10-30): + the theme this instance painted itself. Gates are immutable
+// v1: the instrument the user chose. v2 (2026-10-30): + the theme this instance painted itself. v3 (2026-11-02): + each
+// instrument's own EQ (gb_eq's memory; a v1/v2 project starts it empty). Gates are immutable
 // once shipped (wiki §3.4): new fields only in new gates, after rkth_self_serialize (its block never grows).
 // Read: a project opening (or undo) -- load the instrument right here, unless it is the one already loaded, so it is
 // in memory before any play or render (Research R7); an undo that does not change the path costs nothing.
-gb_ser_ver = 2; file_var(0, gb_ser_ver);
+gb_ser_ver = 3; file_var(0, gb_ser_ver);
 file_avail(0) >= 0 ? (
   file_string(0, #gb_sread);
   gb_lock_wait();                    // @gfx may be in the middle of a load: let it finish its piece, then take over
@@ -191,11 +199,14 @@ file_avail(0) >= 0 ? (
     while (!gb_job_step(200000000, 2000000) && gb_ser_guard < 100000) ( gb_ser_guard += 1; );
     gb_job == GB_J_DONE ? strcpy(#gb_path, #gb_want);
   );
+  gb_eqm_key = gb_eqm_hash(#gb_path);   // the restored sliders are this instrument's EQ
   gb_unlock();
   gb_ser_ver >= 2 ? rkth_self_serialize();
+  gb_ser_ver >= 3 ? gb_eqm_ser(1) : memset(GB_EQM, 0, GB_EQM_N * GB_EQM_W);
 ) : (
   file_string(0, #gb_want);
   rkth_self_serialize();
+  gb_eqm_ser(0);
 );
 
 @gfx 1000 580
@@ -208,17 +219,19 @@ gb_lock_try() ? (
     strcpy(#gb_ext, "");
     gb_dn > 4 ? strcpy_substr(#gb_ext, #gb_drop, gb_dn - 4, 4);
     stricmp(#gb_ext, ".txt") == 0 ? ( gbh_err = 0; strcpy(#gb_want, #gb_drop); gb_job_start(#gb_want); )
-    : stricmp(#gb_ext, ".sfz") == 0 ? gbh_request(#gb_drop)    // the Gumbo helper converts it (gb_helper.jsfx-inc)
+    : stricmp(#gb_ext, ".sfz") == 0 || stricmp(#gb_ext, ".sf2") == 0 ? gbh_request(#gb_drop)   // the Gumbo helper converts it (gb_helper.jsfx-inc; a SoundFont too)
     : ( gbh_err = 0; gb_job = GB_J_FAILED; gb_err = GB_E_NOTTEXT; );
     gfx_getdropfile(-1);
   );
   // a load from the window runs a little per pass (never in @block: a cold disk read can stall); with the window
   // closed REAPER keeps calling @gfx (options:gfx_idle, about 13 passes a second, gfx_ext_flags & 2), so it finishes
   gb_job == GB_J_PARSE || gb_job == GB_J_SAMPLES ? (
-    gb_job_step(1048576, 500) ? ( gb_job == GB_J_DONE ? strcpy(#gb_path, #gb_want); );
+    gb_job_step(1048576, 500) ? ( gb_job == GB_J_DONE ? ( strcpy(#gb_path, #gb_want); gb_eqm_pend = 1; ); );
   );
   gb_unlock();
 );
+// a new instrument: its own EQ comes back (gb_eq), after the lock (slider_automate may run @serialize in this thread)
+gb_eqm_pend ? ( gb_eqm_pend = 0; gb_eqm_switch(gb_eqm_hash(#gb_path)); );
 // the Gumbo helper: is it running, did the list change, a sent .sfz's reply (every pass, idle ones too, so an import
 // finishes with the window closed)
 gbh_watch(); gbh_tick();

@@ -21,6 +21,7 @@
 --           facts (frames, loops, root) still come from the original file
 --       G.parse_note(s), G.FIELDS (the output order), G.FORMAT_VERSION
 --       G.instrument_files(files, lib_dir) -> which .sfz of a library are instruments (files = { {path=, text=}, ... })
+--       G.programs(sfz_path) -> a GM bank's programs ({} for an ordinary instrument); convert one with opts.program
 
 local M = {}
 -- 2 (2026-10-30): live controllers. A region may carry up to M.MAX_MODS "mod=T,CC,A,B" tokens after its gates (T:
@@ -32,6 +33,11 @@ local M = {}
 -- NOTE name" lines -- the SFZ's own label_keyN, else, for a drum map (one sound per key, the keys' sounds named
 -- differently), a name made from each key's sample file. A player that does not know the line skips it (a comment).
 M.FORMAT_VERSION = 2
+-- 3 (2026-11-02, the owner: banks open "the regular way"): a GM bank in one file stays ONE instrument; every region of a
+-- program carries "prog=S,LO,HI" (section, program range) and the file lists "// program S LO HI name" and "// drums S"
+-- (the section channel 10 plays). Only bank files are written as 3, so an older Gumbo refuses a bank instead of playing
+-- every program at once; ordinary instruments stay 2.
+M.BANK_FORMAT_VERSION = 3
 M.MAX_MODS = 4
 local LIVE_T = { amplitude = 1, volume = 2, pan = 3, tune = 4 }
 
@@ -59,7 +65,11 @@ local FIELD = {}
 for i, f in ipairs(M.FIELDS) do FIELD[f[1]] = { kind = f[2], default = f[3], order = i } end
 -- recognised and used outside the field list
 local SPECIAL = { sample = true, key = true, default_path = true, note_offset = true, octave_offset = true,
-                  count = true, sustain_cc = true, sustain_sw = true }
+                  count = true, sustain_cc = true, sustain_sw = true,
+                  -- a header's own level, added to volume (sfizz: global_volume, master_volume, group_volume, dB)
+                  global_volume = true, master_volume = true, group_volume = true,
+                  -- programs (a GM bank in one file): M.programs splits it; each output holds one program
+                  loprog = true, hiprog = true }
 local LOOP_MODES = { no_loop = true, one_shot = true, loop_continuous = true, loop_sustain = true }
 local TRIGGERS = { attack = true, release = true, release_key = true, first = true, legato = true }
 
@@ -235,7 +245,14 @@ local function expand(path, report, defines, depth, stack)
         table.sort(names, function(a, b) return #a > #b end)
         for _, k in ipairs(names) do line = line:gsub((k:gsub("%$", "%%$")), (defines[k]:gsub("%%", "%%%%"))) end
       end
-      local inc = line:match('^%s*#include%s+"([^"]+)"')
+      -- an #include may also sit after opcodes on the same line (a combined GM bank: '<master> loprog=0 ...
+      -- master_label=... #include "Melodic/001-....sfz"'): the text before it stays on its own line, then the file
+      local pre, inc, post = line:match('^(.-)#include%s+"([^"]+)"(.*)$')
+      if inc and not pre:match("^%s*$") then
+        out[#out + 1] = pre
+        line = '#include "' .. inc .. '"' .. post
+      end
+      inc = line:match('^%s*#include%s+"([^"]+)"')
       if inc then
         local p = join(dirname(path), inc)
         if not exists(p) and report.top_dir then
@@ -295,6 +312,7 @@ local function copy(t) local c = {}; for k, v in pairs(t) do c[k] = v end; retur
 local function collect(toks, report)
   local control, global, master, group, region = {}, {}, {}, {}, nil
   local cur = nil                    -- the table opcodes go into
+  local part = 0                     -- which <global> section a region sits under (a combined GM bank: melodic, drums)
   local regions, curves = {}, {}
   local function close_region() if region then regions[#regions + 1] = region; region = nil end end
   for _, t in ipairs(toks) do
@@ -304,7 +322,7 @@ local function collect(toks, report)
       -- a later <control> applies to the regions AFTER it (VSCO 2's keyswitch instruments move default_path halfway
       -- through): a fresh copy, so the regions before keep the one they were read under (found 2026-10-30)
       if h == "control" then control = copy(control); cur = control
-      elseif h == "global" then global = {}; master = {}; group = {}; cur = global
+      elseif h == "global" then global = {}; master = {}; group = {}; cur = global; part = part + 1
       elseif h == "master" then master = {}; group = {}; cur = master
       elseif h == "group" then group = {}; cur = group
       elseif h == "curve" then cur = {}; curves[#curves + 1] = cur   -- curve_index + vNNN points (applied after all)
@@ -314,6 +332,7 @@ local function collect(toks, report)
         for k, v in pairs(master) do region[k] = v end
         for k, v in pairs(group) do region[k] = v end
         region._control = control
+        region._part = part
         cur = region
       else
         report.headers_skipped[h] = (report.headers_skipped[h] or 0) + 1
@@ -382,6 +401,114 @@ local function is_xf(k)
     or k == "xfin_lokey" or k == "xfin_hikey" or k == "xfout_lokey" or k == "xfout_hikey"
     or k == "xf_cccurve" or k == "xf_velcurve" or k == "xf_keycurve"
 end
+-- ── the tone filter, its envelope and the LFOs (2026-11-03) ─────────────────────────────────────────────────────
+-- Written as three optional region tokens (an older Gumbo skips them and plays the region unfiltered):
+--   fil=TYPE,CUTOFF,RES,KEYTRACK,KEYCENTER,VELTRACK,RANDOM,CC,CCDEPTH   (TYPE as gb_sfz GBR_FTYPE: 1 lpf_1p 2 hpf_1p
+--       3 lpf_2p 4 hpf_2p 5 bpf_2p 6 brf_2p 7 lpf_4p 8 hpf_4p; CC 0 = none)
+--   feg=DELAY,ATTACK,HOLD,DECAY,SUSTAIN%,RELEASE,DEPTH,VEL2DEPTH,VEL2ATTACK,VEL2DECAY,VEL2RELEASE
+--   lfo=SLOT,WAVE,FREQ,DEPTH,DELAY,FADE,CC1DEPTH   (slot 0 pitch cents, 1 amp dB, 2 filter cents; wave 0 sine, 1 triangle)
+--   vel=POW,VEL2ATTACK,VEL2DECAY,VEL2RELEASE   (2026-11-04: amp_velpow -- Gumbo's own opcode, gain = (v/127)^POW, what a
+--       SoundFont's velocity-to-attenuation modulator is -- and sfizz's ampeg_vel2attack / decay / release, seconds added
+--       at velocity 127)
+-- Read from SFZ v1 (fil_*, cutoff, resonance, fileg_*, pitchlfo_* / amplfo_* / fillfo_*) and the v2 LFOs (lfoN_freq /
+-- delay / fade / wave and their pitch / volume / cutoff targets). Rules: sfizz's (Research
+-- .docs/research/Gumbo_Tone_Filter_Research_2026-11-03.md).
+local FIL_TYPE = { lpf_1p = 1, hpf_1p = 2, lpf_2p = 3, hpf_2p = 4, bpf_2p = 5, brf_2p = 6, lpf_4p = 7, hpf_4p = 8,
+                   lpf_2p_sv = 3, hpf_2p_sv = 4, bpf_2p_sv = 5, brf_2p_sv = 6,
+                   lpf_6p = 7, hpf_6p = 8, bpf_1p = 5, brf_1p = 6 }   -- (the last four: the nearest Gumbo has)
+local FIL_NEAR = { lpf_6p = true, hpf_6p = true, bpf_1p = true, brf_1p = true }
+local SHAPE_KEYS = { fil_type = true, cutoff = true, resonance = true, fil_keytrack = true, fil_keycenter = true,
+                     fil_veltrack = true, fil_random = true, fileg_delay = true, fileg_attack = true, fileg_hold = true,
+                     fileg_decay = true, fileg_sustain = true, fileg_release = true, fileg_depth = true,
+                     fileg_vel2depth = true, fileg_vel2attack = true, fileg_vel2decay = true, fileg_vel2release = true,
+                     amp_velpow = true, ampeg_vel2attack = true, ampeg_vel2decay = true, ampeg_vel2release = true }
+for _, t in ipairs({ "pitchlfo", "amplfo", "fillfo" }) do
+  for _, x in ipairs({ "freq", "depth", "delay", "fade" }) do SHAPE_KEYS[t .. "_" .. x] = true end
+end
+local function is_shape(k)
+  return SHAPE_KEYS[k] or k:match("^cutoff_oncc%d+$") ~= nil or k:match("^cutoff_cc%d+$") ~= nil
+    or k:match("^[a-z]+lfo_depthcc1$") ~= nil or k:match("^[a-z]+lfo_depth_oncc1$") ~= nil
+    or k:match("^lfo%d+_freq$") ~= nil or k:match("^lfo%d+_delay$") ~= nil or k:match("^lfo%d+_fade$") ~= nil
+    or k:match("^lfo%d+_wave$") ~= nil or k:match("^lfo%d+_pitch$") ~= nil or k:match("^lfo%d+_volume$") ~= nil
+    or k:match("^lfo%d+_cutoff$") ~= nil or k:match("^lfo%d+_pitch_oncc1$") ~= nil
+    or k:match("^lfo%d+_volume_oncc1$") ~= nil or k:match("^lfo%d+_cutoff_oncc1$") ~= nil
+end
+M.is_shape = is_shape
+-- the region's filter / envelope / LFO tokens ({ fil = "...", feg = "...", lfo = { "...", ... } }), or nil
+local function shape_of(r, oo, report)
+  local function fmtn(v)
+    if v == math.floor(v) and math.abs(v) < 1e15 then return string.format("%d", v) end
+    return (string.format("%.6f", v):gsub("0+$", ""):gsub("%.$", ""))
+  end
+  local function n(k, d) local v = tonumber(r[k]); if v == nil or v ~= v or v == math.huge or v == -math.huge then return d end; return v end
+  local out = {}
+  local cut = n("cutoff", nil)
+  if cut and cut > 0 then
+    local ty = tostring(r.fil_type or "lpf_2p"):lower()
+    local code = FIL_TYPE[ty]
+    if not code then report.ignored["fil_type=" .. ty] = (report.ignored["fil_type=" .. ty] or 0) + 1
+    else
+      if FIL_NEAR[ty] then report.filter_nearest = (report.filter_nearest or 0) + 1 end
+      local cc, ccd = 0, 0
+      local ks = {}
+      for k, _ in pairs(r) do local c = k:match("^cutoff_oncc(%d+)$") or k:match("^cutoff_cc(%d+)$"); if c then ks[#ks + 1] = tonumber(c) end end
+      table.sort(ks)
+      if ks[1] and ks[1] >= 1 and ks[1] <= 127 then
+        cc = ks[1]; ccd = n("cutoff_oncc" .. cc, nil) or n("cutoff_cc" .. cc, 0)
+        if #ks > 1 then report.cutoff_cc_dropped = (report.cutoff_cc_dropped or 0) + #ks - 1 end
+      end
+      local kc = r.fil_keycenter ~= nil and M.parse_note(r.fil_keycenter, oo) or 60
+      out.fil = table.concat({ code, fmtn(math.min(20000, cut)), fmtn(n("resonance", 0)), fmtn(n("fil_keytrack", 0)),
+                               kc or 60, fmtn(n("fil_veltrack", 0)), fmtn(n("fil_random", 0)), cc, fmtn(ccd) }, ",")
+      local d, vd = n("fileg_depth", 0), n("fileg_vel2depth", 0)
+      if d ~= 0 or vd ~= 0 then
+        out.feg = table.concat({ fmtn(n("fileg_delay", 0)), fmtn(n("fileg_attack", 0)), fmtn(n("fileg_hold", 0)),
+                                 fmtn(n("fileg_decay", 0)), fmtn(n("fileg_sustain", 100)), fmtn(n("fileg_release", 0.001)),
+                                 fmtn(d), fmtn(vd), fmtn(n("fileg_vel2attack", 0)), fmtn(n("fileg_vel2decay", 0)),
+                                 fmtn(n("fileg_vel2release", 0)) }, ",")
+      end
+    end
+  end
+  -- velocity on the loudness curve and the amp envelope's times
+  local vp, va, vdc, vr = n("amp_velpow", 0), n("ampeg_vel2attack", 0), n("ampeg_vel2decay", 0), n("ampeg_vel2release", 0)
+  if vp > 0 or va ~= 0 or vdc ~= 0 or vr ~= 0 then
+    out.vel = table.concat({ fmtn(math.max(0, vp)), fmtn(va), fmtn(vdc), fmtn(vr) }, ",")
+  end
+  -- the LFOs: v1 first (pitchlfo / amplfo / fillfo), then a v2 LFO fills a slot still free
+  local slots = {}
+  local function cc1(base) return n(base .. "_depthcc1", nil) or n(base .. "_depth_oncc1", 0) end
+  for s, base in ipairs({ "pitchlfo", "amplfo", "fillfo" }) do
+    local f, dp, c1 = n(base .. "_freq", 0), n(base .. "_depth", 0), cc1(base)
+    if f > 0 and (dp ~= 0 or c1 ~= 0) then
+      slots[s - 1] = table.concat({ s - 1, 0, fmtn(f), fmtn(dp), fmtn(n(base .. "_delay", 0)), fmtn(n(base .. "_fade", 0)), fmtn(c1) }, ",")
+    end
+  end
+  local ids = {}
+  for k, _ in pairs(r) do local i = k:match("^lfo(%d+)_freq$"); if i then ids[#ids + 1] = i end end
+  table.sort(ids, function(a, b) return tonumber(a) < tonumber(b) end)
+  for _, i in ipairs(ids) do
+    local p = "lfo" .. i .. "_"
+    local f = n(p .. "freq", 0)
+    local w = n(p .. "wave", 0)               -- SFZ v2: 0 triangle (the default, measured against sfizz), 1 sine;
+    local wave = (w == 0) and 1 or 0          -- the other shapes (pulse, square, ramps) play as a sine here
+    if f > 0 then
+      for s, tgt in ipairs({ "pitch", "volume", "cutoff" }) do
+        local dp, c1 = n(p .. tgt, 0), n(p .. tgt .. "_oncc1", 0)
+        if dp ~= 0 or c1 ~= 0 then
+          if slots[s - 1] then report.lfo_dropped = (report.lfo_dropped or 0) + 1
+          else
+            slots[s - 1] = table.concat({ s - 1, wave, fmtn(f), fmtn(dp), fmtn(n(p .. "delay", 0)), fmtn(n(p .. "fade", 0)), fmtn(c1) }, ",")
+          end
+        end
+      end
+    end
+  end
+  out.lfo = {}
+  for s = 0, 2 do if slots[s] then out.lfo[#out.lfo + 1] = slots[s] end end
+  if not out.fil and not out.feg and #out.lfo == 0 and not out.vel then return nil end
+  return out
+end
+
 -- names the player shows (format 2): a controller's name, a keyswitch's name
 local function is_label(k) return k:match("^label_cc%d+$") ~= nil or k:match("^label_key%d+$") ~= nil or k == "sw_label" end
 
@@ -481,8 +608,8 @@ local function resolve(r, ctx, report)
   local out = {}
   -- recognised opcode bookkeeping
   for k, _ in pairs(r) do
-    if k ~= "_control" and not FIELD[k] and not SPECIAL[k] and not k:match("^locc%d+$") and not k:match("^hicc%d+$") and not k:match("^amp_velcurve_%d+$")
-       and not cc_mod_of(k) and not is_cc_aux(k) and not is_xf(k) and not is_label(k) then
+    if k:sub(1, 1) ~= "_" and not FIELD[k] and not SPECIAL[k] and not k:match("^locc%d+$") and not k:match("^hicc%d+$") and not k:match("^amp_velcurve_%d+$")
+       and not cc_mod_of(k) and not is_cc_aux(k) and not is_xf(k) and not is_label(k) and not is_shape(k) then
       local base = k:gsub("%d+$", "N")
       report.ignored[base] = (report.ignored[base] or 0) + 1
     end
@@ -591,6 +718,11 @@ local function resolve(r, ctx, report)
   out._mods = mods
   if amp <= 0.000001 then return nil, "silent_at_start" end   -- e.g. an "extra mics" control that starts at 0
   if amp ~= 1 then out.volume = out.volume + 20 * math.log(amp, 10) end
+  for _, k in ipairs({ "global_volume", "master_volume", "group_volume" }) do
+    local hv = tonumber(r[k])
+    if hv and hv == hv and math.abs(hv) < 1000 then out.volume = out.volume + hv
+    elseif r[k] ~= nil then report.bad_values[k] = (report.bad_values[k] or 0) + 1 end
+  end
   if type(out.offset) == "number" then out.offset = math.max(0, math.floor(out.offset + 0.5)) end
   -- ranges and words
   local function clamp(name, lo, hi) local x = out[name]; if x < lo then x = lo end; if x > hi then x = hi end; out[name] = x end
@@ -689,6 +821,8 @@ local function resolve(r, ctx, report)
   if out.lokey > out.hikey or out.lovel > out.hivel then return nil, "empty_range" end
   if out.lokey < 0 and out.hikey < 0 then return nil, "never_triggered" end
   if out["end"] == -1 then return nil, "end_minus_1" end
+  out._shape = shape_of(r, oo, report)   -- the filter, its envelope, the LFOs (nil = none)
+  if out._shape then report.shaped = (report.shaped or 0) + 1 end
   return out
 end
 
@@ -699,6 +833,61 @@ local function fmt(v)
     return (string.format("%.6f", v):gsub("0+$", ""):gsub("%.$", ""))
   end
   return tostring(v)
+end
+
+-- ── programs: a GM bank in one file (loprog / hiprog, MIDI program numbers 0-127) ──────────────────────────
+-- Each distinct (section, loprog..hiprog) is one program; a section is a <global> part of the file (a combined bank:
+-- the melodic programs, then the drum kits, both starting at program 0). Returns a list, in file order, of
+--   { part = n, lo = p, hi = p2, name = "..." }   (name: master_label / group_label without a leading "1:1 - ",
+--   else global_label + the program number), or an empty list when no region names a program (an ordinary
+--   instrument: convert it whole). Errors reading the file -> empty list (convert reports them).
+local function prog_name(r, lo)
+  local nm = r.master_label or r.group_label
+  if nm then nm = trim(tostring(nm)):gsub("^%d+:%d+%s*%(?%d*%)?%s*%-%s*", "") end
+  if not nm or nm == "" then nm = trim(tostring(r.global_label or "Program")) .. " " .. (lo + 1) end
+  return nm
+end
+local function prog_range(r)
+  local lo, hi = num(r.loprog), num(r.hiprog)
+  if lo == nil and hi == nil then return nil end
+  lo = math.max(0, math.min(127, math.floor(lo or 0))); hi = math.max(0, math.min(127, math.floor(hi or 127)))
+  return lo, hi
+end
+local function list_programs(regs)
+  local out, seen = {}, {}
+  for _, r in ipairs(regs) do
+    local lo, hi = prog_range(r)
+    if lo and lo <= hi then
+      local key = r._part .. ":" .. lo .. ":" .. hi
+      if not seen[key] then seen[key] = true; out[#out + 1] = { part = r._part, lo = lo, hi = hi, name = prog_name(r, lo) } end
+    end
+  end
+  return out
+end
+-- the section that is a drum bank (channel 10): its global_label, or every program name in it, says drums / kit /
+-- percussion; 0 = none
+local function drum_part(regs, progs)
+  local parts = {}
+  for _, pg in ipairs(progs) do parts[pg.part] = parts[pg.part] or { all = true } end
+  for _, pg in ipairs(progs) do
+    if not pg.name:lower():find("kit") and not pg.name:lower():find("drum") and not pg.name:lower():find("perc") then parts[pg.part].all = false end
+  end
+  for _, r in ipairs(regs) do
+    local pr = parts[r._part]
+    if pr and pr.label == nil then pr.label = tostring(r.global_label or ""):lower() end
+  end
+  local n = 0; for _ in pairs(parts) do n = n + 1 end
+  if n < 2 then return 0 end         -- one section: nothing to tell apart
+  for part, pr in pairs(parts) do
+    if (pr.label or ""):find("drum") or (pr.label or ""):find("perc") or (pr.label or ""):find("kit") or pr.all then return part end
+  end
+  return 0
+end
+function M.programs(sfz_path)
+  local report = { errors = {}, ignored = {}, bad_values = {}, headers_skipped = {}, skipped = {}, top_dir = dirname(sfz_path) }
+  local text = expand(sfz_path, report, {}, 0, {})
+  if not text or report.fatal then return {} end
+  return list_programs((collect(tokenize(text), report)))
 end
 
 function M.convert(sfz_path, out_path, opts)
@@ -713,6 +902,24 @@ function M.convert(sfz_path, out_path, opts)
   if not text or report.fatal then return res end
   local toks = tokenize(text)
   local regs, _, curve_list = collect(toks, report)
+  -- opts.program = one entry of M.programs: only its section's regions whose program range takes in its program
+  -- (a region naming no program plays in every program of its section)
+  if opts.program then
+    local pg, keep = opts.program, {}
+    for _, r in ipairs(regs) do
+      local lo, hi = prog_range(r)
+      if r._part == pg.part and (lo == nil or (lo <= pg.lo and pg.lo <= hi)) then keep[#keep + 1] = r end
+    end
+    regs = keep
+  end
+  -- a whole bank (programs named, none picked): one instrument, every region tagged with its program (format 3)
+  local bank = nil
+  if not opts.program then
+    local progs = list_programs(regs)
+    -- (one range taking in every program is an ordinary instrument that merely says so: no bank)
+    if #progs > 1 or (#progs == 1 and (progs[1].lo > 0 or progs[1].hi < 127)) then bank = { progs = progs, drums = drum_part(regs, progs) } end
+  end
+  res.bank = bank
   local ctx = { top_dir = dirname(sfz_path), audio = {}, cc_mode = opts.cc_mode == "fixed" and "fixed" or "live",
                 curves = build_curves(curve_list), used_curves = {} }
   local first_control = nil
@@ -722,15 +929,22 @@ function M.convert(sfz_path, out_path, opts)
   local klab = {}                     -- the SFZ's own key names (label_keyN)
   for _, r in ipairs(regs) do
     if first_control == nil then first_control = r._control end
-    for _, t in ipairs({ r._control or {}, r }) do
+    -- a bank: controller names from every program, key names only from its drum kits (a piano keeps note names)
+    local keys_ok = not bank or r._part == bank.drums
+    for ti, t in ipairs({ r._control or {}, r }) do
       for k, v in pairs(t) do
         local n = k:match("^label_cc(%d+)$")
         if n and tonumber(n) <= 127 and labels[tonumber(n)] == nil then labels[tonumber(n)] = trim(tostring(v)) end
-        local kn = k:match("^label_key(%d+)$")
+        local kn = (ti == 1 or keys_ok) and k:match("^label_key(%d+)$")
         if kn and tonumber(kn) <= 127 and klab[tonumber(kn)] == nil then klab[tonumber(kn)] = trim(tostring(v)):sub(1, 24) end
       end
     end
     local o, why, p = resolve(r, ctx, report)
+    if o and bank then
+      local lo, hi = prog_range(r)
+      if lo then o._prog = { r._part, lo, hi } end
+      o._part = r._part
+    end
     if o then
       if r.sw_label and o.sw_last >= 0 and swl[o.sw_last] == nil then swl[o.sw_last] = trim(tostring(r.sw_label)) end
       outs[#outs + 1] = o
@@ -763,13 +977,13 @@ function M.convert(sfz_path, out_path, opts)
     return norm_path(rl.to) .. "/" .. rest
   end
   local L = {}
-  L[#L + 1] = string.format("// gumbo-flat %d", M.FORMAT_VERSION)
+  L[#L + 1] = string.format("// gumbo-flat %d", bank and M.BANK_FORMAT_VERSION or M.FORMAT_VERSION)
   L[#L + 1] = "// source: " .. norm_path(sfz_path)
   L[#L + 1] = string.format("// regions %d of %d; sample files %d; RAM when loaded %.1f MB", #outs, #regs,
                             report.sample_files, report.ram_mb)
   local fields = {}
   for _, f in ipairs(M.FIELDS) do fields[#fields + 1] = f[1] end
-  L[#L + 1] = "// fields: sample " .. table.concat(fields, " ") .. " [amp_velcurve_N...] [loccN hiccN...] [mod=T,CC,A,B...]"
+  L[#L + 1] = "// fields: sample " .. table.concat(fields, " ") .. " [amp_velcurve_N...] [loccN hiccN...] [mod=T,CC,A,B...] [prog fil feg lfo vel tokens]"
   -- starting controller values (set_ccN, set_hdccN scaled to 0-127), so live CC gates begin where the SFZ meant
   local sets = {}
   for k, v in pairs(first_control or {}) do
@@ -788,13 +1002,25 @@ function M.convert(sfz_path, out_path, opts)
   end
   -- format 2: names for the player's face, and the custom curves the live controllers use
   local function sorted_keys(t) local ks = {}; for n in pairs(t) do ks[#ks + 1] = n end; table.sort(ks); return ks end
+  -- format 3: the bank's programs, in file order, and its drum section (names cut to 64 characters for the face)
+  if bank then
+    if bank.drums > 0 then L[#L + 1] = "// drums " .. bank.drums end
+    for _, pg in ipairs(bank.progs) do
+      L[#L + 1] = "// program " .. pg.part .. " " .. pg.lo .. " " .. pg.hi .. " " .. pg.name:gsub("[%c|]", " "):gsub("^[<>]+", ""):sub(1, 64)
+    end
+  end
   for _, n in ipairs(sorted_keys(labels)) do
     if labels[n] ~= "" then L[#L + 1] = "// label_cc " .. n .. " " .. labels[n] end
   end
   for _, n in ipairs(sorted_keys(swl)) do
     if swl[n] ~= "" then L[#L + 1] = "// sw_label " .. n .. " " .. swl[n] end
   end
-  if next(klab) == nil then klab = drum_key_names(outs) end
+  if next(klab) == nil then
+    -- a bank: key names only from its drum kits (a piano's keys keep their note names)
+    local src = outs
+    if bank then src = {}; for _, o in ipairs(outs) do if bank.drums > 0 and o._part == bank.drums then src[#src + 1] = o end end end
+    klab = #src > 0 and drum_key_names(src) or {}
+  end
   report.key_names = 0
   for _, n in ipairs(sorted_keys(klab)) do
     if klab[n] ~= "" then L[#L + 1] = "// label_key " .. n .. " " .. klab[n]; report.key_names = report.key_names + 1 end
@@ -813,6 +1039,14 @@ function M.convert(sfz_path, out_path, opts)
     for _, p in ipairs(o._velcurve or {}) do parts[#parts + 1] = "amp_velcurve_" .. p[1] .. "=" .. fmt(p[2]) end
     for _, gt in ipairs(o._gates or {}) do parts[#parts + 1] = "locc" .. gt[1] .. "=" .. gt[2] .. " hicc" .. gt[1] .. "=" .. gt[3] end
     for _, md in ipairs(o._mods or {}) do parts[#parts + 1] = "mod=" .. md[1] .. "," .. md[2] .. "," .. fmt(md[3]) .. "," .. fmt(md[4]) end
+    if o._prog then parts[#parts + 1] = "prog=" .. o._prog[1] .. "," .. o._prog[2] .. "," .. o._prog[3] end
+    local sh = o._shape
+    if sh then
+      if sh.fil then parts[#parts + 1] = "fil=" .. sh.fil end
+      if sh.feg then parts[#parts + 1] = "feg=" .. sh.feg end
+      for _, l in ipairs(sh.lfo) do parts[#parts + 1] = "lfo=" .. l end
+      if sh.vel then parts[#parts + 1] = "vel=" .. sh.vel end
+    end
     L[#L + 1] = table.concat(parts, " ")
   end
   L[#L + 1] = "// end"

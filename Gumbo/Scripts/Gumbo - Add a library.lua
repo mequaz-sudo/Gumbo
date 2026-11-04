@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
--- Gumbo - Add a library: pick any .sfz inside an SFZ library. Every instrument in that file's folder and the folders
+-- Gumbo - Add a library: pick any .sfz inside an SFZ library (or a SoundFont .sf2: that one file is added, unpacked
+-- into the import folder as one instrument or one bank). Every instrument in that file's folder and the folders
 -- below it is converted into Gumbo's import folder (REAPER's Data/EON_Gumbo/Imported; the samples stay where they
 -- are) and added to Gumbo's browser, which open Gumbos pick up by themselves. A file another one pulls in with
 -- #include is a piece, not an instrument (gumbo_sfz.lua's rule). One instrument per pass, so REAPER stays usable
@@ -9,10 +10,11 @@ local r = reaper
 local _, own = r.get_action_context()
 local dir = own:match("^(.*)[\\/]") or "."
 local G = dofile(dir .. "/gumbo_sfz.lua")
+local SF2 = dofile(dir .. "/gumbo_sf2.lua")
 local X = dofile(dir .. "/gumbo_index.lua")
 local C = dofile(dir .. "/gumbo_helper_core.lua")
 
-local ok, pick = r.GetUserFileNameForRead("", "Gumbo: pick any .sfz inside the library to add", "sfz")
+local ok, pick = r.GetUserFileNameForRead("", "Gumbo: pick any .sfz inside the library (or a .sf2 SoundFont) to add", "")
 if not ok or not pick or pick == "" then return end
 pick = pick:gsub("\\", "/")
 local lib = pick:match("^(.*)/[^/]+$") or "."
@@ -46,7 +48,8 @@ end
 
 -- the library's .sfz / .inc / .sfzh files, read for their #include lines; the converter decides which are instruments
 local files = {}
-each_file(lib, function(p)
+local is_sf2 = pick:lower():match("%.sf2$") ~= nil      -- a SoundFont is one file: no folder walk
+if not is_sf2 then each_file(lib, function(p)
   local low = p:lower()
   if low:match("%.sfz$") or low:match("%.inc$") or low:match("%.sfzh$") then
     local f = io.open(p, "rb")
@@ -54,8 +57,8 @@ each_file(lib, function(p)
     if f then f:close() end
     files[#files + 1] = { path = p, text = text }
   end
-end)
-local todo = G.instrument_files(files, lib)
+end) end
+local todo = is_sf2 and { pick } or G.instrument_files(files, lib)
 if #todo == 0 then
   r.MB("No SFZ instrument was found in\n" .. lib, "Gumbo - Add a library", 0)
   return
@@ -66,6 +69,7 @@ if r.MB(("Add %d instrument(s) from\n%s\n\nto Gumbo's browser?"):format(#todo, l
 end
 local ENV = {
   mkdir = function(d) r.RecursiveCreateDirectory(d, 0) end,
+  sf2 = SF2,
   find_imports = function(root)
     local out = {}
     each_file(root, function(p) if p:lower():sub(-10) == ".gumbo.txt" and not p:match("/%.[^/]*$") then out[#out + 1] = p end end)

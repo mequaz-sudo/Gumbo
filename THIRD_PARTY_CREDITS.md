@@ -1,12 +1,9 @@
 # Third-party credits
 
-- **Versilian Studios**: the starter sounds and the orchestra are VSCO 2 Community Edition, released under CC0 1.0.
-  EON Studios converted them for Gumbo, losslessly; Versilian's licence and readme sit beside the samples. Thank you,
-  Versilian.
-- **The Discord SFZ GM Bank** (Jeff Learman, kinwie and contributors): the Gumbo GM sounds, each under its own
-  licence (`GM/Data/EON_Gumbo/Library/Discord GM/LICENSES.txt`): the acoustic grand is the **Salamander Grand Piano**
-  by **Alexander Holm** (CC-BY); the others are CC0 (Versilian Studios, Greg Sullivan, Jeff Learman, Karoryfer,
-  Dr. Narayan Bhagawan Raikar).
+- **MuseScore General** (S. Christian Collins; from FluidR3 by Frank Wen and FluidR3Mono by Michael Cowgill; Temple
+  Blocks by Ethan Winer, Drumline Cymbals by Michael Schorsch; MIT): the Gumbo GM sounds, converted for Gumbo by EON
+  Studios. Its acknowledgements and copyright notices are in
+  `GM/Data/EON_Gumbo/Library/MuseScore General/MuseScore_General_License.md`, beside the sounds.
 - **sfizz** (the SFZ engine by the SFZ Tools developers, BSD 2-Clause): Gumbo's code is EON Studios' own, and its
   playback was measured against sfizz 1.2.3 and matched to it. The envelope curves, velocity, panning and default
   release follow sfizz's published source, acknowledged here as the reference.

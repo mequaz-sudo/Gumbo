@@ -15,7 +15,7 @@
 // their block; CC gates are checked at note-on.
 
 @init
-GB_VOI = 1600000; GB_VS = 40;          // 68 slots x 40 = 2720 cells, clear of GB_NT
+GB_VOI = 1600000; GB_VS = 112;         // 68 slots x 112 = 7616 cells, clear of GB_NT
 GB_MAXV = 64;                        // playing voices
 GB_FADES = 4;                        // extra slots a stolen voice fades out in
 GB_NT = 1610000;                     // per note: +0 held, +128 velocity, +256 note-on time, +384 waiting for pedal-up
@@ -28,7 +28,36 @@ GBV_RELIN = 32;                      // > 0: release this many samples (+1) into
 // format 2, live controllers: the voice's level before them, its region pan, the left/right gains they aim at (the
 // render glides GL/GR there, so a moving controller never clicks), their pitch in cents, and how many it has
 GBV_BLIN = 33; GBV_BPAN = 34; GBV_TGL = 35; GBV_TGR = 36; GBV_MCENT = 37; GBV_MODS = 38;
-GBV_GLS = 39;                        // glide: semitones still to slide (0 = at pitch); the last cell of GB_VS
+GBV_GLS = 39;                        // glide: semitones still to slide (0 = at pitch)
+// the tone filter, its envelope and the LFOs (2026-11-03; the region's GBR_FTYPE ..): set at launch (gb_shape_launch),
+// moved per block by the controllers (gb_shape_block), run per sample (gb_shape_tick)
+GBV_SHP = 40;                        // 1 = the region has a filter / filter envelope / LFO
+GBV_FT = 41; GBV_FK = 42;            // filter type (GBR_FTYPE), k = 1 / Q
+GBV_FC = 43; GBV_FCB = 44;           // cutoff in absolute cents (8.176 Hz = 0): the note's own, + its controller (per block)
+GBV_S1L = 45; GBV_S2L = 46; GBV_S1R = 47; GBV_S2R = 48;   // filter state, first stage
+GBV_T1L = 49; GBV_T2L = 50; GBV_T1R = 51; GBV_T2R = 52;   // second stage (4-pole)
+GBV_EGD = 53; GBV_EGE = 54; GBV_EGST = 55; GBV_EGCNT = 56; // filter envelope: depth cents, value, stage, counter
+GBV_EGAI = 57; GBV_EGDC = 58; GBV_EGSL = 59; GBV_EGRC = 60; GBV_EGHN = 61;   // attack step, decay / release coefs, sustain, hold
+GBV_LFO = 62; GBV_LFS = 5;           // 3 LFOs x 5: phase, step, delay left (samples), fade gain, fade step
+GBV_PLD = 77; GBV_ALD = 78; GBV_FLD = 79;   // LFO depths now (pitch cents, amp dB, filter cents; per block)
+// a packed instrument (gb_load, 2026-11-04): the voice's cache of GBV_PKN cells unpacked from cell GBV_PKQ on
+// (-1 = empty; emptied at every launch, so a voice never reads another sample's or another load's points)
+GBV_PKQ = 80; GBV_PKC = 81; GBV_PKN = 8;    // 81 .. 104: 8 cells x 3 points
+// the per-sample lookups (no exp / tan / pow in @sample): the filter's g = tan(pi f / srate) by cent, a pitch ratio
+// by cent, a gain by tenth of a dB. Built in @init (it runs again when the sample rate changes).
+GB_LKG = 200000; GB_LKG_C0 = -3700; GB_LKG_ST = 2; GB_LKG_N = 8651;   // -3700 .. 13600 cents (about 1 Hz .. 21 kHz)
+GB_LKR = 210000; GB_LKR_C0 = -2400; GB_LKR_N = 4801;                 // -2400 .. 2400 cents, 1 a cell
+GB_LKA = 216000; GB_LKA_D0 = -100; GB_LKA_N = 1241;                  // -100 .. +24 dB, 0.1 a cell
+function gb_tables_build() local(i, f) (
+  i = 0;
+  loop(GB_LKG_N,
+    f = min(min(20000, 0.49 * srate), 8.175799 * 2 ^ ((GB_LKG_C0 + i * GB_LKG_ST) / 1200));
+    GB_LKG[i] = tan($pi * f / srate); i += 1;
+  );
+  i = 0; loop(GB_LKR_N, GB_LKR[i] = 2 ^ ((GB_LKR_C0 + i) / 1200); i += 1; );
+  i = 0; loop(GB_LKA_N, GB_LKA[i] = 10 ^ ((GB_LKA_D0 + i * 0.1) / 20); i += 1; );
+);
+gb_tables_build(); gb_tab_sr = srate;
 GB_MOD_GLIDE = 0.004;                // per sample: about 5 ms at 48 kHz
 GB_ST_ATT = 1; GB_ST_HOLD = 2; GB_ST_DEC = 3; GB_ST_SUS = 4; GB_ST_REL = 5; GB_ST_FADE = 6;
 GB_QUIET_T = 0.0001;                 // envelope level a releasing voice ends at (-80 dB)
@@ -59,6 +88,122 @@ function gb_coef60(sec) ( exp(-6.907755 / (max(sec, 0.0005) * srate)) );   // re
 // decay, release and off_time as sfizz runs them (ADSREnvelope.cpp secondsToExpRate, 1.2.3): 9 time constants
 // (-78 dB) over the given time, measured equal against sfizz_render (.dev_tests/gumbo_vs_sfizz.py)
 function gb_coef_sfz(sec) ( exp(-9 / (max(sec, 0.0005) * srate)) );
+
+// ── the tone filter, its envelope and the LFOs (2026-11-03; the region side: gb_sfz GBR_FTYPE ..) ──
+// sfizz's rules (Research .docs/research/Gumbo_Tone_Filter_Research_2026-11-03.md): cutoff x keytrack x veltrack x
+// random x a controller, + the filter envelope (linear attack, decay / release as the amp envelope's) + the filter LFO;
+// Q = 10^(resonance / 20). The filter is Cytomic's trapezoidal state-variable filter (Andrew Simper's public paper):
+// for 2-pole low / high / band / notch it has the response of the RBJ biquads sfizz and FluidSynth use, and it stays
+// clean when the cutoff moves every sample. 1-pole = the trapezoidal one-pole; 4-pole = two 2-pole stages.
+// the lookups (x between cells: a straight line)
+function gb_lkg(c) local(x, i) (
+  x = max(0, min(GB_LKG_N - 1.001, (c - GB_LKG_C0) / GB_LKG_ST)); i = x | 0;
+  GB_LKG[i] + (GB_LKG[i + 1] - GB_LKG[i]) * (x - i);
+);
+function gb_lkr(c) local(x, i) ( x = max(0, min(GB_LKR_N - 1.001, c - GB_LKR_C0)); i = x | 0; GB_LKR[i] + (GB_LKR[i + 1] - GB_LKR[i]) * (x - i); );
+function gb_lka(db) local(x, i) ( x = max(0, min(GB_LKA_N - 1.001, (db - GB_LKA_D0) * 10)); i = x | 0; GB_LKA[i] + (GB_LKA[i + 1] - GB_LKA[i]) * (x - i); );
+// one 2-pole stage on x; s = its two state cells; mode 0 low, 1 high, 2 band (0 dB peak), 3 notch
+function gb_svf(x, s, mode, kk, a1, a2, a3) local(v1, v2, v3) (
+  v3 = x - s[1]; v1 = a1 * s[0] + a2 * v3; v2 = s[1] + a2 * s[0] + a3 * v3;
+  s[0] = 2 * v1 - s[0]; s[1] = 2 * v2 - s[1];
+  mode == 0 ? v2 : mode == 1 ? x - kk * v1 - v2 : mode == 2 ? kk * v1 : x - kk * v1;
+);
+// the controllers' part, once per block (and at launch): the cutoff's controller, the LFO depths with the mod wheel
+function gb_shape_block(v) local(r, l) (
+  r = GB_REG + v[GBV_REG] * GB_RS;
+  v[GBV_FCB] = v[GBV_FC] + (r[GBR_FCC] >= 0 ? gb_cc[r[GBR_FCC]] / 127 * r[GBR_FCCD] : 0);
+  l = r + GBR_LFO;                 v[GBV_PLD] = l[GBL_DEPTH] + gb_cc[1] / 127 * l[GBL_CCD];
+  l = r + GBR_LFO + GBR_LFOS;      v[GBV_ALD] = l[GBL_DEPTH] + gb_cc[1] / 127 * l[GBL_CCD];
+  l = r + GBR_LFO + 2 * GBR_LFOS;  v[GBV_FLD] = l[GBL_DEPTH] + gb_cc[1] / 127 * l[GBL_CCD];
+  // 1 = something to run per sample, 2 = idle for now (a SoundFont voice: its mod wheel vibrato at 0 costs nothing)
+  v[GBV_SHP] = v[GBV_FT] > 0 || v[GBV_EGD] != 0 || ((r + GBR_LFO)[GBL_ON] && v[GBV_PLD] != 0)
+               || ((r + GBR_LFO + GBR_LFOS)[GBL_ON] && v[GBV_ALD] != 0) ? 1 : 2;
+);
+// a new voice of region r (note n, velocity vel)
+function gb_shape_launch(v, r, n, vel) local(k, l, o, vv, at, dc) (
+  v[GBV_SHP] = 1; vv = vel / 127;
+  v[GBV_FT] = r[GBR_FTYPE]; v[GBV_FK] = 10 ^ (-r[GBR_FRES] / 20);
+  v[GBV_FC] = 1200 * log(r[GBR_FCUT] / 8.175799) / log(2) + r[GBR_FKT] * (n - r[GBR_FKC]) + r[GBR_FVT] * vv
+              + (r[GBR_FRND] > 0 ? rand(r[GBR_FRND]) : 0);
+  v[GBV_EGD] = r[GBR_EGD] + r[GBR_EGVD] * vv;
+  v[GBV_EGD] != 0 ? (
+    v[GBV_EGE] = 0; v[GBV_EGCNT] = (r[GBR_EGDLY] * srate) | 0; v[GBV_EGST] = v[GBV_EGCNT] > 0 ? 0 : 1;
+    // the times, with their vel2 parts (sfizz: seconds x velocity / 127 added; below 0 = instant)
+    at = r[GBR_EGATT] + r[GBR_EGVA] * vv; dc = r[GBR_EGDEC] + r[GBR_EGVDC] * vv;
+    v[GBV_EGAI] = at > 0 ? 1 / (at * srate) : 1;
+    v[GBV_EGHN] = (r[GBR_EGHOLD] * srate) | 0; v[GBV_EGSL] = r[GBR_EGSUS];
+    v[GBV_EGDC] = dc > 0 ? gb_coef_sfz(dc) : 0;
+    v[GBV_EGRC] = gb_coef_sfz(max(r[GBR_EGREL] + r[GBR_EGVR] * vv, 0.001));
+  );
+  k = 0;
+  loop(3,
+    l = r + GBR_LFO + k * GBR_LFOS; o = v + GBV_LFO + k * GBV_LFS;
+    l[GBL_ON] ? (
+      o[0] = 0; o[1] = l[GBL_FREQ] / srate; o[2] = (l[GBL_DELAY] * srate) | 0;
+      l[GBL_FADE] > 0 ? ( o[3] = 0; o[4] = 1 / (l[GBL_FADE] * srate); ) : ( o[3] = 1; o[4] = 0; );
+    );
+    k += 1;
+  );
+  gb_shape_block(v);
+);
+// one sample of a shaped voice: the LFOs and the filter envelope move, gb_yl / gb_yr go through the filter and the
+// amp LFO; returns the pitch LFO's rate factor (1 = none)
+function gb_shape_tick(v) local(r, k, l, o, x, y, lv0, lv1, lv2, st, e, ft, c, g, kk, a1, a2, a3, md, pm)
+(
+  r = GB_REG + v[GBV_REG] * GB_RS;
+  lv0 = lv1 = lv2 = 0; k = 0;
+  loop(3,
+    l = r + GBR_LFO + k * GBR_LFOS;
+    l[GBL_ON] ? (
+      o = v + GBV_LFO + k * GBV_LFS;
+      o[2] > 0 ? o[2] -= 1 : (
+        x = o[0];
+        // sine: sfizz's parabolic one; triangle: the SoundFont's. Both start at 0, rising.
+        y = l[GBL_WAVE] ? ( x < 0.25 ? 4 * x : x < 0.75 ? 2 - 4 * x : 4 * x - 4 )
+                        : ( x < 0.5 ? 16 * x * (0.5 - x) : -16 * (x - 0.5) * (1 - x) );
+        y *= o[3]; o[3] < 1 ? o[3] = min(1, o[3] + o[4]);
+        k == 0 ? lv0 = y : k == 1 ? lv1 = y : lv2 = y;
+        x += o[1]; x >= 1 ? x -= 1; o[0] = x;
+      );
+    );
+    k += 1;
+  );
+  // the filter envelope: delay, attack, hold, decay, sustain; released with the voice, from where it is
+  v[GBV_EGD] != 0 ? (
+    st = v[GBV_EGST]; e = v[GBV_EGE];
+    v[GBV_ST] >= GB_ST_REL && st < 5 ? st = 5;
+    st == 0 ? ( v[GBV_EGCNT] -= 1; v[GBV_EGCNT] <= 0 ? st = 1; )
+    : st == 1 ? ( e += v[GBV_EGAI]; e >= 1 ? ( e = 1; v[GBV_EGHN] > 0 ? ( st = 2; v[GBV_EGCNT] = v[GBV_EGHN]; ) : st = 3; ); )
+    : st == 2 ? ( v[GBV_EGCNT] -= 1; v[GBV_EGCNT] <= 0 ? st = 3; )
+    : st == 3 ? ( e *= v[GBV_EGDC]; e <= v[GBV_EGSL] + 0.001 ? ( e = v[GBV_EGSL]; st = 4; ); )
+    : st == 5 ? e *= v[GBV_EGRC];
+    v[GBV_EGE] = e; v[GBV_EGST] = st;
+  );
+  ft = v[GBV_FT];
+  ft > 0 ? (
+    c = v[GBV_FCB] + v[GBV_EGE] * v[GBV_EGD] + lv2 * v[GBV_FLD];
+    g = gb_lkg(c);
+    ft <= 2 ? (                        // 1-pole: low, or high (the input less the low)
+      a1 = g / (1 + g);
+      x = (gb_yl - v[GBV_S1L]) * a1; y = x + v[GBV_S1L]; v[GBV_S1L] = y + x; gb_yl = ft == 1 ? y : gb_yl - y;
+      v[GBV_NCH] == 1 ? gb_yr = gb_yl : (
+        x = (gb_yr - v[GBV_S1R]) * a1; y = x + v[GBV_S1R]; v[GBV_S1R] = y + x; gb_yr = ft == 1 ? y : gb_yr - y;
+      );
+    ) : (
+      kk = v[GBV_FK]; a1 = 1 / (1 + g * (g + kk)); a2 = g * a1; a3 = g * a2;
+      md = ft == 3 || ft == 7 ? 0 : ft == 4 || ft == 8 ? 1 : ft == 5 ? 2 : 3;
+      gb_yl = gb_svf(gb_yl, v + GBV_S1L, md, kk, a1, a2, a3);
+      ft >= 7 ? gb_yl = gb_svf(gb_yl, v + GBV_T1L, md, kk, a1, a2, a3);
+      v[GBV_NCH] == 1 ? gb_yr = gb_yl : (
+        gb_yr = gb_svf(gb_yr, v + GBV_S1R, md, kk, a1, a2, a3);
+        ft >= 7 ? gb_yr = gb_svf(gb_yr, v + GBV_T1R, md, kk, a1, a2, a3);
+      );
+    );
+  );
+  lv1 != 0 ? ( y = gb_lka(lv1 * v[GBV_ALD]); gb_yl *= y; gb_yr *= y; );
+  pm = lv0 != 0 ? gb_lkr(lv0 * v[GBV_PLD]) : 1;
+  pm;
+);
 
 // a voice's playback rate: its own semitones + pitch bend + TUNE + live controllers (cents) + glide still to go
 function gb_voice_inc(v) (
@@ -121,10 +266,32 @@ function gb_all_off() local(i) (
 );
 
 // a fresh instrument: controllers from the file, no notes, keyswitch range and default
+// ── a bank (format 3, 2026-11-02): each MIDI channel plays its program (GB_CHPG: 0..127 melodic, 128 + p = drum kit
+// p). A program change sets its channel's; channel 10 starts on the first kit. The face's PROGRAM pick (slider 89,
+// gb_prog_apply) sets every channel. gb_sel(ch) -> the section and program a note on ch plays (gb_ssec, gb_sprog);
+// a region with no program (section 0) plays always, so an ordinary instrument is unchanged.
+function gb_sel(ch) local(e) (
+  e = GB_CHPG[max(0, min(15, ch | 0))];
+  e >= 128 ? ( gb_ssec = gb_drum_sec; gb_sprog = e - 128; ) : ( gb_ssec = gb_mel_sec; gb_sprog = e; );
+);
+function gb_prog_ok(r) (
+  r[GBR_PSEC] == 0 || (r[GBR_PSEC] == gb_ssec && gb_sprog >= r[GBR_PLO] && gb_sprog <= r[GBR_PHI]);
+);
+// v = the face's pick (0..127 melodic, 128 + p a kit): every channel; channel 10 keeps a kit when the pick is melodic
+function gb_prog_apply(v) local(i) (
+  v = max(0, min(255, v | 0));
+  i = 0; loop(16, GB_CHPG[i] = v; i += 1; );
+  v < 128 && gb_drum_sec > 0 ? GB_CHPG[9] = 128;
+);
+function gb_prog_change(ch, p) (
+  GB_CHPG[ch] = ch == 9 && gb_drum_sec > 0 ? 128 + p : p;
+);
+
 function gb_on_ready() local(i, r) (
   gb_all_off();
   i = 0; loop(128, gb_cc[i] = gb_cc_init[i]; i += 1; );
-  memset(GB_NT, 0, 512);
+  memset(GB_NT, 0, 640);
+  gb_prog_apply(gb_prog_pick);       // a new instrument: every channel on the face's pick (a bank's programs, kit on 10)
   gb_held_n = 0; gb_sw_lo = 128; gb_sw_hi = -1; gb_sw_cur = -1; gb_kb_cur = -1;
   gb_last_reg = -1; gb_last_note = -1; gb_last_vel = 0;   // the display must not show the old instrument's note
   i = 0;
@@ -139,9 +306,9 @@ function gb_on_ready() local(i, r) (
 );
 
 // velocity -> gain as sfizz does it (RegionStateful.cpp velocityCurve, 1.2.3): the curve (amp_velcurve_N points, else
-// (v/127)^2) blended toward 1 by amp_veltrack; a negative amp_veltrack turns it upside down
+// amp_velpow's power, else (v/127)^2) blended toward 1 by amp_veltrack; a negative amp_veltrack turns it upside down
 function gb_velgain(r, v) local(vt, c, g) (
-  c = r[GBR_VCPTR] > 0 ? r[GBR_VCPTR][v] : (v / 127) ^ 2;
+  c = r[GBR_VCPTR] > 0 ? r[GBR_VCPTR][v] : (v / 127) ^ (r[GBR_VPOW] > 0 ? r[GBR_VPOW] : 2);
   vt = max(-1, min(1, r[GBR_VTRACK] * 0.01));
   g = abs(vt) * (1 - c);
   vt < 0 ? g : 1 - g;
@@ -220,7 +387,7 @@ function gb_steal_slot(s) local(f, k, fv, best, bage) (
 );
 
 // start region ri for note n at velocity vel, ofs samples into the block, its level scaled by gsc
-function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, last, pos, db, lin, pan, mc, mi) (
+function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, last, pos, db, lin, pan, mc, mi, vv, at, dc) (
   r = GB_REG + ri * GB_RS; grp = r[GBR_GROUP];
   // a region of group G turns off every voice whose off_by is G
   grp != 0 ? (
@@ -248,7 +415,7 @@ function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, l
         v = GB_VOI + k * GB_VS;
         memset(v, 0, GB_VS);
         v[GBV_REG] = ri; v[GBV_NOTE] = n; v[GBV_POS] = pos; v[GBV_LAST] = last;
-        v[GBV_PTR] = s[GBS_PTR]; v[GBV_NCH] = s[GBS_NCH];
+        v[GBV_PTR] = s[GBS_PTR]; v[GBV_NCH] = s[GBS_NCH]; v[GBV_PKQ] = -1;
         v[GBV_SEMI] = (n - r[GBR_KEYC]) * r[GBR_KTRACK] * 0.01 + r[GBR_TUNE] * 0.01 + r[GBR_TRANSP];
         v[GBV_RATIO] = s[GBS_SR] / srate;
         v[GBV_GLS] = gb_launch_gl;     // glide: start from the last note's pitch (0 = no glide)
@@ -275,13 +442,17 @@ function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, l
         v[GBV_DLY] = ofs + (r[GBR_DELAY] * srate) | 0;
         v[GBV_HOLDN] = (r[GBR_HOLD] * srate) | 0;
         v[GBV_SUSL] = max(0, min(1, r[GBR_SUS] * 0.01));
-        v[GBV_DCOEF] = r[GBR_DEC] > 0 ? gb_coef_sfz(r[GBR_DEC]) : 0;
-        v[GBV_RCOEF] = gb_coef_sfz(max(r[GBR_REL] * gb_relx, 0.001));   // the face's RELEASE knob scales it
+        // the envelope times, each with its vel2 part (sfizz: seconds x velocity / 127 added; below 0 = instant)
+        vv = vel / 127; dc = r[GBR_DEC] + r[GBR_VDEC] * vv;
+        v[GBV_DCOEF] = dc > 0 ? gb_coef_sfz(dc) : 0;
+        v[GBV_RCOEF] = gb_coef_sfz(max(max(r[GBR_REL] + r[GBR_VREL] * vv, 0.001) * gb_relx, 0.001));   // the face's RELEASE knob scales it
         v[GBV_FCOEF] = gb_coef_sfz(max(r[GBR_OFFTIME], 0.001));
         // the face's ATTACK knob adds to the region's own attack (0 s = as recorded)
-        r[GBR_ATT] + gb_att_add > 0 ? ( v[GBV_ENV] = 0; v[GBV_AINC] = 1 / ((r[GBR_ATT] + gb_att_add) * srate); v[GBV_ST] = GB_ST_ATT; )
+        at = r[GBR_ATT] + r[GBR_VATT] * vv + gb_att_add;
+        at > 0 ? ( v[GBV_ENV] = 0; v[GBV_AINC] = 1 / (at * srate); v[GBV_ST] = GB_ST_ATT; )
                        : ( v[GBV_ENV] = 1; v[GBV_ST] = v[GBV_HOLDN] > 0 ? GB_ST_HOLD : GB_ST_DEC; v[GBV_CNT] = v[GBV_HOLDN]; );
         v[GBV_GROUP] = grp; v[GBV_OFFBY] = r[GBR_OFFBY]; v[GBV_OFFMODE] = r[GBR_OFFMODE]; v[GBV_TRIG] = r[GBR_TRIG];
+        r[GBR_SHAPE] ? gb_shape_launch(v, r, n, vel);   // the filter, its envelope, the LFOs
         gb_age += 1; v[GBV_AGE] = gb_age;
         // for the face's display (read-only there): the last attack note, its region and velocity
         r[GBR_TRIG] != GB_TR_RELEASE && r[GBR_TRIG] != GB_TR_RELKEY ? ( gb_last_reg = ri; gb_last_note = n; gb_last_vel = vel; gb_last_gen += 1; );
@@ -299,7 +470,7 @@ function gb_fire(n, vel, ofs, release, gsc, prevheld) local(i, r, tr, ok, rnd) (
     r = GB_REG + i * GB_RS; tr = r[GBR_TRIG];
     ok = release ? (tr == GB_TR_RELEASE || tr == GB_TR_RELKEY) && (release == 2 ? tr == GB_TR_RELEASE : 1)
                  : tr == GB_TR_ATTACK || (tr == GB_TR_FIRST && prevheld == 0) || (tr == GB_TR_LEGATO && prevheld > 0);
-    ok && n >= r[GBR_LOKEY] && n <= r[GBR_HIKEY] && vel >= r[GBR_LOVEL] && vel <= r[GBR_HIVEL] && gb_region_open(r, rnd) ? (
+    ok && n >= r[GBR_LOKEY] && n <= r[GBR_HIKEY] && vel >= r[GBR_LOVEL] && vel <= r[GBR_HIVEL] && gb_prog_ok(r) && gb_region_open(r, rnd) ? (
       gb_seq_turn(r) ? gb_launch(i, n, vel, ofs, gsc);
     );
     i += 1;
@@ -322,6 +493,8 @@ function gb_note_on(n, vel, ofs) local(prev, i, v) (
   ) : gb_launch_gl = 0;
   !GB_NT[n] ? gb_held_n += 1;       // a second note-on of a held pitch is not a second held note (on, on, off, off)
   GB_NT[n] = 1; GB_NT[128 + n] = vel; GB_NT[256 + n] = gb_t + ofs; GB_NT[384 + n] = 0;
+  GB_NT[512 + n] = gb_note_ch;       // its release sounds come from the same program
+  gb_sel(gb_note_ch);
   gb_fire(n, vel, ofs, 0, 1, prev);
   gb_launch_gl = 0;
 );
@@ -329,12 +502,13 @@ function gb_note_on(n, vel, ofs) local(prev, i, v) (
 // release-trigger regions for note n; release == 1 at note-off (both kinds), 2 at pedal-up (trigger=release only)
 function gb_fire_release(n, ofs, release) local(i, r, tr, held_s, rnd) (
   held_s = max(0, (gb_t + ofs - GB_NT[256 + n]) / srate);
+  gb_sel(GB_NT[512 + n]);
   rnd = rand(1); i = 0;
   loop(gb_nreg,
     r = GB_REG + i * GB_RS; tr = r[GBR_TRIG];
     (release == 1 ? (tr == GB_TR_RELKEY || (tr == GB_TR_RELEASE && gb_cc[64] < 64)) : tr == GB_TR_RELEASE)
       && n >= r[GBR_LOKEY] && n <= r[GBR_HIKEY] && GB_NT[128 + n] >= r[GBR_LOVEL] && GB_NT[128 + n] <= r[GBR_HIVEL]
-      && gb_region_open(r, rnd) ? (
+      && gb_prog_ok(r) && gb_region_open(r, rnd) ? (
       gb_seq_turn(r) ? gb_launch(i, n, GB_NT[128 + n], ofs, 10 ^ (-r[GBR_RTDEC] * held_s / 20));
     );
     i += 1;
@@ -380,16 +554,21 @@ function gb_bend_in(v14) ( gb_bend = (v14 - 8192) / 8192 * gb_bend_rng; );
 
 // @block: MIDI (omni), then per-block voice upkeep. vol_db = the host's volume control.
 // midirecv writes its four arguments, so they are plain globals (gb_mofs, gb_m1..3), not locals
-function gb_midi_block() local(st) (
-  while (midirecv(gb_mofs, gb_m1, gb_m2, gb_m3)) (
-    st = gb_m1 & $xF0;
-    gb_ready && gb_gen_seen == gb_load_gen ? (
-      st == $x90 && gb_m3 > 0 ? gb_note_on(gb_m2, gb_m3, gb_mofs)
-      : st == $x80 || st == $x90 ? gb_note_off(gb_m2, gb_mofs)
-      : st == $xB0 ? gb_cc_in(gb_m2, gb_m3, gb_mofs)
-      : st == $xE0 ? gb_bend_in(gb_m3 * 128 + gb_m2);
-    );
+// one MIDI message (the offline tests feed this too)
+function gb_midi_msg(m1, m2, m3, ofs) local(st) (
+  st = m1 & $xF0;
+  gb_note_ch = m1 & $x0F;
+  st == $xC0 ? gb_prog_change(gb_note_ch, m2 & 127);   // kept while a load runs too: the next notes use it
+  gb_ready && gb_gen_seen == gb_load_gen ? (
+    st == $x90 && m3 > 0 ? gb_note_on(m2, m3, ofs)
+    : st == $x80 || st == $x90 ? gb_note_off(m2, ofs)
+    : st == $xB0 ? gb_cc_in(m2, m3, ofs)
+    : st == $xE0 ? gb_bend_in(m3 * 128 + m2);
   );
+  gb_note_ch = 0;                    // the face's keys and pads play channel 1's program
+);
+function gb_midi_block() (
+  while (midirecv(gb_mofs, gb_m1, gb_m2, gb_m3)) ( gb_midi_msg(gb_m1, gb_m2, gb_m3, gb_mofs); );
 );
 
 function gb_voices_block(vol_db) local(i, v, hi) (
@@ -417,7 +596,11 @@ function gb_voices_block(vol_db) local(i, v, hi) (
   // format 2: voices with live controllers follow them (target gains and pitch; the render glides the gains)
   gb_ready && gb_gen_seen == gb_load_gen ? (
     i = 0; loop(gb_vhi, v = GB_VOI + i * GB_VS; v[GBV_ON] && v[GBV_MODS] > 0 ? gb_voice_mod(v); i += 1; );
+    // the filter's controller and the LFO depths (the mod wheel's vibrato)
+    i = 0; loop(gb_vhi, v = GB_VOI + i * GB_VS; v[GBV_ON] && v[GBV_SHP] ? gb_shape_block(v); i += 1; );
   );
+  // the per-sample lookups follow the sample rate (built in @init too; ext_noinit keeps @init from every change)
+  srate != gb_tab_sr ? ( gb_tables_build(); gb_tab_sr = srate; );
   // the face's CONTROLS page: a knob turned there arrives as that controller, as if from MIDI
   gb_ready && gb_gen_seen == gb_load_gen && gb_ui_cc_seq != gb_ui_cc_done ? (
     gb_ui_cc_done = gb_ui_cc_seq; gb_cc_in(max(0, min(127, gb_ui_cc_n | 0)), max(0, min(127, gb_ui_cc_v | 0)), 0);
@@ -454,11 +637,12 @@ function gb_drive_run(l, r, amt) local(f, inv, g, k, wet) (
   gbx_drv_pk = max(gbx_drv_pk * 0.9997, max(abs(l), abs(r)));
 );
 
-function gb_render() local(i, v, st, e, p, ip, f, ptr, last, lp, looping, i0, i2, i3, le, ll, y0, y1, y2, y3, yl, yr, ol, or_, b, dl, dr)
+function gb_render() local(i, v, st, e, p, ip, f, ptr, last, lp, looping, i0, i2, i3, le, ll, y0, y1, y2, y3, yl, yr, ol, or_, b, dl, dr, pm, pk)
 (
   ol = 0; or_ = 0;
   gb_ready && gb_gen_seen == gb_load_gen ? (
-    i = 0;
+    i = 0; pk = gb_pack;               // read once: a load sets it only while gb_ready is 0
+
     loop(gb_vhi,
       v = GB_VOI + i * GB_VS;
       v[GBV_ON] ? (
@@ -477,7 +661,39 @@ function gb_render() local(i, v, st, e, p, ip, f, ptr, last, lp, looping, i0, i2
           looping ? ( le = v[GBV_LE]; ll = le - v[GBV_LS] + 1;
                       i2 > le ? i2 -= ll * (1 + floor((i2 - le - 1) / ll)); i3 > le ? i3 -= ll * (1 + floor((i3 - le - 1) / ll)); )
                   : ( i2 > last ? i2 = last; i3 > last ? i3 = last; );
-          v[GBV_NCH] == 1 ? (
+          pk && ip > 0 && i2 == ip + 1 && i3 == ip + 2 ? (
+            // a packed instrument (gb_load), the usual case (four frames in a row): read from the voice's cache of
+            // unpacked cells, refilled from the first cell needed when the window leaves it
+            dl = v[GBV_NCH] == 1 ? i0 : 2 * i0;                                  // the window's first point
+            dr = floor((dl + 0.5) * 0.3333333333333333);                          // its cell
+            b = v[GBV_PKQ];
+            b < 0 || dr < b || floor((dl + (v[GBV_NCH] == 1 ? 3.5 : 7.5)) * 0.3333333333333333) > b + GBV_PKN - 1 ? (
+              gb_pk_cells(v + GBV_PKC, ptr + dr, GBV_PKN); v[GBV_PKQ] = dr; b = dr;
+            );
+            b = v + GBV_PKC + 3 * (dr - b) + dl - 3 * dr;                       // point dl
+            v[GBV_NCH] == 1 ? (
+              y0 = b[0]; y1 = b[1]; y2 = b[2]; y3 = b[3];
+              yl = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+              yr = yl;
+            ) : (
+              y0 = b[0]; y1 = b[2]; y2 = b[4]; y3 = b[6];
+              yl = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+              y0 = b[1]; y1 = b[3]; y2 = b[5]; y3 = b[7];
+              yr = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+            );
+          ) : pk ? (
+            // packed, at a loop's wrap or the sample's start or end: point by point through gb_pk
+            v[GBV_NCH] == 1 ? (
+              y0 = gb_pk(ptr, i0); y1 = gb_pk(ptr, ip); y2 = gb_pk(ptr, i2); y3 = gb_pk(ptr, i3);
+              yl = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+              yr = yl;
+            ) : (
+              y0 = gb_pk(ptr, 2 * i0); y1 = gb_pk(ptr, 2 * ip); y2 = gb_pk(ptr, 2 * i2); y3 = gb_pk(ptr, 2 * i3);
+              yl = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+              y0 = gb_pk(ptr, 2 * i0 + 1); y1 = gb_pk(ptr, 2 * ip + 1); y2 = gb_pk(ptr, 2 * i2 + 1); y3 = gb_pk(ptr, 2 * i3 + 1);
+              yr = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
+            );
+          ) : v[GBV_NCH] == 1 ? (
             y0 = ptr[i0]; y1 = ptr[ip]; y2 = ptr[i2]; y3 = ptr[i3];
             yl = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
             yr = yl;
@@ -489,8 +705,10 @@ function gb_render() local(i, v, st, e, p, ip, f, ptr, last, lp, looping, i0, i2
             yr = y1 + 0.5 * f * (y2 - y0 + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)));
           );
           v[GBV_MODS] > 0 ? ( v[GBV_GL] += (v[GBV_TGL] - v[GBV_GL]) * GB_MOD_GLIDE; v[GBV_GR] += (v[GBV_TGR] - v[GBV_GR]) * GB_MOD_GLIDE; );
+          // the filter, its envelope and the LFOs (only a region that has them)
+          v[GBV_SHP] == 1 ? ( gb_yl = yl; gb_yr = yr; pm = gb_shape_tick(v); yl = gb_yl; yr = gb_yr; ) : pm = 1;
           ol += yl * e * v[GBV_GL]; or_ += yr * e * v[GBV_GR];
-          p += v[GBV_INC];
+          p += v[GBV_INC] * pm;
           looping && p >= le + 1 ? p -= ll * (1 + floor((p - le - 1) / ll));
           v[GBV_POS] = p; v[GBV_ENV] = e; v[GBV_ST] = st;
           (!looping && p > last) || ((st == GB_ST_REL || st == GB_ST_FADE) && e < GB_QUIET_T)

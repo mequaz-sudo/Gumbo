@@ -56,14 +56,18 @@ function gbf_fam_col(i) (   // a family colour, as in the mockup's tiles
   : ( gbf_fc_r = 0.91; gbf_fc_g = 0.28; gbf_fc_b = 0.60; );
 );
 
-// the family icons: Gumbo's own copies (EON_Gumbo/icons, from the starter sound package, copied from the track icons by
-// the release script), else the EON track icons (the ReaKit FX track icons package), else none
+// the family icons: Gumbo's own copies (EON_Gumbo/gumbo_icons, in the Gumbo package itself since 2026-11-04, when the
+// VSCO sounds moved to their own repository), else the copies the 1.0 starter sound package installed
+// (EON_Gumbo/icons), else the EON track icons (the ReaKit FX track icons package), else none
 function gbf_icons_load() local(i) (
   i = 0;
   loop(GBF_NFAM,
-    sprintf(#gbf_tmp, "EON_Gumbo/icons/%s.png", gbf_fam_icon(i));
+    sprintf(#gbf_tmp, "EON_Gumbo/gumbo_icons/%s.png", gbf_fam_icon(i));
     gfx_loadimg(GBF_ICON_SLOT + i, #gbf_tmp) < 0 ? (
-      sprintf(#gbf_tmp, "track_icons/EON/%s.png", gbf_fam_icon(i)); gfx_loadimg(GBF_ICON_SLOT + i, #gbf_tmp); );
+      sprintf(#gbf_tmp, "EON_Gumbo/icons/%s.png", gbf_fam_icon(i));
+      gfx_loadimg(GBF_ICON_SLOT + i, #gbf_tmp) < 0 ? (
+        sprintf(#gbf_tmp, "track_icons/EON/%s.png", gbf_fam_icon(i)); gfx_loadimg(GBF_ICON_SLOT + i, #gbf_tmp); );
+    );
     i += 1;
   );
   gbf_icons_loaded = 1;
@@ -247,7 +251,8 @@ function gbf_range() local(i, r, lo, hi) (
     hi < lo ? ( lo = 36; hi = 96; );
     // a drum kit with named keys: just its keys (ends on white keys), so each key is wide enough for its name;
     // anything else: whole octaves
-    gb_nkey > 0 ? ( lo = max(0, lo - rk_piano_is_black(lo)); hi = min(127, hi + rk_piano_is_black(hi)); )
+    // (a GM bank's kit names do not make the whole bank a kit: whole octaves, 2026-11-04)
+    gb_nkey > 0 && gb_nprg == 0 ? ( lo = max(0, lo - rk_piano_is_black(lo)); hi = min(127, hi + rk_piano_is_black(hi)); )
                 : ( lo = max(21, floor(lo / 12) * 12); hi = min(108, floor(hi / 12) * 12 + 11); );
     hi - lo < 23 ? hi = min(127, lo + 23);
     gbf_lo = lo; gbf_hi = hi;
@@ -283,20 +288,20 @@ function gbf_name() local(i, n) (
 function gbf_status() (
   gbf_warn = 0;
   // the Gumbo helper first: an import on its way, or why a dropped .sfz did not open
-  gbh_state != GBH_ST_IDLE ? strcpy(#gbf_st, gbh_kind == GBH_KIND_FAV ? "Saving your favourites..." : "Importing the .sfz... (the Gumbo helper converts it)")
+  gbh_state != GBH_ST_IDLE ? strcpy(#gbf_st, gbh_kind == GBH_KIND_FAV ? "Saving your favourites..." : "Importing... (the Gumbo helper converts it)")
   : gbh_err ? (
     gbf_warn = 1;
-    gbh_err == 1 ? strcpy(#gbf_st, "To open a .sfz, start the Gumbo helper (Actions: Gumbo helper)")
-    : gbh_err == 2 ? strcpy(#gbf_st, "The Gumbo helper stopped before the .sfz was done")
+    gbh_err == 1 ? strcpy(#gbf_st, "To open a .sfz or .sf2, start the Gumbo helper (Actions: Gumbo helper)")
+    : gbh_err == 2 ? strcpy(#gbf_st, "The Gumbo helper stopped before the import was done")
     : gbh_err == 3 ? strcpy(#gbf_st, "That file's path is too long to send to the helper")
     : gbh_err == 7 ? strcpy(#gbf_st, "To dock Gumbo with a double-click, start the Gumbo helper")
     : gbh_err == 5 ? strcpy(#gbf_st, "Starred for now. To keep favourites, start the Gumbo helper")
     : gbh_err == 6 ? strcpy(#gbf_st, "The Gumbo helper could not save your favourites")
     : gbh_err == 31 ? strcpy(#gbf_st, "Could not import: its sound files are missing")
-    : gbh_err == 32 ? strcpy(#gbf_st, "Could not import: the .sfz (or a file it includes) could not be read")
+    : gbh_err == 32 ? strcpy(#gbf_st, "Could not import: the file (or one it includes) could not be read")
     : gbh_err == 33 ? strcpy(#gbf_st, "Could not import: nothing in it Gumbo can play")
     : gbh_err == 34 ? strcpy(#gbf_st, "Could not import: its sound files are not WAV / FLAC or are damaged")
-    : gbh_err == 13 ? strcpy(#gbf_st, "The Gumbo helper could not convert that .sfz")
+    : gbh_err == 13 ? strcpy(#gbf_st, "The Gumbo helper could not convert that file")
     : gbh_err == 14 ? strcpy(#gbf_st, "Converted, but Gumbo's browser list could not be written")
     : strcpy(#gbf_st, "The Gumbo helper refused that file");
   )
@@ -309,9 +314,10 @@ function gbf_status() (
     : gb_err == GB_E_FORMAT ? strcpy(#gbf_st, "Not a Gumbo instrument file")
     : strcpy(#gbf_st, "No playable sounds in that file");
   )
-  : gb_ready ? sprintf(#gbf_st, "%d regions  -  %d sounds  -  %.0f MB", gb_nreg, gb_nsmp, gb_loaded_cells * 8 / 1048576)
+  : gb_ready ? sprintf(#gbf_st, gb_pack ? "%d regions  -  %d sounds  -  %.0f MB (packed)" : "%d regions  -  %d sounds  -  %.0f MB",
+                       gb_nreg, gb_nsmp, gb_loaded_cells * 8 / 1048576)
   : strlen(#gb_want) ? strcpy(#gbf_st, "Not loaded")
-  : gbf_idx_loaded && gbf_idx_n == 0 ? strcpy(#gbf_st, "No sounds installed - get 'Gumbo starter sounds' in ReaPack")
+  : gbf_idx_loaded && gbf_idx_n == 0 ? strcpy(#gbf_st, "No sounds installed - get 'Gumbo GM sounds' in ReaPack")
   : strcpy(#gbf_st, "Pick an instrument, or drop a .gumbo.txt");
 );
 
@@ -342,6 +348,26 @@ function gbf_knob(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim)
 );
 
 // ── the Ember display ──
+// a bank (format 3): the program channel 1 plays now (GB_CHPG, written by the audio thread; read only here) ->
+// gbf_pg_i = its entry in GB_PRG (-1 = not in this bank), gbf_pg_p = its program number, gbf_pg_kit = a drum kit
+function gbf_prog_cur() local(e, sec, i, q) (
+  e = GB_CHPG[0];
+  gbf_pg_kit = e >= 128 && gb_drum_sec > 0; sec = gbf_pg_kit ? gb_drum_sec : gb_mel_sec; gbf_pg_p = e >= 128 ? e - 128 : e;
+  gbf_pg_i = -1; i = 0;
+  loop(gb_nprg, q = GB_PRG + i * 5; gbf_pg_i < 0 && q[0] == sec && gbf_pg_p >= q[1] && gbf_pg_p <= q[2] ? gbf_pg_i = i; i += 1; );
+);
+// play entry i of GB_PRG: slider 89 (every channel takes it, gb_prog_apply). The display's box and list, the browser rows
+function gbf_prog_pick(i) local(q) (
+  i >= 0 && i < gb_nprg ? (
+    q = GB_PRG + i * 5;
+    slider89 = (q[0] == gb_drum_sec && gb_drum_sec > 0 ? 128 : 0) + q[1]; slider_automate(slider89);
+    gb_prog_req += 1;                 // even the same pick again: MIDI may have moved the channels since
+  );
+);
+// the display's < > (and the wheel over it): the bank's next / previous entry, round the ends (not in the bank: > the first)
+function gbf_prog_step(d) (
+  gb_nprg > 0 ? gbf_prog_pick(gbf_pg_i < 0 ? (d > 0 ? 0 : gb_nprg - 1) : (gbf_pg_i + d + gb_nprg) % gb_nprg);
+);
 function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch, fr, step, c, i, j, a, b, v, kx, kw, n, lo, hi, nb, bl, bh, cnt, k, bx, bw, seg, db, pk, gn)
 (
   s = gbf_s;
@@ -358,10 +384,54 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
   gbf_font(max(9, floor(11 * s)), 0);
   gbf_warn ? gbf_scr(1, 0.55, 0.3, 1) : gbf_scr(0.79, 0.54, 0.35, 1);
   gfx_x = x + 16 * s; gfx_y = y + 12 * s + fs * gbf_tk + 4 * s; gfx_drawstr(#gbf_st, 0, x + w * 0.5, y + h);
+  // a bank: the program playing, in a box of its own (the owner, 2026-11-03, of the old one-line caption: "i barley
+  // noticed where to change it"): < > step through the bank, a click on the name opens the list (gb_face_p2,
+  // gbf_prog_click). Its place and size stay in gbf_pg_x/y/w/h (gbf_pg_a = each arrow's width).
+  gbf_pg_h = 0;
+  gbf_chip_y = y + 12 * s + fs * gbf_tk + 22 * s;   // the playing-style chips (gb_face_p2): under the box when there is one
+  gb_ready && gb_nprg > 0 ? (
+    gbf_prog_cur();
+    gbf_pg_x = x + 16 * s; gbf_pg_y = gfx_y + 16 * s;
+    gbf_pg_h = max(24 * s, 13 * s * gbf_tk + 10 * s); gbf_pg_w = max(gbf_pg_h * 4, min(380 * s, x + w * 0.5 - gbf_pg_x));
+    gbf_pg_a = gbf_pg_h;
+    gbf_chip_y = gbf_pg_y + gbf_pg_h + 6 * s;
+    gbf_scr(0.04, 0.03, 0.03, 1); gfx_rect(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h);
+    gbf_scr(0.55, 0.36, 0.21, 1); gbf_box(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h);
+    // the two arrow cells, lit under the mouse
+    k = 0;
+    loop(2,
+      bx = k == 0 ? gbf_pg_x : gbf_pg_x + gbf_pg_w - gbf_pg_a;
+      gbf_hit(bx, gbf_pg_y, gbf_pg_a, gbf_pg_h) && !gbf_menu_block ? gbf_scr(0.36, 0.24, 0.15, 1) : gbf_scr(0.20, 0.14, 0.10, 1);
+      gfx_rect(bx + 1, gbf_pg_y + 1, gbf_pg_a - 2, gbf_pg_h - 2);
+      gbf_scr(1, 0.69, 0.40, 1); c = bx + gbf_pg_a * 0.5; v = gbf_pg_y + gbf_pg_h * 0.5; bw = gbf_pg_h * 0.16;
+      k == 0 ? gfx_triangle(c - bw, v, c + bw * 0.8, v - bw * 1.3, c + bw * 0.8, v + bw * 1.3)
+             : gfx_triangle(c + bw, v, c - bw * 0.8, v - bw * 1.3, c - bw * 0.8, v + bw * 1.3);
+      k += 1;
+    );
+    // the name cell: PROGRAM 46 (small), the name (large), a small ▾ for the list
+    bx = gbf_pg_x + gbf_pg_a; bw = gbf_pg_w - 2 * gbf_pg_a;
+    gbf_hit(bx, gbf_pg_y, bw, gbf_pg_h) && !gbf_menu_block ? ( gbf_scr(0.16, 0.11, 0.08, 1); gfx_rect(bx, gbf_pg_y + 1, bw, gbf_pg_h - 2); );
+    gbf_font(max(7, floor(9 * s)), 'b'); gbf_scr(0.79, 0.54, 0.35, 1);
+    sprintf(#gbf_tmp, "%s %d", gbf_pg_kit ? "KIT" : "PROGRAM", gbf_pg_p + 1);
+    gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_);
+    gfx_x = bx + 8 * s; gfx_y = gbf_pg_y + (gbf_pg_h - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp);
+    c = gfx_x + 8 * s;
+    gbf_pg_i >= 0 ? gb_prog_name(gbf_pg_i) : strcpy(#gb_ls, "(not in this set)");
+    gbf_font(max(9, floor(13 * s)), 'b'); gbf_scr(1, 0.69, 0.40, 1);
+    gfx_measurestr(#gb_ls, gbf_tw, gbf_th_);
+    gfx_x = c; gfx_y = gbf_pg_y + (gbf_pg_h - gbf_th_) * 0.5;
+    gfx_drawstr(#gb_ls, 0, bx + bw - 16 * s, gbf_pg_y + gbf_pg_h);
+    c = bx + bw - 9 * s; v = gbf_pg_y + gbf_pg_h * 0.5; bh = 3.5 * s;
+    gbf_scr(0.79, 0.54, 0.35, 1); gfx_triangle(c - bh, v - bh * 0.6, c + bh, v - bh * 0.6, c, v + bh * 0.8);
+    gbf_font(max(9, floor(11 * s)), 0);
+    gfx_y = gbf_pg_y + gbf_pg_h - 10 * s;   // a "sounds left out" line comes 14 below this: just under the box
+  );
   gb_ready && (gb_smp_missing + gb_smp_badfmt + gb_smp_noroom) > 0 ? (
     gbf_scr(1, 0.55, 0.3, 1); gfx_x = x + 16 * s; gfx_y += 14 * s;
-    // too big: Gumbo holds about 1 GB of sound for now (the owner, 2026-11-01: tell users the limit)
-    gb_smp_noroom > 0 ? sprintf(#gbf_tmp, "%d sounds left out: Gumbo holds up to about 1 GB of sound", gb_smp_missing + gb_smp_badfmt + gb_smp_noroom)
+    // too big (the owner, 2026-11-01: tell users the limit). Packed (2026-11-04) the limit is about 3 GB of sound as
+    // the browser counts it (8 bytes a point); unpacked only a file without the converter's size line can run out
+    gb_smp_noroom > 0 ? sprintf(#gbf_tmp, gb_pack ? "%d sounds left out: Gumbo holds up to about 3 GB of sound"
+                                                  : "%d sounds left out: Gumbo holds up to about 1 GB of sound", gb_smp_missing + gb_smp_badfmt + gb_smp_noroom)
                       : sprintf(#gbf_tmp, "%d sounds left out", gb_smp_missing + gb_smp_badfmt + gb_smp_noroom);
     gfx_drawstr(#gbf_tmp, 0, x + w * 0.5, y + h);
   );
@@ -373,8 +443,10 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
   // the last note's waveform (min/max per column over its first 1.5 s)
   wx = x + 16 * s; ww = w * 0.45 - 16 * s; wy = y + h * 0.42; wh = h * 0.40;
   // the playing-style chips sit under the name (gb_face_p2): the waveform starts below them
-  gb_ready && gb_nswl > 0 ? ( wy = max(wy, y + 12 * s + fs * gbf_tk + 22 * s + 24 * s); wh = min(wh, y + h - wy - 16 * s); );
-  gb_ready && gb_last_reg >= 0 && gb_last_reg < gb_nreg ? (
+  // (and below a bank's program box)
+  gb_ready && gbf_pg_h > 0 ? ( wy = max(wy, gbf_pg_y + gbf_pg_h + 8 * s); wh = min(wh, y + h - wy - 16 * s); );
+  gb_ready && gb_nswl > 0 ? ( wy = max(wy, gbf_chip_y + 24 * s); wh = min(wh, y + h - wy - 16 * s); );
+  gb_ready && gb_last_reg >= 0 && gb_last_reg < gb_nreg && wh > 10 * s ? (
     r = GB_REG + gb_last_reg * GB_RS; sm = r[GBR_SMP];
     sm >= 0 && GB_SMP[sm * GB_SS + GBS_STAT] == GB_SS_OK ? (
       ptr = GB_SMP[sm * GB_SS + GBS_PTR]; nch = GB_SMP[sm * GB_SS + GBS_NCH];
@@ -385,7 +457,7 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
       pk = 0; c = 0;
       loop(max(1, min(ww, fr) | 0),
         j = (c * step) | 0; i = 0;
-        loop(min(24, step), v = abs(ptr[(j + ((i * step / min(24, step)) | 0)) * nch]); v > pk ? pk = v; i += 1; );
+        loop(min(24, step), k = (j + ((i * step / min(24, step)) | 0)) * nch; v = abs(gb_pack ? gb_pk(ptr, k) : ptr[k]); v > pk ? pk = v; i += 1; );
         c += 1;
       );
       gn = pk > 0 ? min(32, 0.95 / pk) : 1;
@@ -393,7 +465,7 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
       c = 0;
       loop(max(1, min(ww, fr) | 0),    // a sound shorter than the strip is wide: stop at its end
         a = 0; b = 0; j = (c * step) | 0; i = 0;
-        loop(min(24, step), v = ptr[(j + ((i * step / min(24, step)) | 0)) * nch]; v < a ? a = v; v > b ? b = v; i += 1; );
+        loop(min(24, step), k = (j + ((i * step / min(24, step)) | 0)) * nch; v = gb_pack ? gb_pk(ptr, k) : ptr[k]; v < a ? a = v; v > b ? b = v; i += 1; );
         a *= gn; b *= gn;
         gfx_line(wx + c, wy + wh * 0.5 - b * wh * 0.5, wx + c, wy + wh * 0.5 - a * wh * 0.5);
         c += 1;
@@ -534,7 +606,27 @@ function gbf_listed(i) local(e) (
   e = GBF_IDX_BASE + i * GBF_IS;
   (!gbf_favonly || GBF_FAV[i]) && (strlen(#gbf_q) > 0 ? GBF_MATCH[i] : (gbf_cat < 0 || e[0] == gbf_cat));
 );
-function gbf_browser(x, y, w, h) local(s, tw, th, i, cx, cy, e, row, n, ry, rh, vis, cur, f, ic, iw, ih, yb, sh, sx, sw) (
+// one of the loaded bank's programs as a row under the bank's own row (the owner, 2026-11-03: programs picked the way
+// instruments are): indented on a guide line, the one playing lit; a click plays it
+function gbf_prog_row(j, x, cy, w, rh) local(s, q, on, hot, kit, nx) (
+  s = gbf_s; q = GB_PRG + j * 5; on = j == gbf_pg_i; kit = q[0] == gb_drum_sec && gb_drum_sec > 0;
+  hot = !gbf_menu_block && gbf_hit(x + 20 * s, cy, w - 26 * s, rh - 2 * s);
+  gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 0.45); gfx_rect(x + 13 * s, cy, max(1, s), rh);
+  on ? ( gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.14); gfx_rect(x + 20 * s, cy, w - 26 * s, rh - 2 * s);
+         gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_rect(x + 20 * s, cy + 3 * s, 2 * s, rh - 8 * s); )
+  : hot ? ( gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 0.06); gfx_rect(x + 20 * s, cy, w - 26 * s, rh - 2 * s); );
+  sprintf(#gbf_tmp, kit ? "KIT %d" : "%d", q[1] + 1);
+  gbf_font(max(7, floor(9 * s)), 'b'); on ? gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_);
+  gfx_x = x + 28 * s; gfx_y = cy + (rh - 2 * s - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp);
+  nx = x + 28 * s + max(gbf_tw, 20 * s) + 6 * s;
+  gb_prog_name(j);
+  gbf_font(max(8, floor(10 * s)), on ? 'b' : 0); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, on ? 1 : 0.85);
+  gfx_measurestr(#gb_ls, gbf_tw, gbf_th_);
+  gfx_x = nx; gfx_y = cy + (rh - 2 * s - gbf_th_) * 0.5; gfx_drawstr(#gb_ls, 0, x + w - 10 * s, cy + rh);
+  lmb_down && hot ? ( lmb_down = 0; gbf_prog_pick(j); );
+);
+function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, row, n, ry, rh, vis, cur, f, ic, iw, ih, yb, sh, sx, sw, pg) (
   s = gbf_s;
   gfx_set(gbf_pn_r * 0.92, gbf_pn_g * 0.92, gbf_pn_b * 0.92, 1); gfx_rect(x, y, w, h);
   gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gfx_rect(x + w - 1, y, 1, h);
@@ -581,10 +673,13 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, cx, cy, e, row, n, ry, rh, 
   gfx_x = x + 10 * s; gfx_y = ry;
   gfx_drawstr(strlen(#gbf_q) > 0 ? "SEARCH" : gbf_favonly && gbf_cat < 0 ? "FAVOURITES" : gbf_cat >= 0 ? gbf_fam_name(gbf_cat) : "ALL INSTRUMENTS");
   ry += 6 * s + 10 * s * gbf_tk; rh = max(24 * s, 11 * s * gbf_tk + 10 * s); vis = max(1, ((y + h - ry - 22 * s) / rh) | 0);
-  n = 0; i = 0; loop(gbf_idx_n, gbf_listed(i) ? n += 1; i += 1; );
+  cur = gbf_idx_current_cached();
+  // a loaded bank's programs list under its row (gbf_prog_row), one list row each
+  pg = cur >= 0 && gb_ready && gb_nprg > 1 && gbf_listed(cur) ? gb_nprg : 0;
+  pg > 0 ? gbf_prog_cur();
+  n = pg; i = 0; loop(gbf_idx_n, gbf_listed(i) ? n += 1; i += 1; );
   gbf_hit(x, ry, w, h - (ry - y)) && frame_wheel != 0 ? gbf_scroll -= frame_wheel;
   gbf_scroll = max(0, min(gbf_scroll, n - vis));   // the wheel stops at the end of the list
-  cur = gbf_idx_current_cached();
   n = 0; row = 0; i = 0;
   loop(gbf_idx_n,
     e = GBF_IDX_BASE + i * GBF_IS;
@@ -613,6 +708,13 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, cx, cy, e, row, n, ry, rh, 
         row += 1;
       );
       n += 1;
+      i == cur && pg > 0 ? (
+        j = 0;
+        loop(pg,
+          n >= gbf_scroll && row < vis ? ( gbf_prog_row(j, x, ry + row * rh, w, rh); row += 1; );
+          n += 1; j += 1;
+        );
+      );
     );
     i += 1;
   );
@@ -624,10 +726,10 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, cx, cy, e, row, n, ry, rh, 
                      gbf_hint_line("Get them free in ReaPack:", 1.6, x, w, ry, yb);
                      gbf_hint_line("Extensions > ReaPack >", 2.7, x, w, ry, yb);
                      gbf_hint_line("Browse packages >", 3.8, x, w, ry, yb);
-                     gbf_hint_line("'Gumbo starter sounds'", 4.9, x, w, ry, yb); );
-  strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ OR .GUMBO.TXT HERE" : "OR DROP A .GUMBO.TXT  (.SFZ: START THE GUMBO HELPER)");
+                     gbf_hint_line("'Gumbo GM sounds'", 4.9, x, w, ry, yb); );
+  strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ, .SF2 OR .GUMBO.TXT HERE" : "OR DROP A .GUMBO.TXT  (.SFZ, .SF2: START THE GUMBO HELPER)");
   gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b');
-  gbf_tw > w - 16 * s ? ( strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ HERE" : "OR DROP A .GUMBO.TXT HERE"); gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b'); );
+  gbf_tw > w - 16 * s ? ( strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ OR .SF2 HERE" : "OR DROP A .GUMBO.TXT HERE"); gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b'); );
   gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
   gfx_x = x + 10 * s; gfx_y = y + h - 6 * s - gbf_th_;
   gfx_drawstr(#gbf_tmp, 0, x + w - 6 * s, y + h);

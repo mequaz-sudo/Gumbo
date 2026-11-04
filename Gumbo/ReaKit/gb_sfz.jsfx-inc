@@ -17,7 +17,10 @@
 // gb_ready = 0 for the whole load so the audio side reads none of these tables meanwhile.
 
 @init
-GB_REG = 200000;  GB_RS = 64;  GB_MAXREG = 4096;          // -> 462144
+// (2026-11-03: the region table moved up and grew -- a full GM SoundFont has 6,000-7,000 regions, and the old
+// 4,096 x 64 at 200000 silently lost the rest; each region also carries its filter, filter envelope and LFOs now.
+// 200000 .. 470000 holds gb_voice's lookup tables, 1620000 .. 1686000 is free.)
+GB_REG = 2000000; GB_RS = 112; GB_MAXREG = 16384;         // -> 3835008, under GB_MOD
 GB_SMP = 470000;  GB_SS = 8;   GB_MAXSMP = 4096;          // -> 502768
 GB_PCH = 510000;  GB_PCH_CAP = 1000000;                   // -> 1510000
 GB_VCT = 1520000; GB_VCT_MAX = 512;                       // 512 x 128 -> 1585536
@@ -38,6 +41,27 @@ GB_MAXGATES = 4;
 GBR_VCPTR = 56;                      // 0 = no curve, else a 128-cell table in GB_VCT
 GBR_SEQCNT = 57;                     // round-robin counter (runtime)
 GBR_NMOD = 58;                       // format 2: live controller mods on this region (0..GB_MAXMOD)
+GBR_PSEC = 59; GBR_PLO = 60; GBR_PHI = 61;   // format 3 (a bank): section, program range; section 0 = plays always
+// the tone filter, its envelope and the LFOs (2026-11-03; tokens fil= feg= lfo=, written only when the SFZ has them;
+// an older Gumbo skips the tokens and plays the region unfiltered). Rules: sfizz's (Research
+// .docs/research/Gumbo_Tone_Filter_Research_2026-11-03.md).
+GBR_FTYPE = 62;                      // 0 none; 1 lpf_1p 2 hpf_1p 3 lpf_2p 4 hpf_2p 5 bpf_2p 6 brf_2p 7 lpf_4p 8 hpf_4p
+GBR_FCUT = 63; GBR_FRES = 64;        // cutoff Hz, resonance dB (Q = 10^(dB/20); may be below 0)
+GBR_FKT = 65; GBR_FKC = 66; GBR_FVT = 67; GBR_FRND = 68;   // keytrack cents/key, keycenter, veltrack cents, random cents
+GBR_FCC = 69; GBR_FCCD = 70;         // one controller on the cutoff: cc (-1 none), cents at 127
+GBR_EGD = 71;                        // filter envelope depth, cents (0 = no envelope)
+GBR_EGDLY = 72; GBR_EGATT = 73; GBR_EGHOLD = 74; GBR_EGDEC = 75; GBR_EGSUS = 76; GBR_EGREL = 77;  // s, s, s, s, 0..1, s
+GBR_EGVD = 78;                       // fileg_vel2depth, cents at velocity 127
+GBR_LFO = 79; GBR_LFOS = 7;          // 3 LFOs x 7 cells (79..99): 0 pitch, 1 amp, 2 filter
+GBL_ON = 0; GBL_WAVE = 1; GBL_FREQ = 2; GBL_DEPTH = 3; GBL_DELAY = 4; GBL_FADE = 5; GBL_CCD = 6;
+//   wave 0 sine (sfizz's v1 default) 1 triangle (SF2); depth cents / dB / cents; delay, fade s; CCD = extra depth at
+//   full mod wheel (CC1; the SoundFont default modulator's vibrato)
+GBR_SHAPE = 100;                     // 1 = the region has any of the above (the voice runs them)
+// velocity on the envelope times and the loudness curve (2026-11-04; token vel=POW,ATT,DEC,REL, and feg= grew by
+// VEL2ATTACK,VEL2DECAY,VEL2RELEASE): what the SoundFont importer bakes from a file's own modulators
+GBR_VPOW = 101;                      // amp_velpow: gain = (v/127)^POW (0 = the curve, else sfizz's square); Gumbo's own opcode
+GBR_VATT = 102; GBR_VDEC = 103; GBR_VREL = 104;   // ampeg_vel2attack / decay / release: s added at velocity 127 (sfizz)
+GBR_EGVA = 105; GBR_EGVDC = 106; GBR_EGVR = 107;  // fileg_vel2attack / decay / release
 // format 2 tables (gumbo_sfz.lua M.FORMAT_VERSION 2), in the free space between gb_cc_init and GB_FN:
 //   GB_MOD    per region GB_MAXMOD mods of 4 cells: type, cc, a, b (types in gumbo_sfz.lua's header)
 //   GB_CCV    custom curves for live controllers, 128 cells each; GB_CCVMAP[curve index 0..255] = slot + 1
@@ -45,13 +69,19 @@ GBR_NMOD = 58;                       // format 2: live controller mods on this r
 //   GB_KLB    each key's name (a drum kit's sounds: "// label_key NOTE name"), by note: char offset, length
 //   GB_LCH    the names' characters
 GB_MAXMOD = 4; GB_MODS = 16;
-GB_MOD = 1620000;                                         // 4096 x 16 -> 1685536
+GB_MOD = 3850000;                                         // GB_MAXREG x 16 -> 4112144, under GB_AUD (gb_load)
 GB_CCV = 1686000; GB_CCV_MAX = 16;                        // 16 x 128 -> 1688048
 GB_CCVMAP = 1688100;                                      // 256 -> 1688356
 GB_LBL = 1688400; GB_LBL_MAX = 32;                        // 32 x 3 -> 1688496
 GB_SWL = 1688500; GB_SWL_MAX = 64;                        // 64 x 3 -> 1688692
 GB_LCH = 1688700; GB_LCH_CAP = 8000;                      // -> 1696700, under GB_FN
 GB_KLB = 1697000;                                         // 128 x 2: each key's name (char offset, length; 0 = none) -> 1697256
+// format 3 (a bank, 2026-11-02): its programs "// program S LO HI name" (section, lo, hi, name offset, length in
+// GB_LCH) and the section channel 10 plays ("// drums S" -> gb_drum_sec); GB_CHPG = each MIDI channel's program
+// (gb_voice: 0..127 = a melodic program, 128 + p = drum kit p)
+GB_CSVT = 1697270;                                        // 4: gb_csv4's scratch for a prog= token
+GB_CHPG = 1697280;                                        // 16 channels
+GB_PRG = 1697300; GB_PRG_MAX = 256;                       // 256 x 5 -> 1698580, under GB_FN
 // word values
 GB_LM_NOLOOP = 0; GB_LM_ONESHOT = 1; GB_LM_CONT = 2; GB_LM_SUST = 3;
 GB_TR_ATTACK = 0; GB_TR_RELEASE = 1; GB_TR_RELKEY = 2; GB_TR_FIRST = 3; GB_TR_LEGATO = 4;
@@ -154,6 +184,57 @@ function gb_csv4(a, b, out) local(k, p, q) (
   );
 );
 
+// up to n comma-separated numbers in [a, b) -> GB_CSVN[0..n-1] (a missing one stays dflt); returns how many were given
+GB_CSVN = 1698900;                   // 16 cells (after the face's GBF_PGMAP, under GB_FN)
+function gb_csv_n(a, b, n, dflt) local(k, p, q) (
+  k = 0; loop(n, GB_CSVN[k] = dflt; k += 1; );
+  k = 0; p = a;
+  while (k < n && p < b) (
+    q = p; while (q < b && str_getchar(#gb_ln, q) != ',') ( q += 1; );
+    GB_CSVN[k] = gb_num(p, q, dflt); k += 1; p = q + 1;
+  );
+  k;
+);
+// fil=TYPE,CUTOFF,RES,KEYTRACK,KEYCENTER,VELTRACK,RANDOM,CC,CCDEPTH  feg=DELAY,ATTACK,HOLD,DECAY,SUSTAIN%,RELEASE,DEPTH,
+// VEL2DEPTH[,VEL2ATTACK,VEL2DECAY,VEL2RELEASE]  lfo=SLOT,WAVE,FREQ,DEPTH,DELAY,FADE,CC1DEPTH  vel=POW,ATT,DEC,REL
+// -> region r (the converter writes them; see GBR_FTYPE). A keytrack below 0 is Gumbo's (sfizz clamps it): the
+// SoundFont importer needs it. Attack / decay / release may go below 0 when a vel2 part adds to them (clamped at launch).
+function gb_parse_shape(r, c, a, b) local(k, l) (
+  c == 'i' ? (                         // fil
+    gb_csv_n(a, b, 9, 0);
+    // (cutoff, veltrack and the envelope depths beyond sfizz's ranges: the SoundFont importer writes the cutoff and
+    // depth AT VELOCITY 0 plus a velocity slope, which can sit far outside them; the voice clamps the sum per note)
+    r[GBR_FTYPE] = max(0, min(8, GB_CSVN[0] | 0)); r[GBR_FCUT] = max(0.001, GB_CSVN[1]);
+    r[GBR_FRES] = max(-60, min(40, GB_CSVN[2])); r[GBR_FKT] = max(-1200, min(1200, GB_CSVN[3]));
+    r[GBR_FKC] = max(0, min(127, GB_CSVN[4])); r[GBR_FVT] = max(-30000, min(30000, GB_CSVN[5]));
+    r[GBR_FRND] = max(0, min(12000, GB_CSVN[6])); r[GBR_FCC] = GB_CSVN[7] >= 1 && GB_CSVN[7] <= 127 ? GB_CSVN[7] | 0 : -1;
+    r[GBR_FCCD] = max(-12000, min(12000, GB_CSVN[8]));
+    r[GBR_FTYPE] > 0 ? r[GBR_SHAPE] = 1;
+  ) : c == 'e' ? (                     // feg
+    gb_csv_n(a, b, 11, 0);
+    r[GBR_EGDLY] = max(0, GB_CSVN[0]); r[GBR_EGATT] = max(-100, min(100, GB_CSVN[1])); r[GBR_EGHOLD] = max(0, GB_CSVN[2]);
+    r[GBR_EGDEC] = max(-100, min(100, GB_CSVN[3])); r[GBR_EGSUS] = max(0, min(100, GB_CSVN[4])) / 100; r[GBR_EGREL] = max(-100, min(100, GB_CSVN[5]));
+    r[GBR_EGD] = max(-30000, min(30000, GB_CSVN[6])); r[GBR_EGVD] = max(-30000, min(30000, GB_CSVN[7]));
+    r[GBR_EGVA] = max(-100, min(100, GB_CSVN[8])); r[GBR_EGVDC] = max(-100, min(100, GB_CSVN[9])); r[GBR_EGVR] = max(-100, min(100, GB_CSVN[10]));
+    r[GBR_EGD] != 0 || r[GBR_EGVD] != 0 ? r[GBR_SHAPE] = 1;
+  ) : c == 'v' ? (                     // vel
+    gb_csv_n(a, b, 4, 0);
+    r[GBR_VPOW] = max(0, min(20, GB_CSVN[0]));
+    r[GBR_VATT] = max(-100, min(100, GB_CSVN[1])); r[GBR_VDEC] = max(-100, min(100, GB_CSVN[2])); r[GBR_VREL] = max(-100, min(100, GB_CSVN[3]));
+  ) : (                                // lfo
+    gb_csv_n(a, b, 7, 0);
+    k = GB_CSVN[0] | 0;
+    k >= 0 && k <= 2 ? (
+      l = r + GBR_LFO + k * GBR_LFOS;
+      l[GBL_WAVE] = GB_CSVN[1] >= 1 ? 1 : 0; l[GBL_FREQ] = max(0, min(100, GB_CSVN[2]));
+      l[GBL_DEPTH] = max(-12000, min(12000, GB_CSVN[3])); l[GBL_DELAY] = max(0, GB_CSVN[4]); l[GBL_FADE] = max(0, GB_CSVN[5]);
+      l[GBL_CCD] = max(-12000, min(12000, GB_CSVN[6]));
+      l[GBL_ON] = l[GBL_FREQ] > 0 && (l[GBL_DEPTH] != 0 || l[GBL_CCD] != 0);
+      l[GBL_ON] ? r[GBR_SHAPE] = 1;
+    );
+  );
+);
+
 // one "<region> sample=..." line
 function gb_parse_region(len) local(r, p, s0, s1, f, a, eq, b, n, c, v, g, cc, lo, hi, vn, vt, k, i, last, lastv, ff)
 (
@@ -214,6 +295,15 @@ function gb_parse_region(len) local(r, p, s0, s1, f, a, eq, b, n, c, v, g, cc, l
                 g[1] = max(0, min(127, g[1] | 0));
                 r[GBR_NMOD] += 1;
               ) : gb_mods_dropped += 1;
+            ) : c == 'p' && n == 4 && str_getchar(#gb_ln, a + 3) == 'g' ? (   // prog=S,LO,HI (format 3)
+              gb_csv4(eq + 1, b, GB_CSVT);
+              r[GBR_PSEC] = max(0, GB_CSVT[0] | 0);
+              r[GBR_PLO] = max(0, min(127, GB_CSVT[1] | 0)); r[GBR_PHI] = max(0, min(127, GB_CSVT[2] | 0));
+            ) : n == 3 && ((c == 'f' && str_getchar(#gb_ln, a + 1) == 'i' && str_getchar(#gb_ln, a + 2) == 'l')
+                        || (c == 'f' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'g')
+                        || (c == 'l' && str_getchar(#gb_ln, a + 1) == 'f' && str_getchar(#gb_ln, a + 2) == 'o')
+                        || (c == 'v' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'l')) ? (
+              gb_parse_shape(r, c == 'l' || c == 'v' ? c : str_getchar(#gb_ln, a + 1), eq + 1, b);   // fil= feg= lfo= vel=
             ) : gb_unknown_tokens += 1;
           );
         );
@@ -275,6 +365,36 @@ function gb_parse_key_name(len) local(p, q, n, i, k) (
     gb_lch_top += k; gb_nkey += 1;
   );
 );
+// format 3: "// program S LO HI name" -> GB_PRG (the face's program list; the name cut to 64 characters, and to what
+// GB_LCH has left, so a long bank's last names come short rather than missing)
+function gb_parse_program(len) local(p, q, e, k, i) (
+  gb_nprg < GB_PRG_MAX ? (
+    e = GB_PRG + gb_nprg * 5; p = 11; k = 0;
+    while (k < 3 && p < len) (
+      q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+      e[k] = gb_num(p, q, 0) | 0; k += 1; p = q + 1;
+    );
+    k = max(0, min(min(len - p, 64), GB_LCH_CAP - gb_lch_top));
+    k > 0 ? (
+      e[3] = gb_lch_top; e[4] = k;
+      i = 0; loop(k, GB_LCH[gb_lch_top + i] = str_getchar(#gb_ln, p + i); i += 1; );
+      gb_lch_top += k;
+    ) : ( e[3] = 0; e[4] = 0; );
+    e[1] = max(0, min(127, e[1])); e[2] = max(e[1], min(127, e[2]));
+    gb_nprg += 1;
+    // the melodic section: the first program not in the drum section ("// drums" comes before the programs)
+    gb_mel_sec == 0 && e[0] != gb_drum_sec ? gb_mel_sec = e[0];
+  );
+);
+// program entry i's name into #gb_ls; returns its length
+function gb_prog_name(i) local(e, p, k) (
+  #gb_ls = "";
+  i >= 0 && i < gb_nprg ? (
+    e = GB_PRG + i * 5; p = GB_LCH + e[3];
+    k = 0; loop(e[4], sprintf(#gb_lsc, "%c", p[k]); strcat(#gb_ls, #gb_lsc); k += 1; );
+  );
+  strlen(#gb_ls);
+);
 // format 2: "// curve I v0 .. v127" -> a custom curve slot for live controllers
 function gb_parse_curve(len) local(p, q, idx, k, t) (
   p = 9; q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
@@ -305,6 +425,22 @@ function gb_key_name(n) local(p, k) (
   strlen(#gb_ls);
 );
 
+// the converter's "// regions N of M; sample files K; RAM when loaded X MB" -> gb_hdr_mb = X (the unpacked size: 8
+// bytes a sample point; gb_load packs an instrument that would not fit, 2026-11-04)
+function gb_parse_ram(len) local(i, at, q) (
+  i = 11; at = -1;
+  while (at < 0 && i + 7 < len) (
+    str_getchar(#gb_ln, i) == 'l' && str_getchar(#gb_ln, i + 1) == 'o' && str_getchar(#gb_ln, i + 2) == 'a'
+      && str_getchar(#gb_ln, i + 3) == 'd' && str_getchar(#gb_ln, i + 4) == 'e' && str_getchar(#gb_ln, i + 5) == 'd'
+      && str_getchar(#gb_ln, i + 6) == ' ' ? at = i + 7;
+    i += 1;
+  );
+  at >= 0 ? (
+    q = at; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+    gb_hdr_mb = max(0, gb_num(at, q, 0));
+  );
+);
+
 // one line of the file (already in #gb_ln)
 function gb_parse_line() local(len) (
   len = strlen(#gb_ln);
@@ -317,7 +453,10 @@ function gb_parse_line() local(len) (
   : len >= 13 && strncmp(#gb_ln, "// label_cc ", 12) == 0 ? gb_nlbl = gb_parse_name(12, len, GB_LBL, gb_nlbl, GB_LBL_MAX)
   : len >= 13 && strncmp(#gb_ln, "// sw_label ", 12) == 0 ? gb_nswl = gb_parse_name(12, len, GB_SWL, gb_nswl, GB_SWL_MAX)
   : len >= 14 && strncmp(#gb_ln, "// label_key ", 13) == 0 ? gb_parse_key_name(len)
-  : len >= 10 && strncmp(#gb_ln, "// curve ", 9) == 0 ? gb_parse_curve(len);
+  : len >= 10 && strncmp(#gb_ln, "// curve ", 9) == 0 ? gb_parse_curve(len)
+  : len >= 10 && strncmp(#gb_ln, "// drums ", 9) == 0 ? gb_drum_sec = max(0, gb_num(9, len, 0) | 0)
+  : len >= 13 && strncmp(#gb_ln, "// program ", 11) == 0 ? gb_parse_program(len)
+  : len >= 20 && strncmp(#gb_ln, "// regions ", 11) == 0 ? gb_parse_ram(len);
 );
 
 // clear everything a new load fills
@@ -325,6 +464,7 @@ function gb_tables_reset() local(i) (
   gb_nreg = 0; gb_nsmp = 0; gb_pch_top = 0; gb_nvc = 0; gb_fmt_ver = 0;
   gb_bad_values = 0; gb_bad_lines = 0; gb_unknown_tokens = 0; gb_gates_dropped = 0; gb_table_full = 0;
   gb_mods_dropped = 0; gb_nccv = 0; gb_nlbl = 0; gb_nswl = 0; gb_lch_top = 0; gb_nkey = 0;
+  gb_nprg = 0; gb_drum_sec = 0; gb_mel_sec = 0; gb_hdr_mb = 0;
   memset(GB_CCVMAP, 0, 256); memset(GB_KLB, 0, 256);
   i = 0; loop(128, gb_cc_init[i] = 0; i += 1; );
 );

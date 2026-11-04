@@ -261,7 +261,7 @@ function qz_band_shape(sh, f, gdb, q, sl, fmax)
  * never sets it (0), so its branches and the sound are exactly as before.
  */
 function qz_band_apply(o, gs)
-  instance(filter, p, pl, fresh, c_mode, c_shape, c_f, c_g, c_q, c_sl, c_fmax, rgen, byp_shape)
+  instance(filter, p, pl, fresh, c_mode, c_shape, c_f, c_g, c_q, c_sl, c_fmax, rgen, byp_shape, gofs)
   local(mode, sh, f, g, q, sl, fmax, n0, op, live)
 (
   mode = max(0, min(4, slider(o) | 0));
@@ -269,7 +269,7 @@ function qz_band_apply(o, gs)
   sh = max(0, min(16, slider(o + 2) | 0));
   fmax = 0.49 * srate;
   f = min(max(slider(o + 3), 10), fmax);
-  g = slider(o + 4) * gs;
+  g = (slider(o + 4) + gofs) * gs;      // gofs: the face's display bank draws a reacting band where it is now (ReEQ 2)
   q = max(slider(o + 5), 0.1);
   sl = max(0, min(19, slider(o + 6) | 0));
   live = mode >= 2 || (byp_shape && mode == 1);
@@ -530,11 +530,13 @@ QZ_XSCR_N = 326;                         // the scratch block's size; the host a
  * An audio-bank band (and its partner): qz_band_init plus the machinery's state. @init, and @block on a rate change.
  */
 function qz_aud_init()
-  instance(xb, nk, n_drop, opk, opw, op_i, op_step, xf, xc, xc_step, c_pl, pl, r_g)
+  instance(xb, nk, n_drop, opk, opw, op_i, op_step, xf, xc, xc_step, c_pl, pl, r_g, det, det2, dlive, dg, dgap, dlink, ddf, ddw)
 (
   this.qz_band_init();
   nk = 1; n_drop = -1; opk = opw = 0; op_i = 1; op_step = 1 / (0.030 * max(srate, 8000)); r_g = 0;
   xf = 0; xc = 1; xc_step = 1 / (0.030 * max(srate, 8000)); c_pl = -1; pl = 0;
+  det.rk_svf_set_sample_rate(srate); det.rk_svf_bypass(); det.rk_svf_set_to_target(); dlive = 0; dg = dgap = 0;
+  det2.rk_svf_set_sample_rate(srate); det2.rk_svf_bypass(); det2.rk_svf_set_to_target(); dlink = 1; ddf = 1000; ddw = 2;
   xb.qz_band_init();
   xb.nk = 1; xb.n_drop = -1; xb.opk = xb.opw = 0; xb.op_i = 1; xb.op_step = op_step;
 );
@@ -576,6 +578,104 @@ function qz_xf_gain(a, b, g0, g1, q) (
   ) : max(abs(g0), abs(g1)) > QZ_XF_SWAP;
 );
 
+// ======================================================================================================================
+// DYNAMICS (release 2, 2026-11-01): ported from ReEQ 2 (Justin Johnson, MIT; ReEQ2.jsfx band_dyn_* lines ~890-1130), the
+// user: "yes port ReEQ 2s dynamics". A band in Mode Dyn above (3) or Dyn below (4) whose shape can move (Peak, Bell
+// Prop Q, Low Shelf, High Shelf; any other shape plays as On) listens to Quezy's input after the IN trim, or to the
+// sidechain (inputs 3/4) when Dynamics listen = Sidechain, in its own placement, through its own detector filter: a
+// unity-peak band-pass at the band's frequency and Q for a bell, a 12 dB/oct low pass at a low shelf's frequency, a
+// high pass at a high shelf's. The level is RMS-style over about a cycle of that frequency (a sine reads its peak).
+// Every QZ_DYN_STEP samples the gain computer (a 6 dB soft knee, Ratio, capped at Range; Range's sign = the direction)
+// gives the change it wants (Dyn above: how far the level is OVER Threshold; Dyn below, Quezy's: how far UNDER it), the
+// attack or release moves the change towards it (Release sync: the note length at the song's tempo), and when it has
+// moved the band's filter retargets to Gain + change (both times Scale) and glides there over the next QZ_DYN_STEP
+// samples. Frequency, Gain and Q moved while it reacts become targets the tick glides to (10 ms), so automating them
+// never holds the movement up. During a crossfade the movement holds; the hand-back retargets.
+// ======================================================================================================================
+QZ_DYN_STEP = 16;
+QZ_DYN_TINY = 10 ^ -30;
+function qz_dyn_able(sh) ( sh == 0 || sh == 3 || sh == 4 || sh == 14; );
+// a note length (Release sync index 1..21: 1/64T 1/64 1/32T 1/64. 1/32 1/16T 1/32. 1/16 1/8T 1/16. 1/8 1/4T 1/8. 1/4
+// 1/2T 1/4. 1/2 1/1T 1/2. 1/1 1/1.) at the song's tempo, in ms, 5 ms .. 10 s
+function qz_note_ms(i) local(w) (
+  w = i == 1 ? 2 / 192 : i == 2 ? 1 / 64 : i == 3 ? 2 / 96 : i == 4 ? 1.5 / 64 : i == 5 ? 1 / 32 : i == 6 ? 2 / 48 :
+      i == 7 ? 1.5 / 32 : i == 8 ? 1 / 16 : i == 9 ? 2 / 24 : i == 10 ? 1.5 / 16 : i == 11 ? 1 / 8 : i == 12 ? 2 / 12 :
+      i == 13 ? 1.5 / 8 : i == 14 ? 1 / 4 : i == 15 ? 2 / 6 : i == 16 ? 1.5 / 4 : i == 17 ? 1 / 2 : i == 18 ? 2 / 3 :
+      i == 19 ? 0.75 : i == 20 ? 1 : 1.5;
+  max(5, min(10000, w * 240000 / max(tempo, 1)));
+);
+// the detector, tuned and snapped (@block only: rk_svf's bilinear maps read SAMPLE_RATE). Linked (dlink): the band's
+// own frequency and Q. Free (ReEQ 2's unlinked detector): 24 dB/oct Butterworth high and low passes ddw octaves apart
+// round ddf (det, then det2), brought back to 0 dB at the centre (dnorm, from the analogue magnitudes)
+function qz_dyn_det(sh, f, q)
+  instance(det, det2, dlink, ddf, ddw, dnorm, dfree, dlo, dfd, dqd, dds)
+  local(fl, fh, m)
+(
+  dfree = !dlink; dds = sh;            // the shape it was built for (a low shelf listens low, a high shelf high)
+  dfree ? (
+    fl = max(10, ddf * 2 ^ (-0.5 * ddw)); fh = min(0.45 * srate, ddf * 2 ^ (0.5 * ddw)); fh < fl * 1.05 ? fl = fh / 1.05;
+    det.rk_svf_hpb(fl, 3); det2.rk_svf_lpb(fh, 3);
+    det.rk_svf_set_to_target(); det2.rk_svf_set_to_target();
+    m = sqrt(fl * fh);
+    dnorm = sqrt((1 + (fl / m) ^ 8) * (1 + (m / fh) ^ 8));
+    dlo = fl; dfd = ddf; dqd = 1.41 / max(0.25, ddw);
+  ) : (
+    f = max(10, min(f, 0.49 * srate));
+    sh == 3 ? det.rk_svf_lp(f, 0.7071, 1) : sh == 4 ? det.rk_svf_hp(f, 0.7071, 1) : det.rk_svf_bp2(f, max(0.1, q));
+    det.rk_svf_set_to_target();
+    dnorm = 1; dlo = f; dfd = f; dqd = max(0.1, q);
+  );
+);
+// one detector sample (free: through both passes)
+function qz_dyn_x0(v) instance(det, det2, dfree, dnorm) ( dfree ? det2.rk_svf_svf0(det.rk_svf_svf0(v)) * dnorm : det.rk_svf_svf0(v); );
+function qz_dyn_x1(v) instance(det, det2, dfree, dnorm) ( dfree ? det2.rk_svf_svf1(det.rk_svf_svf1(v)) * dnorm : det.rk_svf_svf1(v); );
+// one sample of a reacting band's detector, and every QZ_DYN_STEP samples its gain (@sample, before the band runs)
+function qz_dyn_tick()
+  instance(filter, det, xf, dms0, dms1, dkrms, dg, dgap, dcnt, dthr, dratio, drange, datt, drel, dbelow, dgs,
+           dsh, dsl, dfmax, dpl, dsf, dsq, dsg, dtf, dtq, dtg, dsmooth, dlvl, bidx, dauto, dg1, dg2, datt2, drel2, dgsa)
+  local(x, lvl, over, y, want, mv)
+(
+  dpl == 0 ? (
+    x = this.qz_dyn_x0(qz_di0); dms0 += dkrms * (x * x - dms0) + QZ_DYN_TINY;
+    bidx == qz_dlb ? ( qz_dlx0 = x; qz_dlhit = 1; );
+    bidx == qz_ghost ? qz_ghx0 = x;
+    x = this.qz_dyn_x1(qz_di1); dms1 += dkrms * (x * x - dms1) + QZ_DYN_TINY;
+    bidx == qz_dlb ? qz_dlx1 = x;
+    bidx == qz_ghost ? qz_ghx1 = x;
+  ) : (
+    x = this.qz_dyn_x0(dpl == 1 ? (qz_di0 + qz_di1) * 0.5 : dpl == 2 ? (qz_di0 - qz_di1) * 0.5 : dpl == 3 ? qz_di0 : qz_di1);
+    dms0 += dkrms * (x * x - dms0) + QZ_DYN_TINY;
+    bidx == qz_dlb ? ( qz_dlx0 = qz_dlx1 = x; qz_dlhit = 1; );
+    bidx == qz_ghost ? qz_ghx0 = qz_ghx1 = x;
+  );
+  (dcnt -= 1) <= 0 ? (
+    dcnt = QZ_DYN_STEP;
+    lvl = 10 * log10(max(dpl == 0 ? max(dms0, dms1) : dms0, 10 ^ -20)) + 3.0103;
+    dlvl = lvl;
+    over = dbelow ? dthr - lvl : lvl - dthr;
+    y = over <= -3 ? 0 : over >= 3 ? over : sqr(over + 3) / 12;
+    y *= 1 - 1 / dratio;
+    want = drange < 0 ? -min(y, -drange) : min(y, drange);
+    // Auto (ReEQ 2's): a fast envelope for transients and a slow one that only charges on sustained material; the larger
+    // change wins. Manual: one envelope, Attack and Release.
+    dauto ? (
+      dg1 += (abs(want) > abs(dg1) ? datt : drel) * (want - dg1);
+      dg2 += (abs(want) > abs(dg2) ? datt2 : drel2) * (want - dg2);
+      dg = abs(dg1) > abs(dg2) ? dg1 : dg2;
+    ) : ( dg += (abs(want) > abs(dg) ? datt : drel) * (want - dg); dg1 = dg2 = dg; );
+    mv = abs(dg - dgap) > 0.01 || dgs !== dgsa;   // or Scale moved: the movement is heard times Scale
+    dsf !== dtf || dsq !== dtq || dsg !== dtg ? (
+      dsf *= (dtf / dsf) ^ dsmooth; dsq *= (dtq / dsq) ^ dsmooth; dsg += (dtg - dsg) * dsmooth;
+      abs(dtf / dsf - 1) < 0.0005 && abs(dtq / dsq - 1) < 0.0005 && abs(dtg - dsg) < 0.005 ? ( dsf = dtf; dsq = dtq; dsg = dtg; );
+      mv = 1;
+    );
+    mv && !xf ? (
+      dgap = dg; dgsa = dgs;
+      this.qz_band_shape(dsh, dsf, dsg + dgap * dgs, dsq, dsl, dfmax);
+    );
+  );
+);
+
 /*
  * The audio bank's @block, every block (replaces qz_band_apply there): read the sliders, glide value changes through
  * the stage machinery, crossfade structure changes, take the partner back after a fade. Sets p and pl for @sample.
@@ -584,8 +684,10 @@ function qz_xf_gain(a, b, g0, g1, q) (
  * against the new recipe (the listen's rule).
  */
 function qz_band_step(o, gs)
-  instance(filter, xb, p, pl, fresh, c_mode, c_shape, c_f, c_g, c_q, c_sl, c_fmax, c_pl, xf, xc, xpl, sp, op_i, r_g)
-  local(mode, npl, sh, f, g, q, sl, fmax, live, rest, flat, vchg, sg, xfade)
+  instance(filter, xb, p, pl, fresh, c_mode, c_shape, c_f, c_g, c_q, c_sl, c_fmax, c_pl, xf, xc, xpl, sp, op_i, r_g,
+           dlive, dg, dgap, dms0, dms1, dcnt, dthr, dratio, drange, datt, drel, dbelow, dgs, dsh, dsl, dfmax, dpl,
+           dsf, dsq, dsg, dtf, dtq, dtg, dkrms, dsmooth, bidx, dauto, dlink, ddf, ddw, dlo, dfd, dqd, datt2, drel2, dg1, dg2, dds)
+  local(mode, npl, sh, f, g, q, sl, fmax, live, rest, flat, vchg, sg, xfade, dyn, geff, rel, tms, kk, a, nl, nf, nw)
 (
   mode = max(0, min(4, slider(o) | 0));
   npl = max(0, min(4, slider(o + 1) | 0));
@@ -596,7 +698,21 @@ function qz_band_step(o, gs)
   q = max(slider(o + 5), 0.1);
   sl = max(0, min(19, slider(o + 6) | 0));
   live = mode >= 2;
-  xf && xc >= 1 ? ( xb.qz_obj_save(qz_xscr); this.qz_obj_load(qz_xscr); pl = xpl; xf = 0; );
+  // dynamics: a reacting band's Frequency, Gain and Q become the tick's targets (no retarget here) while nothing else
+  // changes; its detector follows at once
+  dyn = (mode == 3 || mode == 4) && qz_dyn_able(sh);
+  bidx = ((o - 1) / 13) | 0;
+  nl = qz_dyp[16 + bidx] >= 0.5; nf = max(20, min(20000, qz_dyp[32 + bidx])); nw = max(0.25, min(8, qz_dyp[48 + bidx]));
+  dauto = qz_dyp[bidx] >= 0.5;
+  dlive && (nl !== dlink || nf !== ddf || nw !== ddw) ? ( dlink = nl; ddf = nf; ddw = nw; this.qz_dyn_det(sh, c_f, c_q); );
+  dlink = nl; ddf = nf; ddw = nw;
+  dlive && dyn && !xf && mode === c_mode && sh === c_shape && sl === c_sl && fmax === c_fmax && npl === c_pl ? (
+    f !== c_f || q !== c_q ? this.qz_dyn_det(sh, f, q);
+    dtf = f; dtg = g; dtq = q; c_f = f; c_g = g; c_q = q;
+  );
+  geff = g + (dlive && dyn ? dgap * gs : 0);   // a retarget below keeps the movement where it stands
+  xf && xc >= 1 ? ( xb.qz_obj_save(qz_xscr); this.qz_obj_load(qz_xscr); pl = xpl; xf = 0;
+                    dlive ? ( dgap = 1000000; filter.rk_svf_set_interp_samples(QZ_DYN_STEP); ); );   // the partner's glide is 30 ms
   rest = xf ? 0 : this.qz_aud_rest();
   rest ? r_g = c_g;                      // the gain the band rests at: a gain jump is measured from here (qz_xf_gain)
   flat = rest && c_mode < 2;
@@ -611,7 +727,7 @@ function qz_band_step(o, gs)
   xf ? (
     vchg && !xfade && npl === c_pl ? (
       c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax;
-      xb.qz_aud_target(sh, f, g, q, sl, fmax, live);
+      xb.qz_aud_target(sh, f, geff, q, sl, fmax, live);
     );
   ) : xfade && live && c_mode >= 2 && !sg ? (
     // a placement change alone: the partner starts as a copy of the band (a cold partner rang on a narrow band: a Tilt
@@ -622,11 +738,11 @@ function qz_band_step(o, gs)
       qz_ch_sig(0, c_pl) !== qz_ch_sig(0, npl) ? xb.qz_clear_ch(0);
       qz_ch_sig(1, c_pl) !== qz_ch_sig(1, npl) ? xb.qz_clear_ch(1);
     );
-    vchg ? xb.qz_aud_target(sh, f, g, q, sl, fmax, live);
+    vchg ? xb.qz_aud_target(sh, f, geff, q, sl, fmax, live);
     xpl = npl; xc = 0; xf = 1;
     c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax; c_pl = npl;
   ) : xfade ? (
-    xb.qz_aud_target(sh, f, g, q, sl, fmax, live);
+    xb.qz_aud_target(sh, f, geff, q, sl, fmax, live);
     xb.qz_fresh_stages(0, 20); xb.qz_clear_mem(); xb.qz_aud_snap();
     xpl = npl; xc = 0; xf = 1; r_g = g;  // the partner starts on the new gain
     c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax; c_pl = npl;
@@ -634,10 +750,40 @@ function qz_band_step(o, gs)
     npl !== c_pl && (flat || fresh) ? ( pl = c_pl = npl; );
     vchg ? (
       c_mode = mode; c_shape = sh; c_f = f; c_g = g; c_q = q; c_sl = sl; c_fmax = fmax;
-      this.qz_aud_target(sh, f, g, q, sl, fmax, live);
+      this.qz_aud_target(sh, f, geff, q, sl, fmax, live);
     );
   );
   fresh ? ( this.qz_aud_snap(); pl = c_pl = npl; r_g = c_g; fresh = 0; );
+  // dynamics: start (clean, the filter's glide shortened to one tick), the block's settings, or stop (back to the
+  // static gain over the normal 30 ms)
+  dyn ? (
+    !dlive ? (
+      dlive = 1; dg = dgap = dg1 = dg2 = 0; dms0 = dms1 = 0; dcnt = 0;
+      dsf = dtf = c_f; dsg = dtg = c_g; dsq = dtq = c_q;
+      this.qz_dyn_det(sh, c_f, c_q);
+      filter.rk_svf_set_interp_samples(QZ_DYN_STEP);
+    );
+    sh !== dds ? this.qz_dyn_det(sh, c_f, c_q);   // a shape change while reacting (a low shelf made a high one)
+    dthr = slider(o + 7); dratio = max(1, slider(o + 8)); drange = slider(o + 9);
+    dbelow = mode == 4; dgs = gs; dsh = sh; dsl = sl; dfmax = fmax; dpl = pl;
+    rel = slider(o + 12) | 0;
+    tms = rel > 0 ? qz_note_ms(rel) : slider(o + 11);
+    kk = QZ_DYN_STEP / (0.001 * srate);
+    dauto ? (                            // Auto: the attack from the detector's frequency and Q (ReEQ 2's), in ms
+      a = min(max(1000 * (1.5 / dfd + dqd / ($pi * dfd)) + 0.5, 0.5), 30);
+      datt = 1 - exp(-kk / a); drel = 1 - exp(-kk / min(max(8 * a, 25), 300));
+      datt2 = 1 - exp(-kk / max(10 * a, 50)); drel2 = 1 - exp(-kk / min(max(40 * a, 150), 1500));
+    ) : (
+      datt = 1 - exp(-kk / max(0.05, slider(o + 10)));
+      drel = 1 - exp(-kk / max(1, tms));
+    );
+    dkrms = 1 - exp(-1 / (max(1 / max(10, dlo), 0.001) * srate));
+    dsmooth = 1 - exp(-QZ_DYN_STEP / (0.01 * srate));
+  ) : dlive ? (
+    dlive = 0; dg = dgap = 0;
+    filter.rk_svf_set_interp_samples(SMOOTHING_TIME_MS * 0.001 * srate);
+    !xf ? this.qz_aud_target(sh, c_f, c_g, c_q, c_sl, c_fmax, live);
+  );
   rest = xf ? 0 : this.qz_aud_rest();
   p = live || !rest || xf;
   sp = xf || op_i < 1;                   // the slow path (a crossfade or a one-pole glide); @sample clears it when done
@@ -649,10 +795,11 @@ function qz_band_step(o, gs)
  * object, the one-pole's glide when it runs); a crossfade runs the band and its partner on the same input.
  */
 function qz_band_run()
-  instance(filter, xb, p, pl, sp, xf, xc, xc_step, xpl, o0, o1, op_i)
+  instance(filter, xb, p, pl, sp, xf, xc, xc_step, xpl, o0, o1, op_i, dlive)
   local(m, s)
 (
   p ? (
+    dlive ? this.qz_dyn_tick();          // dynamics: the detector, and every QZ_DYN_STEP samples the band's gain
     sp ? (                                // the slow path: a crossfade, or the one-pole's glide (sp off once it lands)
       xf ? (
         xc < 1 ? ( this.qz_obj_tick(); this.qz_obj_route(spl0, spl1, pl); );

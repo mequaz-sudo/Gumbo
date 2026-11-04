@@ -62,3 +62,101 @@ function gb_eq_display_apply(tone) (
   gbe_d_ton ? gbe_d5.qz_band_shape(15, GBE_PIVOT, tone * GBE_TILT, 0.7071, 1, 0.49 * srate);
   gbe_d_ton ? gbe_d5.filter.rk_svf_set_to_target();   // the shape sets targets; the magnitude reads the live ones
 );
+
+// ── each instrument's own EQ (the owner, 2026-11-02: "each instrument own eq") ──
+// A Gumbo remembers the EQ page (the four bands and TONE) per instrument it has played: changing instruments stores
+// the EQ under the old one and brings back the new one's (flat, the sliders' defaults, the first time). The memory is
+// saved with the project (@serialize, gate 3). An instrument is known by its path (case and slash direction ignored).
+// Nothing loaded yet (key 0): the first instrument keeps the EQ already set. Called from @gfx when a load finishes
+// (outside the loader's lock: slider_automate can make REAPER run @serialize in the same thread) and from the tests.
+GB_EQM = 1745000; GB_EQM_N = 32;     // 32 instruments x GB_EQM_W cells -> 1746024 (clear of GBF_MATCH .. GBF_IDX_BASE)
+GB_EQM_W = 32;                       // +0 key (0 = empty), +1 age (for reuse), +2.. the values in GB_EQM_SL order
+GB_EQM_NV = 29;                      // 4 bands x 7 (mode, place, shape, freq, gain, Q, slope) + TONE (slider 7)
+GB_EQM_DEF = GB_EQM + GB_EQM_N * GB_EQM_W;   // 29 defaults (the slider lines' own): 1746024 -> 1746053
+GB_EQM_SL = GB_EQM_DEF + 32;                 // 29 slider numbers: 1746056 -> 1746085
+gb_eqm_i = 0;
+loop(4,
+  gb_eqm_j = 0;
+  loop(7, GB_EQM_SL[gb_eqm_i * 7 + gb_eqm_j] = GBE_O1 + gb_eqm_i * 13 + gb_eqm_j; gb_eqm_j += 1; );
+  gb_eqm_i += 1;
+);
+GB_EQM_SL[28] = 7;
+// defaults, band by band: mode, place, shape, freq, gain, Q, slope (as the slider lines in Gumbo_ReaKit.jsfx)
+GB_EQM_DEF[0] = 2; GB_EQM_DEF[1] = 0; GB_EQM_DEF[2] = 3; GB_EQM_DEF[3] = 120;   GB_EQM_DEF[4] = 0; GB_EQM_DEF[5] = 0.7071; GB_EQM_DEF[6] = 1;
+GB_EQM_DEF[7] = 2; GB_EQM_DEF[8] = 0; GB_EQM_DEF[9] = 0; GB_EQM_DEF[10] = 400;  GB_EQM_DEF[11] = 0; GB_EQM_DEF[12] = 0.8; GB_EQM_DEF[13] = 1;
+GB_EQM_DEF[14] = 2; GB_EQM_DEF[15] = 0; GB_EQM_DEF[16] = 0; GB_EQM_DEF[17] = 2500; GB_EQM_DEF[18] = 0; GB_EQM_DEF[19] = 0.8; GB_EQM_DEF[20] = 1;
+GB_EQM_DEF[21] = 2; GB_EQM_DEF[22] = 0; GB_EQM_DEF[23] = 4; GB_EQM_DEF[24] = 10000; GB_EQM_DEF[25] = 0; GB_EQM_DEF[26] = 0.7071; GB_EQM_DEF[27] = 1;
+GB_EQM_DEF[28] = 0;
+gb_eqm_key = 0;                      // the instrument whose EQ the sliders hold (0 = none yet); @serialize sets it too
+gb_eqm_age = 0;
+
+// a path's key: never 0 for a path; "" -> 0
+function gb_eqm_hash(s) local(i, n, c, h) (
+  h = 7; n = strlen(s); i = 0;
+  loop(n,
+    c = str_getchar(s, i);
+    c >= 65 && c <= 90 ? c += 32;    // A-Z -> a-z
+    c == 92 ? c = 47;                // \ -> /
+    h = h * 31 + c; h -= floor(h / 2147483629) * 2147483629;
+    i += 1;
+  );
+  n > 0 ? h + 1 : 0;
+);
+// the entry holding key, or -1
+function gb_eqm_find(key) local(i, e, r) (
+  r = -1; i = 0;
+  loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; r < 0 && e[0] == key ? r = e; i += 1; );
+  r;
+);
+// the sliders -> key's entry (a free one, else the one used longest ago)
+function gb_eqm_stash(key) local(e, i, o, oa) (
+  e = gb_eqm_find(key);
+  e < 0 ? (
+    i = 0; oa = -1;
+    loop(GB_EQM_N, o = GB_EQM + i * GB_EQM_W; e < 0 && o[0] == 0 ? e = o; i += 1; );
+    e < 0 ? (
+      i = 0;
+      loop(GB_EQM_N, o = GB_EQM + i * GB_EQM_W; oa < 0 || o[1] < oa ? ( oa = o[1]; e = o; ); i += 1; );
+    );
+  );
+  i = 0;
+  loop(GB_EQM_NV, e[2 + i] = slider(GB_EQM_SL[i]); i += 1; );
+  gb_eqm_age += 1; e[1] = gb_eqm_age;
+  e[0] = key;                        // last: @serialize (another thread) skips an entry with no key
+);
+// key's entry (or the defaults) -> the sliders; only changed ones, each automated (undo, the host's own view).
+// Gumbo's face never changes a band's mode, so the order of the writes does not matter here (Quezy's qzg_restore).
+function gb_eqm_apply(key) local(e, i, n, v) (
+  e = gb_eqm_find(key);
+  i = 0;
+  loop(GB_EQM_NV,
+    n = GB_EQM_SL[i]; v = e >= 0 ? e[2 + i] : GB_EQM_DEF[i];
+    v !== slider(n) ? ( slider(n) = v; slider_automate(slider(n)); );
+    i += 1;
+  );
+  e >= 0 ? ( gb_eqm_age += 1; e[1] = gb_eqm_age; );
+);
+// the instrument changed to new key nk
+function gb_eqm_switch(nk) (
+  nk != gb_eqm_key ? (
+    gb_eqm_key != 0 && nk != 0 ? ( gb_eqm_stash(gb_eqm_key); gb_eqm_apply(nk); );
+    gb_eqm_key = nk;
+  );
+);
+// @serialize gate 3 (rd = reading): the used entries; on a read the caller sets the key of the instrument restored
+function gb_eqm_ser(rd) local(n, i, e) (
+  rd ? (
+    memset(GB_EQM, 0, GB_EQM_N * GB_EQM_W);
+    n = 0; file_var(0, n); n = max(0, min(GB_EQM_N, n | 0));
+    i = 0;
+    loop(n, file_mem(0, GB_EQM + i * GB_EQM_W, GB_EQM_W); i += 1; );
+    gb_eqm_age = 0; i = 0;
+    loop(n, e = GB_EQM + i * GB_EQM_W; gb_eqm_age = max(gb_eqm_age, e[1]); i += 1; );
+  ) : (
+    n = 0; i = 0;
+    loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; e[0] != 0 ? n += 1; i += 1; );
+    file_var(0, n);
+    i = 0;
+    loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; e[0] != 0 && n > 0 ? ( file_mem(0, e, GB_EQM_W); n -= 1; ); i += 1; );
+  );
+);

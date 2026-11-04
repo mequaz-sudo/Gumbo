@@ -12,6 +12,7 @@ local r = reaper
 local _, own, sec, cmd = r.get_action_context()
 local dir = own:match("^(.*)[\\/]") or "."
 local G = dofile(dir .. "/gumbo_sfz.lua")
+local SF2 = dofile(dir .. "/gumbo_sf2.lua")      -- SoundFonts: unpacked into an SFZ bank, then converted as one
 local X = dofile(dir .. "/gumbo_index.lua")
 local C = dofile(dir .. "/gumbo_helper_core.lua")
 
@@ -63,7 +64,7 @@ local function find_imports(root)
   walk(root)
   return out
 end
-local ENV = { mkdir = function(d) r.RecursiveCreateDirectory(d, 0) end, find_imports = find_imports }
+local ENV = { mkdir = function(d) r.RecursiveCreateDirectory(d, 0) end, find_imports = find_imports, sf2 = SF2 }
 -- (find_imports lists *.gumbo.txt; a conversion in progress is ".converting-*.gumbo.txt" in the imports ROOT, which
 -- holds no instruments -- walk skips it below)
 
@@ -101,7 +102,7 @@ local function poll()
   end
   if kind ~= C.KIND_IMPORT then return answer(seq, token, C.ERR_KIND) end
   local sfz = (len > 0 and len <= C.PATH_MAX) and C.cells_to_text(cells) or nil
-  if not sfz or not sfz:lower():match("%.sfz$") then return answer(seq, token, C.ERR_PATH) end
+  if not sfz or not (sfz:lower():match("%.sfz$") or sfz:lower():match("%.sf2$")) then return answer(seq, token, C.ERR_PATH) end
   -- a converter error must not end the helper (Gumbo would wait for a reply that never comes): it is a failed import
   local okc, st, regions, out, _, why = pcall(C.import_one, G, X, ENV, sfz, IMPORTS, LIST)
   if not okc then st, regions, out, why = C.ERR_CONVERT, 0, nil, C.WHY_NOTHING end
@@ -129,7 +130,8 @@ local function cells(base, len_at, at, max)
   return C.cells_to_text(t) or ""
 end
 local function icon_file(name)
-  for _, d in ipairs({ res .. "/Data/track_icons/EON/", res .. "/Data/EON_Gumbo/icons/" }) do
+  -- (EON_Gumbo/gumbo_icons: the Gumbo package's own, 2026-11-04; EON_Gumbo/icons: the 1.0 starter package's)
+  for _, d in ipairs({ res .. "/Data/track_icons/EON/", res .. "/Data/EON_Gumbo/gumbo_icons/", res .. "/Data/EON_Gumbo/icons/" }) do
     if r.file_exists(d .. name .. ".png") then return d .. name .. ".png" end
   end
   return ""

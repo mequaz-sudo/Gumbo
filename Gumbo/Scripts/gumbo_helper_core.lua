@@ -100,7 +100,7 @@ function C.import_target(sfz_path, imports_root)
   if not dir then dir, file = ".", p end
   local lib = dir:match("([^/]+)$") or "library"
   if GENERIC[lib:lower()] then lib = dir:match("([^/]+)/[^/]+$") or lib end
-  local base = file:gsub("%.[Ss][Ff][Zz]$", "")
+  local base = file:gsub("%.[Ss][Ff][Zz2]$", "")   -- .sfz or .sf2
   local root = tostring(imports_root):gsub("\\", "/"):gsub("/+$", "")
   return root .. "/" .. C.slug(lib) .. "_" .. C.hash6(dir:lower()) .. "/" .. C.slug(base) .. ".gumbo.txt", root .. "/"
     .. C.slug(lib) .. "_" .. C.hash6(dir:lower())
@@ -170,11 +170,30 @@ end
 -- a failed import leaves nothing behind: the conversion goes to a spare file in the imports root, then (only if it
 -- worked) into place with C.write_safely (an earlier copy stays until the new one is in). Returns ok, regions, out,
 -- report, why (a C.WHY_*). G = gumbo_sfz.lua; env.mkdir as for C.import_one.
+-- A SoundFont (.sf2, 2026-11-02) is unpacked first (env.sf2 = gumbo_sf2.lua) into its import folder -- its samples
+-- and an SFZ bank -- and that SFZ is converted beside them (so its sample paths stay relative to the folder). A
+-- failed unpack removes the samples it wrote; the empty folders stay (Lua cannot remove a folder).
 function C.convert_into(G, env, sfz_path, imports_root)
   local out, out_dir = C.import_target(sfz_path, imports_root)
   local root = tostring(imports_root):gsub("\\", "/"):gsub("/+$", "")
   env.mkdir(root)
-  local tmp = root .. "/.converting-" .. C.hash6(out:lower()) .. ".gumbo.txt"
+  local tmp_dir = root
+  if tostring(sfz_path):lower():match("%.sf2$") then
+    if not env.sf2 then return false, 0, nil, nil, C.WHY_UNREADABLE end
+    env.mkdir(out_dir .. "/samples")
+    local xr = env.sf2.extract(sfz_path, out_dir)
+    if not xr.ok then
+      for _, nm in ipairs(xr.written or {}) do os.remove(out_dir .. "/samples/" .. nm) end
+      -- why: compressed (SF3) or ROM samples only -> not playable audio; no zones -> nothing to play; else unreadable
+      local sk = xr.report and xr.report.skipped or {}
+      local why = ((sk.sf3_compressed or 0) + (sk.rom_sample or 0) > 0) and C.WHY_BADAUDIO
+        or (xr.regions == 0 and #(xr.report and xr.report.errors or {}) > 0
+            and tostring(xr.report.errors[1]):find("no playable", 1, true)) and C.WHY_NOTHING or C.WHY_UNREADABLE
+      return false, 0, nil, xr.report, why
+    end
+    sfz_path, tmp_dir = xr.sfz, out_dir
+  end
+  local tmp = tmp_dir .. "/.converting-" .. C.hash6(out:lower()) .. ".gumbo.txt"
   os.remove(tmp)
   local res = G.convert(sfz_path, tmp)
   if not res.ok then os.remove(tmp); return false, 0, nil, res.report, C.failure_reason(res.report) end
