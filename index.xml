@@ -3,7 +3,7 @@
   <category name="Gumbo">
     <reapack name="Gumbo" type="effect" desc="Gumbo - an SFZ instrument player: play SFZ sample libraries inside REAPER">
       <metadata>
-        <description><![CDATA[Gumbo plays SFZ sample libraries inside REAPER, in one free JSFX. Pick an instrument in its browser (search and favourites) and play, or drop an SFZ library on its window. A four-band EQ with a tilt TONE, drive, the library's own controls, pitch and mod wheels, drum pads with the sounds' names, and keys you can play from the mixer. With the Gumbo helper running, each track takes its instrument's name, colour and icon. Install Gumbo starter sounds from this repository for 12 instruments to start with. Free to use; the code stays EON Studios' (Gumbo_LICENSE.md).]]></description>
+        <description><![CDATA[Gumbo plays SFZ sample libraries inside REAPER, in one free JSFX. Pick an instrument in its browser (search and favourites) and play, or drop an SFZ library or a SoundFont on its window. A four-band EQ with a tilt TONE, drive, the library's own controls, pitch and mod wheels, drum pads with the sounds' names, and keys you can play from the mixer. With the Gumbo helper running, each track takes its instrument's name, colour and icon. Install Gumbo GM sounds from this repository for a whole General MIDI set; the VSCO 2 orchestra is a separate free download (the Gumbo-Sounds repository). Free to use; the code stays EON Studios' (Gumbo_LICENSE.md).]]></description>
         <link rel="repository">https://github.com/mequaz-sudo/Gumbo</link>
       </metadata>
       <version name="1.0.0" author="Quaz (EON Studios)" time="2026-11-01T17:06:18Z">
@@ -313,10 +313,83 @@
         <source type="script" file="gumbo_sf2.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/8816870b74cb0d19d5ddfd66151a0037117a49c7/Gumbo/Scripts/gumbo_sf2.lua</source>
         <source type="script" file="gumbo_sfz.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/8816870b74cb0d19d5ddfd66151a0037117a49c7/Gumbo/Scripts/gumbo_sfz.lua</source>
       </version>
+      <version name="1.1.1" author="Quaz (EON Studios)" time="2026-11-05T09:18:24Z">
+        <changelog><![CDATA[A General MIDI set keeps its 16 channels apart: two instruments on the same note, one channel's sustain pedal, pitch bend, volume or all-notes-off no longer reach the others. A note played just as an instrument finishes loading now plays; a stray note-off no longer sounds a piano's release noise; a held articulation key no longer makes the next note count as connected. Re-importing a SoundFont keeps the earlier copy playing until the new one is complete, and a damaged SoundFont is refused without harm. An instrument whose sounds are all missing says it plays nothing.]]></changelog>
+        <source type="data" file="EON_Gumbo/gumbo_icons/bass.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/bass.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/bassoon.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/bassoon.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/brass.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/brass.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/cello.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/cello.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/choir.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/choir.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/clarinet.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/clarinet.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/drum_kit.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/drum_kit.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/electric_piano.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/electric_piano.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/flute.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/flute.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/guitar.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/guitar.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/harp.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/harp.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/keys.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/keys.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/kick.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/kick.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/mallets.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/mallets.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/oboe.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/oboe.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/organ.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/organ.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/percussion.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/percussion.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/piano.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/piano.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/saxophone.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/saxophone.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/snare.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/snare.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/strings.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/strings.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/synth.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/synth.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/synth_lead.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/synth_lead.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/synth_pad.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/synth_pad.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/timpani.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/timpani.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/trombone.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/trombone.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/trumpet.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/trumpet.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/tuba.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/tuba.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/upright_bass.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/upright_bass.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/violin.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/violin.png</source>
+        <source type="data" file="EON_Gumbo/gumbo_icons/vocal.png">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Data/EON_Gumbo/gumbo_icons/vocal.png</source>
+        <source file="Eon_JSFX/Instruments/Gumbo_ReaKit.jsfx">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Eon_JSFX/Instruments/Gumbo_ReaKit.jsfx</source>
+        <source file="Gumbo_LICENSE.md">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Gumbo_LICENSE.md</source>
+        <source file="ReaKit/buttons_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/buttons_kbsg.jsfx-inc</source>
+        <source file="ReaKit/gb_eq.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/gb_eq.jsfx-inc</source>
+        <source file="ReaKit/gb_face.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/gb_face.jsfx-inc</source>
+        <source file="ReaKit/gb_face_p2.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/gb_face_p2.jsfx-inc</source>
+        <source file="ReaKit/gb_helper.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/gb_helper.jsfx-inc</source>
+        <source file="ReaKit/gb_load.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/gb_load.jsfx-inc</source>
+        <source file="ReaKit/gb_sfz.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/gb_sfz.jsfx-inc</source>
+        <source file="ReaKit/gb_voice.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/gb_voice.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/knobs_kbsg.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg_p2.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/knobs_kbsg_p2.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg_p3.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/knobs_kbsg_p3.jsfx-inc</source>
+        <source file="ReaKit/knobs_kbsg_p4.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/knobs_kbsg_p4.jsfx-inc</source>
+        <source file="ReaKit/meters_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/meters_kbsg.jsfx-inc</source>
+        <source file="ReaKit/qz_engine.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/qz_engine.jsfx-inc</source>
+        <source file="ReaKit/rk_curve.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_curve.jsfx-inc</source>
+        <source file="ReaKit/rk_menu.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_menu.jsfx-inc</source>
+        <source file="ReaKit/rk_piano.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_piano.jsfx-inc</source>
+        <source file="ReaKit/rk_sat.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_sat.jsfx-inc</source>
+        <source file="ReaKit/rk_side_gutter.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_side_gutter.jsfx-inc</source>
+        <source file="ReaKit/rk_srf.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_srf.jsfx-inc</source>
+        <source file="ReaKit/rk_svf.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_svf.jsfx-inc</source>
+        <source file="ReaKit/rk_svf_match.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_svf_match.jsfx-inc</source>
+        <source file="ReaKit/rk_textin.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_textin.jsfx-inc</source>
+        <source file="ReaKit/rk_textopts.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_textopts.jsfx-inc</source>
+        <source file="ReaKit/rk_theme.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_theme.jsfx-inc</source>
+        <source file="ReaKit/rk_wheel.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/rk_wheel.jsfx-inc</source>
+        <source file="ReaKit/utils_kbsg.jsfx-inc">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/ReaKit/utils_kbsg.jsfx-inc</source>
+        <source type="script" main="main" file="Gumbo - Add a library.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/Gumbo%20-%20Add%20a%20library.lua</source>
+        <source type="script" main="main" file="Gumbo - Dock.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/Gumbo%20-%20Dock.lua</source>
+        <source type="script" main="main" file="Gumbo - Start with REAPER.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/Gumbo%20-%20Start%20with%20REAPER.lua</source>
+        <source type="script" main="main" file="Gumbo helper.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/Gumbo%20helper.lua</source>
+        <source type="script" file="ReaKit FX - Dock following the selected track.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/ReaKit%20FX%20-%20Dock%20following%20the%20selected%20track.lua</source>
+        <source type="script" file="ReaKit FX - Dock icon picker.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/ReaKit%20FX%20-%20Dock%20icon%20picker.lua</source>
+        <source type="script" file="gumbo_helper_core.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/gumbo_helper_core.lua</source>
+        <source type="script" file="gumbo_index.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/gumbo_index.lua</source>
+        <source type="script" file="gumbo_sf2.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/gumbo_sf2.lua</source>
+        <source type="script" file="gumbo_sfz.lua">https://raw.githubusercontent.com/mequaz-sudo/Gumbo/785fd701f28cb87151503967d504a9c027963e3c/Gumbo/Scripts/gumbo_sfz.lua</source>
+      </version>
     </reapack>
-    <reapack name="Gumbo GM sounds" type="data" desc="Gumbo GM sounds - ten free General MIDI instruments for Gumbo: pianos, electric pianos, guitar, bass, strings, sitar and shanai">
+    <reapack name="Gumbo GM sounds" type="data" desc="Gumbo GM sounds - a whole free General MIDI set for Gumbo: 128 programs and the drum kits">
       <metadata>
-        <description><![CDATA[Ten General MIDI instruments for Gumbo from the Discord SFZ GM Bank: acoustic, bright and electric grand pianos, an electric piano, steel-string guitar, finger bass, tremolo and pizzicato strings, sitar and shanai. Public domain (CC0), except the acoustic grand (the Salamander Grand Piano by Alexander Holm, CC-BY); LICENSES.txt beside the sounds credits each one.]]></description>
+        <description><![CDATA[Gumbo GM: a whole General MIDI set for Gumbo in one instrument, the 128 programs and the drum kits, picked with the program box or by program changes, kits on channel 10. Made from MuseScore General by S. Christian Collins, from FluidR3 by Frank Wen and FluidR3Mono by Michael Cowgill, under the MIT licence; the notices are in MuseScore_General_License.md beside the sounds. About 80 MB to download, about 820 MB when loaded.]]></description>
         <link rel="repository">https://github.com/mequaz-sudo/Gumbo</link>
       </metadata>
       <version name="1.0.0" author="Quaz (EON Studios)" time="2026-11-01T19:23:26Z">
