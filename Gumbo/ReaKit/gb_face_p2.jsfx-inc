@@ -306,10 +306,10 @@ function gbf_page_controls(cx, dy, cw, kr) local(n, i, kx, c, nv) (
   loop(n,
     gb_ready && gb_nlbl > 0 ? ( c = GB_LBL[i * 3]; gb_name_str(GB_LBL, i); strcpy(#gbf_cl, #gb_ls); )
                             : ( c = i == 0 ? 1 : 11; strcpy(#gbf_cl, i == 0 ? "MOD WHEEL" : "EXPRESSION"); );
-    nv = gbf_knob(GBF_K_CTL + i, cx + kx * (i + 0.5), dy, kr, gb_cc[c], 0, 127, gb_cc_init[c], 128, #gbf_cl,
-                  sprintf(#gbf_v, "CC%d  %d", c, gb_cc[c]), 0);
+    nv = gbf_knob(GBF_K_CTL + i, cx + kx * (i + 0.5), dy, kr, gb_cc0[c], 0, 127, gb_cc_init[c], 128, #gbf_cl,
+                  sprintf(#gbf_v, "CC%d  %d", c, gb_cc0[c]), 0);
     nv = floor(nv + 0.5);
-    nv != gb_cc[c] && gb_ready ? ( gb_ui_cc_n = c; gb_ui_cc_v = nv; gb_ui_cc_seq += 1; );
+    nv != gb_cc0[c] && gb_ready ? ( gb_ui_cc_n = c; gb_ui_cc_v = nv; gb_ui_cc_seq += 1; );
     i += 1;
   );
   gbf_font(max(7, floor(9 * gbf_s)), 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
@@ -374,14 +374,14 @@ function gbf_perf_row(x, y, w) local(bw, v, i, c, d) (
   d = (gbf_tk - 1) * 8 * gbf_s;        // the labels' growth at this TEXT SIZE: the bars sit under them
   bw = (w - 96 * gbf_s) * 0.5; i = 0;    // two bars, then room for the pedal lamp
   loop(2,
-    c = i == 0 ? 1 : 11; v = gb_cc[c] / 127;
+    c = i == 0 ? 1 : 11; v = gb_cc0[c] / 127;
     gbf_scr(0.79, 0.54, 0.35, 1); gfx_x = x + i * (bw + 8 * gbf_s); gfx_y = y; gfx_drawstr(i == 0 ? "MOD WHEEL" : "EXPRESSION");
     gbf_scr(0.23, 0.16, 0.12, 1); gfx_rect(x + i * (bw + 8 * gbf_s), y + 12 * gbf_s + d, bw, 5 * gbf_s);
     gbf_scr(1, 0.69, 0.40, 1); gfx_rect(x + i * (bw + 8 * gbf_s), y + 12 * gbf_s + d, bw * v, 5 * gbf_s);
     i += 1;
   );
   // the sustain pedal: lit while it is down (CC64 >= 64)
-  gb_cc[64] >= 64 ? gbf_scr(1, 0.69, 0.40, 1) : gbf_scr(0.29, 0.20, 0.15, 1);
+  gb_cc0[64] >= 64 ? gbf_scr(1, 0.69, 0.40, 1) : gbf_scr(0.29, 0.20, 0.15, 1);
   gfx_circle(x + w - 60 * gbf_s, y + 14 * gbf_s, 4 * gbf_s, 1);
   gbf_scr(0.79, 0.54, 0.35, 1); gfx_x = x + w - 52 * gbf_s; gfx_y = y + 9 * gbf_s; gfx_drawstr("SUSTAIN");
 );
@@ -390,7 +390,7 @@ function gbf_perf_row(x, y, w) local(bw, v, i, c, d) (
 // ── the wheels left of the keyboard: pitch bend (springs back to the centre on release) and the mod wheel (stays) ──
 // Drawn by the shared ReaKit wheel (rk_wheel); a press jumps it to the mouse and a drag moves it. The
 // bend goes to the audio thread through its own mailbox (gb_ui_bend_*), the mod wheel as controller 1 through the
-// CONTROLS page's (gb_ui_cc_*); both show what MIDI does to them too (gb_bend, gb_cc[1]).
+// CONTROLS page's (gb_ui_cc_*); both show what MIDI does to them too (gb_bend, gb_cc0[1]).
 function gbf_wheels(x, y, w, h, ctx) local(ww, x2, h1, h2, p, v, whl, sent) (
   whl = ctx ? gbf_swhl : gbf_whl; sent = ctx ? gbf_smod : gbf_mod_sent;
   ww = (w - (ctx ? 3 : 6) * gbf_s) * 0.5; x2 = x + ww + (ctx ? 3 : 6) * gbf_s;
@@ -416,7 +416,7 @@ function gbf_wheels_draw(y, h, ctx) local(whl, sent) (
   whl = ctx ? gbf_swhl : gbf_whl; sent = ctx ? gbf_smod : gbf_mod_sent;
   rk_wheel_draw(gbf_wh_x, y, gbf_wh_w, h, whl == 1 ? gb_ui_bend_v / 16383 : 0.5 + 0.5 * gb_bend / max(1, gb_bend_rng), 1,
                 (gbf_wh_h1 || whl == 1) ? 1 : 0, gbf_s, gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_bg_r, gbf_bg_g, gbf_bg_b);
-  rk_wheel_draw(gbf_wh_x2, y, gbf_wh_w, h, whl == 2 ? sent / 127 : gb_cc[1] / 127, 0,
+  rk_wheel_draw(gbf_wh_x2, y, gbf_wh_w, h, whl == 2 ? sent / 127 : gb_cc0[1] / 127, 0,
                 (gbf_wh_h2 || whl == 2) ? 1 : 0, gbf_s, gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_bg_r, gbf_bg_g, gbf_bg_b);
 );
 
@@ -596,7 +596,7 @@ function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k,
     i = gbf_pbank * 16 + k;
     i < gbf_npad ? (
       n = GBF_PAD[i];
-      GB_NT[n] || gbf_pad_note == n ? GBF_PGL[n] = 1 : GBF_PGL[n] *= 0.86;
+      GB_NTA[n] || gbf_pad_note == n ? GBF_PGL[n] = 1 : GBF_PGL[n] *= 0.86;
       gl = GBF_PGL[n];
       hot = !gbf_menu_block && gbf_hit(px, py, pw, ph);
       hot ? ( gbf_pad_hit = n; gbf_pad_vel = 30 + 97 * max(0, min(1, (py + ph - my) / max(1, ph))); );
@@ -847,9 +847,9 @@ function gbf_strip() local(s, fs, i, fill) (
 
 function gbf_picture_key() local(i, h) (
   h = gb_job * 7 + gb_js * 13 + gb_ready * 3 + gb_nreg + gb_load_gen * 101 + gb_sw_cur * 17
-      + gb_cc[1] * 7.7 + gb_bend * 13.1 + gbf_swhl * 3.3 + floor(gbf_ebt * 40) * 1.9 + gbf_eopen * 5.3 + gbf_shit * 0.37
+      + gb_cc0[1] * 7.7 + gb_bend * 13.1 + gbf_swhl * 3.3 + floor(gbf_ebt * 40) * 1.9 + gbf_eopen * 5.3 + gbf_shit * 0.37
       + gbf_skb_drag * 11.9 + (gbf_wh_h1 + 2 * gbf_wh_h2) * 2.1; i = 0;
-  loop(128, GB_NT[i] ? h += (i + 1) * 31; i += 1; );
+  loop(128, GB_NTA[i] ? h += (i + 1) * 31; i += 1; );
   h;
 );
 

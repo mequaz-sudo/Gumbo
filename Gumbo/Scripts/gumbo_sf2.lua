@@ -33,9 +33,12 @@
 -- pitch), key scaling of envelope times, chorus / reverb sends, sm24 (24-bit) data, ROM samples, SF3 (compressed).
 --
 -- API:  local S = dofile(".../gumbo_sf2.lua")
---       local res = S.extract(sf2_path, out_dir)   -- writes out_dir/<name>.sfz and out_dir/samples/*.wav
---         (the caller makes out_dir/samples first: folders need REAPER's own call)
---         res = { ok, sfz = path, presets = n, regions = n, report = { errors = {}, skipped = {}, ignored = {} } }
+--       local res = S.extract(sf2_path, out_dir [, sub])   -- writes out_dir/<name>.sfz and out_dir/<sub>/*.wav
+--         (sub defaults to "samples"; the caller makes out_dir/<sub> first: folders need REAPER's own call)
+--         res = { ok, sfz = path, presets = n, regions = n, written = { wav names },
+--                 report = { errors = {}, skipped = {}, ignored = {} } }
+--       A damaged file never raises: any read past its data ends as res.ok = false with an error line, and
+--       res.written still lists every WAV written before it (the caller removes them).
 
 local S = {}
 
@@ -77,17 +80,20 @@ end
 -- the RIFF tree: the chunks we need, as byte positions into s
 local function chunks(s)
   if #s < 12 or s:sub(1, 4) ~= "RIFF" or s:sub(9, 12) ~= "sfbk" then return nil, "not a SoundFont (RIFF sfbk)" end
-  local found = {}
+  local found, bad = {}, nil
+  -- a chunk that runs past its parent (a cut-off or damaged file) stops the read (outside audit, 2026-11-05)
   local function walk(a, b)
     local p = a
-    while p + 8 <= b + 1 do
+    while not bad and p + 8 <= b + 1 do
       local id, n = s:sub(p, p + 3), u32(s, p + 4)
-      if id == "LIST" then walk(p + 12, math.min(b, p + 8 + n - 1))
+      if p + 8 + n - 1 > b then bad = id; break end
+      if id == "LIST" then walk(p + 12, p + 8 + n - 1)
       else found[id] = { p + 8, n } end
       p = p + 8 + n + (n % 2)
     end
   end
   walk(13, #s)
+  if bad then return nil, "damaged SoundFont: its " .. bad:gsub("%c", "?") .. " chunk runs past the end of the file" end
   for _, id in ipairs({ "smpl", "phdr", "pbag", "pgen", "inst", "ibag", "igen", "shdr" }) do
     if not found[id] then return nil, "missing " .. id .. " chunk" end
   end
@@ -221,7 +227,7 @@ local function fmt(v)
   return (string.format("%.4f", v):gsub("0+$", ""):gsub("%.$", ""))
 end
 
-function S.extract(sf2_path, out_dir)
+local function extract(sf2_path, out_dir, sub, track)
   local report = { errors = {}, skipped = {}, ignored = {} }
   local res = { ok = false, report = report, presets = 0, regions = 0 }
   local f = io.open(sf2_path, "rb")
@@ -255,7 +261,7 @@ function S.extract(sf2_path, out_dir)
   table.sort(keep, function(a, b) if a.bank ~= b.bank then return a.bank < b.bank end; return a.prog < b.prog end)
   local banked = #keep > 1
 
-  local samples_dir = out_dir:gsub("[/\\]+$", "") .. "/samples"
+  local samples_dir = out_dir:gsub("[/\\]+$", "") .. "/" .. sub
   local written, failed_dir = {}, false
   local function wav_of(si)
     if written[si] ~= nil then return written[si] end
@@ -274,14 +280,14 @@ function S.extract(sf2_path, out_dir)
     wf:write("RIFF", le32(36 + #data), "WAVE", "fmt ", le32(16), le16(1), le16(1), le32(rate), le32(rate * 2), le16(2),
              le16(16), "data", le32(#data), data)
     wf:close()
-    written[si] = name
+    written[si] = name; track[#track + 1] = name
     return name
   end
 
   local L = {}
   local base = clean((sf2_path:match("([^/\\]+)$") or "bank"):gsub("%.[Ss][Ff]2$", ""))
   L[#L + 1] = "// made by Gumbo from " .. (sf2_path:gsub("\\", "/"))
-  L[#L + 1] = "<control> default_path=samples/"
+  L[#L + 1] = "<control> default_path=" .. sub .. "/"
   local curve_of, ncurve, curve_lines, used_cc = {}, 0, {}, {}   -- the live controllers' curves (one per shape), the CCs used
   local section = nil
   for _, p in ipairs(keep) do
@@ -600,8 +606,6 @@ function S.extract(sf2_path, out_dir)
       end
     end
   end
-  res.written = {}
-  for _, nm in pairs(written) do if nm then res.written[#res.written + 1] = nm end end
   if failed_dir then report.errors[#report.errors + 1] = "cannot write the samples into " .. samples_dir; return res end
   if res.regions == 0 then report.errors[#report.errors + 1] = "no playable zones"; return res end
   -- the live controllers: their starting values and names on the <control> line, their curves after it
@@ -618,6 +622,17 @@ function S.extract(sf2_path, out_dir)
   if not of then report.errors[#report.errors + 1] = "cannot write " .. sfz; return res end
   of:write(table.concat(L, "\n"), "\n"); of:close()
   res.ok, res.sfz = true, sfz
+  return res
+end
+
+function S.extract(sf2_path, out_dir, sub)
+  local track = {}
+  local ok, res = pcall(extract, sf2_path, out_dir, sub or "samples", track)
+  if not ok then
+    res = { ok = false, presets = 0, regions = 0,
+            report = { errors = { "damaged SoundFont: " .. tostring(res) }, skipped = {}, ignored = {} } }
+  end
+  res.written = track                  -- every WAV written, whatever happened
   return res
 end
 

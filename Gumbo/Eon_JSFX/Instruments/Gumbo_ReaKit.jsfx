@@ -188,19 +188,26 @@ meter_process_sample(spl0, spl1);
 gb_ser_ver = 3; file_var(0, gb_ser_ver);
 file_avail(0) >= 0 ? (
   file_string(0, #gb_sread);
-  gb_lock_wait();                    // @gfx may be in the middle of a load: let it finish its piece, then take over
-  strcpy(#gb_want, #gb_sread);
-  strlen(#gb_want) == 0 ? (
-    gb_unload(); strcpy(#gb_path, "");   // saved with no instrument: none plays (undo back to an empty Gumbo)
-  ) : strcmp(#gb_want, #gb_path) != 0 || !gb_ready ? (
-    gb_job_abort();
-    gb_job_start(#gb_want);
-    gb_ser_guard = 0;
-    while (!gb_job_step(200000000, 2000000) && gb_ser_guard < 100000) ( gb_ser_guard += 1; );
-    gb_job == GB_J_DONE ? strcpy(#gb_path, #gb_want);
+  // @gfx may be in the middle of a load: let it finish its piece, then take over. Still held after the wait (about a
+  // second): never take it anyway -- hand the instrument to @gfx, which loads it on its next pass (gb_ser_pend)
+  gb_lock_wait() ? (
+    gb_ser_pend = 0;                 // a newer state wins over one handed to @gfx earlier and not yet loaded
+    strcpy(#gb_want, #gb_sread);
+    strlen(#gb_want) == 0 ? (
+      gb_unload(); strcpy(#gb_path, "");   // saved with no instrument: none plays (undo back to an empty Gumbo)
+    ) : strcmp(#gb_want, #gb_path) != 0 || !gb_ready ? (
+      gb_job_abort();
+      gb_job_start(#gb_want);
+      gb_ser_guard = 0;
+      while (!gb_job_step(200000000, 2000000) && gb_ser_guard < 100000) ( gb_ser_guard += 1; );
+      gb_job == GB_J_DONE ? strcpy(#gb_path, #gb_want);
+    );
+    gb_eqm_key = gb_eqm_hash(#gb_path);   // the restored sliders are this instrument's EQ
+    gb_unlock();
+  ) : (
+    strcpy(#gb_ser_pth, #gb_sread);
+    gb_ser_pend = 1;                 // last: @gfx reads the path after it sees this
   );
-  gb_eqm_key = gb_eqm_hash(#gb_path);   // the restored sliders are this instrument's EQ
-  gb_unlock();
   gb_ser_ver >= 2 ? rkth_self_serialize();
   gb_ser_ver >= 3 ? gb_eqm_ser(1) : memset(GB_EQM, 0, GB_EQM_N * GB_EQM_W);
 ) : (
@@ -213,6 +220,15 @@ file_avail(0) >= 0 ? (
 gfx_clear = -1;
 // the loader is shared with @serialize (another thread): only when it is free; a waiting drop stays queued
 gb_lock_try() ? (
+  // @serialize could not take the loader (it was held past its wait): its instrument loads here, as it would have
+  // there -- none, the same one (only its EQ key), or a new load (its EQ key set when it finishes, gb_ser_late)
+  gb_ser_pend ? (
+    gb_ser_pend = 0;
+    strcpy(#gb_want, #gb_ser_pth);
+    strlen(#gb_want) == 0 ? ( gb_unload(); strcpy(#gb_path, ""); gb_eqm_key = gb_eqm_hash(#gb_path); )
+    : strcmp(#gb_want, #gb_path) != 0 || !gb_ready ? ( gb_job_abort(); gb_job_start(#gb_want); gb_ser_late = 1; )
+    : gb_eqm_key = gb_eqm_hash(#gb_path);
+  );
   // a dropped file: .gumbo.txt loads; anything else gets a note in the display (window only: strips get no drops)
   gfx_getdropfile(0, #gb_drop) ? (
     gb_dn = strlen(#gb_drop);
@@ -226,7 +242,12 @@ gb_lock_try() ? (
   // a load from the window runs a little per pass (never in @block: a cold disk read can stall); with the window
   // closed REAPER keeps calling @gfx (options:gfx_idle, about 13 passes a second, gfx_ext_flags & 2), so it finishes
   gb_job == GB_J_PARSE || gb_job == GB_J_SAMPLES ? (
-    gb_job_step(1048576, 500) ? ( gb_job == GB_J_DONE ? ( strcpy(#gb_path, #gb_want); gb_eqm_pend = 1; ); );
+    gb_job_step(1048576, 500) ? (
+      gb_job == GB_J_DONE ? (
+        strcpy(#gb_path, #gb_want);
+        gb_ser_late ? ( gb_ser_late = 0; gb_eqm_key = gb_eqm_hash(#gb_path); ) : gb_eqm_pend = 1;
+      );
+    );
   );
   gb_unlock();
 );

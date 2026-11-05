@@ -14,12 +14,12 @@
 //     and SPACE hidden until the new reverb, the owner 2026-10-30); then the keyboard (play it with the mouse),
 //     recorded keys dotted above it
 // Not drawn until built (the owner, 2026-10-30: "Hidden until built"): Layer B, the effects chain, the sequencer, tabs.
-// Reads the loader and voices (gb_job, gb_js, gb_nsmp, gb_nreg, gb_ready, GB_NT, gb_last_*); writes gb_kb_note.
+// Reads the loader and voices (gb_job, gb_js, gb_nsmp, gb_nreg, gb_ready, GB_NTA, gb_cc0, gb_last_*); writes gb_kb_note.
 
 @init
 GBF_KS = 16; GBF_NK = 9;             // knob memory; TONE DRIVE PUNCH ATTACK RELEASE GLIDE SPACE WIDTH VOLUME
 GBF_NKV = 8;                         // SOUND page knobs (gb_face_p2): PAN took PUNCH's slot, SPACE's stays unused
-GBF_KM_BASE = 1720000;               // 9 x 16 cells, clear of gb_sfz's tables (GB_FN = 1700000 + 126)
+GBF_KM_BASE = 1720000;               // 9 x 16 cells, clear of gb_sfz's tables (GB_FN = 1700000 .. 1700872)
 gbf_km = GBF_KM_BASE;
 memset(gbf_km, 0, GBF_KS * GBF_NK);
 GBF_IDX_BASE = 1764000; GBF_IS = 6; GBF_IMAX = 512;   // the index: family, MB, name ptr, name len, path ptr, path len
@@ -430,7 +430,10 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
     gbf_scr(1, 0.55, 0.3, 1); gfx_x = x + 16 * s; gfx_y += 14 * s;
     // too big (the owner, 2026-11-01: tell users the limit). Packed (2026-11-04) the limit is about 3 GB of sound as
     // the browser counts it (8 bytes a point); unpacked only a file without the converter's size line can run out
-    gb_smp_noroom > 0 ? sprintf(#gbf_tmp, gb_pack ? "%d sounds left out: Gumbo holds up to about 3 GB of sound"
+    // every sound left out: say it plays nothing (outside audit, 2026-11-05: it read as a working instrument)
+    gb_nsmp > 0 && gb_smp_missing + gb_smp_badfmt + gb_smp_noroom >= gb_nsmp
+      ? sprintf(#gbf_tmp, "None of its %d sounds could be loaded: it plays nothing", gb_nsmp)
+    : gb_smp_noroom > 0 ? sprintf(#gbf_tmp, gb_pack ? "%d sounds left out: Gumbo holds up to about 3 GB of sound"
                                                   : "%d sounds left out: Gumbo holds up to about 1 GB of sound", gb_smp_missing + gb_smp_badfmt + gb_smp_noroom)
                       : sprintf(#gbf_tmp, "%d sounds left out", gb_smp_missing + gb_smp_badfmt + gb_smp_noroom);
     gfx_drawstr(#gbf_tmp, 0, x + w * 0.5, y + h);
@@ -561,7 +564,7 @@ function gbf_keys_prep(lo, hi) local(n, e) (
          : rk_piano_colours(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.91, 0.28, 0.60);
   n = lo;
   loop(hi - lo + 1,
-    GBF_KSF[n] = (gb_ready && gbf_rec_gen == gb_load_gen ? GBF_KST[n] : 0) | (GB_NT[n] ? RKP_HELD : 0)
+    GBF_KSF[n] = (gb_ready && gbf_rec_gen == gb_load_gen ? GBF_KST[n] : 0) | (GB_NTA[n] ? RKP_HELD : 0)
                  | (gb_ready && n == gb_sw_cur && (GBF_KST[n] & RKP_KS) ? RKP_KSON : 0);
     n += 1;
   );

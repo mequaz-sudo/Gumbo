@@ -91,10 +91,13 @@ GBS_PTR = 0; GBS_FRAMES = 1; GBS_NCH = 2; GBS_SR = 3; GBS_PATH = 4; GBS_PLEN = 5
 GB_SS_NEW = 0; GB_SS_OK = 1; GB_SS_MISSING = 2; GB_SS_FORMAT = 3; GB_SS_NOROOM = 4;
 GB_SILENCE = -1;                     // region sample index for *silence (a voice with no sound: it only chokes)
 
-// field-name table: length, first and last character of each of the 42 field names (in file order)
-function gb_fn_set(f, nm) local(n) (
+// field-name table: length, first and last character of each of the 42 field names (in file order), and the whole
+// name from GB_FNC (16 characters a field, -> 1700872, under the face's GBF_KM_BASE 1720000)
+GB_FNC = GB_FN + 200;
+function gb_fn_set(f, nm) local(n, i) (
   n = strlen(nm);
   GB_FN[f * 3] = n; GB_FN[f * 3 + 1] = str_getchar(nm, 0); GB_FN[f * 3 + 2] = str_getchar(nm, n - 1);
+  i = 0; loop(min(n, 16), GB_FNC[f * 16 + i] = str_getchar(nm, i); i += 1; );
 );
 gb_fn_set(0, "lokey"); gb_fn_set(1, "hikey"); gb_fn_set(2, "pitch_keycenter"); gb_fn_set(3, "pitch_keytrack");
 gb_fn_set(4, "lovel"); gb_fn_set(5, "hivel"); gb_fn_set(6, "tune"); gb_fn_set(7, "transpose"); gb_fn_set(8, "volume");
@@ -133,9 +136,12 @@ function gb_num(a, b, dflt) local(i, c, neg, v, frac, sc, any) (
   any == 1 ? ( neg ? -v : v ) : ( gb_bad_values += 1; dflt );
 );
 
-// does the name at [a, a+n) look like field f? (length, first and last character)
-function gb_name_is(f, a, n) (
-  GB_FN[f * 3] == n && GB_FN[f * 3 + 1] == str_getchar(#gb_ln, a) && GB_FN[f * 3 + 2] == str_getchar(#gb_ln, a + n - 1);
+// is the name at [a, a+n) field f? Length, first and last character first (most names differ there), then every
+// character (outside audit, 2026-11-05: sw_lokey and sw_hikey share all three, so a hand-made file could swap them)
+function gb_name_is(f, a, n) local(ok, i) (
+  ok = GB_FN[f * 3] == n && GB_FN[f * 3 + 1] == str_getchar(#gb_ln, a) && GB_FN[f * 3 + 2] == str_getchar(#gb_ln, a + n - 1);
+  i = 1; while (ok && i < n - 1) ( ok = GB_FNC[f * 16 + i] == str_getchar(#gb_ln, a + i); i += 1; );
+  ok;
 );
 
 // a word value -> its code (first letters are enough for the converter's lowercase words)

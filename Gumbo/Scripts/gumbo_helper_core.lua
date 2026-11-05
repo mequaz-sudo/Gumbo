@@ -171,19 +171,50 @@ end
 -- worked) into place with C.write_safely (an earlier copy stays until the new one is in). Returns ok, regions, out,
 -- report, why (a C.WHY_*). G = gumbo_sfz.lua; env.mkdir as for C.import_one.
 -- A SoundFont (.sf2, 2026-11-02) is unpacked first (env.sf2 = gumbo_sf2.lua) into its import folder -- its samples
--- and an SFZ bank -- and that SFZ is converted beside them (so its sample paths stay relative to the folder). A
--- failed unpack removes the samples it wrote; the empty folders stay (Lua cannot remove a folder).
+-- and an SFZ bank -- and that SFZ is converted beside them (so its sample paths stay relative to the folder).
+-- Each unpack writes its samples into a NEW folder of its own (C.sf2_sub; 2026-11-05, outside audit: a re-import
+-- used to overwrite the samples the earlier import still played, and a failed one then deleted them). The earlier
+-- import keeps playing until the new instrument file is in place; a failed unpack or conversion removes only the
+-- new samples; a finished one removes the earlier import's own samples (never the shared "samples" folder of
+-- imports made before 1.1.1). The empty folders stay (Lua cannot remove a folder).
+-- a new folder name for one unpack of the SoundFont base (its name, the time, a count if that one is taken)
+function C.sf2_sub(out_dir, base, now)
+  local n = now or os.time()
+  for _ = 1, 1000 do
+    local sub = "samples-" .. C.slug(base) .. "-" .. n
+    local f = io.open(out_dir .. "/" .. sub .. "/.gumbo", "rb")
+    if not f then return sub end
+    f:close(); n = n + 1
+  end
+  return "samples-" .. C.slug(base) .. "-" .. n
+end
+-- the sample paths an instrument file uses (relative ones only, as written)
+function C.sample_paths(text)
+  local t = {}
+  for p in tostring(text or ""):gmatch("<region> sample=(.-) lokey=") do t[p] = true end
+  return t
+end
 function C.convert_into(G, env, sfz_path, imports_root)
   local out, out_dir = C.import_target(sfz_path, imports_root)
   local root = tostring(imports_root):gsub("\\", "/"):gsub("/+$", "")
   env.mkdir(root)
   local tmp_dir = root
+  local sub, new_wavs                  -- a SoundFont's new sample folder and what went into it
+  local function drop_new()
+    for _, nm in ipairs(new_wavs or {}) do os.remove(out_dir .. "/" .. sub .. "/" .. nm) end
+    if sub then os.remove(out_dir .. "/" .. sub .. "/.gumbo") end
+  end
   if tostring(sfz_path):lower():match("%.sf2$") then
     if not env.sf2 then return false, 0, nil, nil, C.WHY_UNREADABLE end
-    env.mkdir(out_dir .. "/samples")
-    local xr = env.sf2.extract(sfz_path, out_dir)
+    local base = (tostring(sfz_path):gsub("\\", "/"):match("([^/]+)$") or "bank"):gsub("%.[Ss][Ff]2$", "")
+    sub = C.sf2_sub(out_dir, base)
+    env.mkdir(out_dir .. "/" .. sub)
+    local mk = io.open(out_dir .. "/" .. sub .. "/.gumbo", "wb")   -- marks the name as taken (C.sf2_sub)
+    if mk then mk:write("Gumbo's samples of ", base, ".sf2\n"); mk:close() end
+    local xr = env.sf2.extract(sfz_path, out_dir, sub)
+    new_wavs = xr.written
     if not xr.ok then
-      for _, nm in ipairs(xr.written or {}) do os.remove(out_dir .. "/samples/" .. nm) end
+      drop_new()
       -- why: compressed (SF3) or ROM samples only -> not playable audio; no zones -> nothing to play; else unreadable
       local sk = xr.report and xr.report.skipped or {}
       local why = ((sk.sf3_compressed or 0) + (sk.rom_sample or 0) > 0) and C.WHY_BADAUDIO
@@ -196,11 +227,19 @@ function C.convert_into(G, env, sfz_path, imports_root)
   local tmp = tmp_dir .. "/.converting-" .. C.hash6(out:lower()) .. ".gumbo.txt"
   os.remove(tmp)
   local res = G.convert(sfz_path, tmp)
-  if not res.ok then os.remove(tmp); return false, 0, nil, res.report, C.failure_reason(res.report) end
+  if not res.ok then os.remove(tmp); drop_new(); return false, 0, nil, res.report, C.failure_reason(res.report) end
   local text = C.head(tmp, 1 << 30)
   os.remove(tmp)
   env.mkdir(out_dir)
-  if not C.write_safely(out, text) then return false, 0, nil, res.report, C.WHY_UNREADABLE end
+  local old = sub and C.head(out, 1 << 30) or nil   -- the earlier import of this SoundFont, if any
+  if not C.write_safely(out, text) then drop_new(); return false, 0, nil, res.report, C.WHY_UNREADABLE end
+  if old then
+    -- the earlier import's own samples (its "samples-..." folder), unless the new file uses them too
+    local keep = C.sample_paths(text)
+    for p in pairs(C.sample_paths(old)) do
+      if not keep[p] and p:match("^samples%-[^/]+/[^/]+$") then os.remove(out_dir .. "/" .. p) end
+    end
+  end
   return true, res.regions, out, res.report, C.WHY_NONE
 end
 

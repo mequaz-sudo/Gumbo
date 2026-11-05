@@ -30,6 +30,7 @@ GB_J_IDLE = 0; GB_J_PARSE = 1; GB_J_SAMPLES = 2; GB_J_DONE = 3; GB_J_FAILED = -1
 GB_E_NONE = 0; GB_E_OPEN = 1; GB_E_NOTTEXT = 2; GB_E_FORMAT = 3; GB_E_EMPTY = 4;
 gb_job = GB_J_IDLE;
 gb_load_lock = 0;                    // one loader driver at a time (gb_lock_try / gb_lock_wait / gb_unlock)
+gb_ser_pend = 0; gb_ser_late = 0;    // @serialize's instrument handed to @gfx (#gb_ser_pth), and that load running
 
 // the folder part of #gb_jpath (with its trailing slash) -> #gb_dir
 function gb_dirname() local(n, i, cut, c) (
@@ -102,6 +103,7 @@ function gb_pk_cells(t, p, n) local(s, h, g) (
 function gb_job_start(path) (
   gb_job > GB_J_IDLE && gb_jh_open ? ( file_close(gb_jh); gb_jh_open = 0; );
   gb_ready = 0; gb_pack = 0;
+  gb_ser_late = 0;                   // (a load @serialize handed over is replaced by this one: Gumbo_ReaKit.jsfx)
   gb_load_gen += 1;                  // the audio side adopts each load once (gb_voices_block)
   strcpy(#gb_jpath, path);
   gb_dirname();
@@ -196,11 +198,14 @@ function gb_unload() (
 // The loader is driven from two threads: @gfx (a drop, the browser, the steps) and @serialize (a project, an undo, a
 // preset), which run concurrently (wiki 4.1). One at a time: @gfx only tries (and comes back next pass), @serialize
 // waits for @gfx's current piece (one step, a few ms) and never longer than about a second. atomic_setifequal returns
-// the OLD value (wiki 4.1).
+// the OLD value (wiki 4.1). gb_lock_wait returns 1 = taken, 0 = still held after the wait: the caller then leaves the
+// loader alone (outside audit, 2026-11-05: it used to take the lock anyway, and the first owner's gb_unlock then
+// opened it under the second; @serialize hands its instrument to @gfx instead, gb_ser_pend).
 function gb_lock_try() ( atomic_setifequal(gb_load_lock, 0, 1) == 0; );
 function gb_lock_wait() local(g, h) (
   g = 0;
-  while (atomic_setifequal(gb_load_lock, 0, 1) != 0 && g < 2000) ( h = 0; loop(100000, h += 1; ); g += 1; );
-  g >= 2000 ? atomic_set(gb_load_lock, 1);
+  // (the count is tested FIRST: a last try that took the lock must not then report it as not taken)
+  while (g < 2000 && atomic_setifequal(gb_load_lock, 0, 1) != 0) ( h = 0; loop(100000, h += 1; ); g += 1; );
+  g < 2000;
 );
 function gb_unlock() ( atomic_set(gb_load_lock, 0); );
