@@ -19,6 +19,9 @@
 --         opts.relocate = { from = <folder>, to = <folder>, ext = ".flac" }: a sample under `from` is WRITTEN as the same
 --           path under `to` (extension swapped when ext is given) -- the library builder's packaged copy; the audio
 --           facts (frames, loops, root) still come from the original file
+--         opts.probe = function(path) -> frames, channels, rate: the length of a sound the pure-Lua reader cannot
+--           open (.ogg: REAPER plays it, measured 2026-11-05) -- the helper passes REAPER's reader, the offline builder
+--           python's -- for the RAM estimate (which decides packing in the player); without it such a sound counts 0
 --       G.parse_note(s), G.FIELDS (the output order), G.FORMAT_VERSION
 --       G.instrument_files(files, lib_dir) -> which .sfz of a library are instruments (files = { {path=, text=}, ... })
 --       G.programs(sfz_path) -> a GM bank's programs ({} for an ordinary instrument); convert one with opts.program
@@ -26,9 +29,11 @@
 local M = {}
 -- 2 (2026-10-30): live controllers. A region may carry up to M.MAX_MODS "mod=T,CC,A,B" tokens after its gates (T:
 -- 1 amplitude % / 2 volume dB / 3 pan % / 4 tune cents, each moved by CC with depth A through curve B; 5 / 6
--- crossfade in / out on CC between A and B; 7 / 8 on velocity; 9 / 10 on key; +100 = the "gain" (straight) curve
--- instead of "power"), and the file may carry "// label_cc N name", "// sw_label NOTE name" and "// curve I v0..v127"
--- lines. Gumbo still reads version 1 files (no such lines).
+-- crossfade in / out on CC between A and B; 7 / 8 on velocity; 9 / 10 on key; 11..16 the amp envelope's delay /
+-- attack / hold / decay / sustain / release (2026-11-05: seconds, or % for the sustain, added at CC 127 through
+-- curve B -- read when a note starts, the release again when it is let go; the opcode's own value stays the base);
+-- +100 = the "gain" (straight) curve instead of "power"), and the file may carry "// label_cc N name", "// sw_label
+-- NOTE name" and "// curve I v0..v127" lines. Gumbo still reads version 1 files (no such lines).
 -- Also in 2 (2026-10-31, the owner: "on drum kits can we put the name of the sound on the keyboard?"): "// label_key
 -- NOTE name" lines -- the SFZ's own label_keyN, else, for a drum map (one sound per key, the keys' sounds named
 -- differently), a name made from each key's sample file. A player that does not know the line skips it (a comment).
@@ -36,10 +41,19 @@ M.FORMAT_VERSION = 2
 -- 3 (2026-11-02, the owner: banks open "the regular way"): a GM bank in one file stays ONE instrument; every region of a
 -- program carries "prog=S,LO,HI" (section, program range) and the file lists "// program S LO HI name" and "// drums S"
 -- (the section channel 10 plays). Only bank files are written as 3, so an older Gumbo refuses a bank instead of playing
--- every program at once; ordinary instruments stay 2.
+-- every program at once; ordinary instruments stay 2. Variation banks (2026-11-05) stay format 3: each is a section of
+-- its own after the kits, "// bank S N" says which MIDI bank number (bank select, CC0) picks section S; a Gumbo that
+-- does not know the line plays the main programs and the kits, and the variations never sound.
 M.BANK_FORMAT_VERSION = 3
-M.MAX_MODS = 4
-local LIVE_T = { amplitude = 1, volume = 2, pan = 3, tune = 4 }
+M.MAX_MODS = 8                       -- (4 until 2026-11-05; Gumbo's GB_MAXMOD is the same number)
+local LIVE_T = { amplitude = 1, volume = 2, pan = 3, tune = 4,
+                 -- the amp envelope's times on a controller (2026-11-05): live, not folded
+                 ampeg_delay = 11,
+                 ampeg_attack = 12,
+                 ampeg_hold = 13,
+                 ampeg_decay = 14,
+                 ampeg_sustain = 15,
+                 ampeg_release = 16 }
 
 -- ── fields Gumbo writes on every region, in this order, with the default used when the SFZ is silent ──────────
 -- kind: "int" whole number, "num" decimal, "note" note number (accepts names), "str" word.
@@ -69,7 +83,9 @@ local SPECIAL = { sample = true, key = true, default_path = true, note_offset = 
                   -- a header's own level, added to volume (sfizz: global_volume, master_volume, group_volume, dB)
                   global_volume = true, master_volume = true, group_volume = true,
                   -- programs (a GM bank in one file): M.programs splits it; each output holds one program
-                  loprog = true, hiprog = true }
+                  loprog = true, hiprog = true,
+                  -- the MIDI bank number(s) a <global> section answers to (Gumbo's SoundFont importer): "// bank"
+                  gumbo_bank = true }
 local LOOP_MODES = { no_loop = true, one_shot = true, loop_continuous = true, loop_sustain = true }
 local TRIGGERS = { attack = true, release = true, release_key = true, first = true, legato = true }
 
@@ -363,10 +379,12 @@ local function cc_reaches(control, n, lo, hi)
 end
 
 -- ── controller-driven opcodes, taken at the controllers' starting values ──────────────────────────────────────
--- Gumbo plays a controller live only for CC7 / CC11 (volume, expression), CC64 and the loccN/hiccN gates. Every other
--- "<opcode>_onccN" (or the older "<opcode>_ccN") is folded in at the CC's starting value, as sfizz would play it
--- before anyone moves the controller (sfizz 1.2.3: RegionStateful.cpp, ModId.cpp -- amplitude multiplies, the rest
--- add; Curve.cpp -- curves). A library's "Extra mics" set to 0 silences those regions; its tuning control at 63 tunes.
+-- Gumbo plays a controller live for CC7 / CC11 (volume, expression), CC64, the loccN/hiccN gates, and (format 2) the
+-- amplitude / volume / pan / tune opcodes and, since 2026-11-05, the amp envelope's times (LIVE_T below, while a mod
+-- slot is free). Every other "<opcode>_onccN" (or the older "<opcode>_ccN") is folded in at the CC's starting value,
+-- as sfizz would play it before anyone moves the controller (sfizz 1.2.3: RegionStateful.cpp, ModId.cpp -- amplitude
+-- multiplies, the rest add; Curve.cpp -- curves). A library's "Extra mics" set to 0 silences those regions; its
+-- tuning control at 63 tunes.
 local CC_DEFAULT = { [7] = 100 / 127, [10] = 0.5, [11] = 1 }   -- MIDI defaults (sfizz's CC7 = 100 measured)
 -- family pattern -> the field it moves, how, and the prefix of its curve opcode (<prefix>_curveccN)
 local CC_MODS = {
@@ -410,6 +428,17 @@ end
 --   vel=POW,VEL2ATTACK,VEL2DECAY,VEL2RELEASE   (2026-11-04: amp_velpow -- Gumbo's own opcode, gain = (v/127)^POW, what a
 --       SoundFont's velocity-to-attenuation modulator is -- and sfizz's ampeg_vel2attack / decay / release, seconds added
 --       at velocity 127)
+--   peg=DELAY,ATTACK,HOLD,DECAY,SUSTAIN%,RELEASE,DEPTH,VEL2DEPTH,VEL2ATTACK,VEL2DECAY,VEL2RELEASE   (2026-11-05: the pitch
+--       envelope, pitcheg_* in cents -- an 808's drop, a brass scoop; a SoundFont's modEnvToPitch; a region needs no
+--       filter for it)
+--   keg=AHOLD,ADECAY,FHOLD,FDECAY   (2026-11-05: key-scaled envelope times -- Gumbo's own opcodes ampeg_hold_keytrack,
+--       ampeg_decay_keytrack, fileg_hold_keytrack, fileg_decay_keytrack, timecents per key: the time x
+--       2^(k x (60 - key) / 1200), a positive k ringing the low keys longer, key 60 unchanged. What a SoundFont's
+--       keynumToVolEnvHold / Decay and keynumToModEnvHold / Decay generators say -- a piano's low notes ring longer;
+--       SFZ has no opcode for it, so other players ignore these four)
+--   bend=UP,DOWN   (2026-11-05: bend_up / bend_down in cents, written only when the SFZ sets either -- a region without
+--       it bends over the range MIDI's RPN 0 set on its channel, else Gumbo's SETTINGS knob; bend_step / bend_smooth
+--       stay counted)
 -- Read from SFZ v1 (fil_*, cutoff, resonance, fileg_*, pitchlfo_* / amplfo_* / fillfo_*) and the v2 LFOs (lfoN_freq /
 -- delay / fade / wave and their pitch / volume / cutoff targets). Rules: sfizz's (Research
 -- .docs/research/Gumbo_Tone_Filter_Research_2026-11-03.md).
@@ -421,7 +450,12 @@ local SHAPE_KEYS = { fil_type = true, cutoff = true, resonance = true, fil_keytr
                      fil_veltrack = true, fil_random = true, fileg_delay = true, fileg_attack = true, fileg_hold = true,
                      fileg_decay = true, fileg_sustain = true, fileg_release = true, fileg_depth = true,
                      fileg_vel2depth = true, fileg_vel2attack = true, fileg_vel2decay = true, fileg_vel2release = true,
-                     amp_velpow = true, ampeg_vel2attack = true, ampeg_vel2decay = true, ampeg_vel2release = true }
+                     amp_velpow = true, ampeg_vel2attack = true, ampeg_vel2decay = true, ampeg_vel2release = true,
+                     pitcheg_delay = true, pitcheg_attack = true, pitcheg_hold = true, pitcheg_decay = true,
+                     pitcheg_sustain = true, pitcheg_release = true, pitcheg_depth = true, pitcheg_vel2depth = true,
+                     pitcheg_vel2attack = true, pitcheg_vel2decay = true, pitcheg_vel2release = true,
+                     ampeg_hold_keytrack = true, ampeg_decay_keytrack = true, fileg_hold_keytrack = true, fileg_decay_keytrack = true,
+                     bend_up = true, bend_down = true }
 for _, t in ipairs({ "pitchlfo", "amplfo", "fillfo" }) do
   for _, x in ipairs({ "freq", "depth", "delay", "fade" }) do SHAPE_KEYS[t .. "_" .. x] = true end
 end
@@ -469,6 +503,23 @@ local function shape_of(r, oo, report)
       end
     end
   end
+  -- the pitch envelope (2026-11-05): pitcheg_* as feg=, the depths in cents; written with or without a filter
+  local pd, pvd = n("pitcheg_depth", 0), n("pitcheg_vel2depth", 0)
+  if pd ~= 0 or pvd ~= 0 then
+    out.peg = table.concat({ fmtn(n("pitcheg_delay", 0)), fmtn(n("pitcheg_attack", 0)), fmtn(n("pitcheg_hold", 0)),
+                             fmtn(n("pitcheg_decay", 0)), fmtn(n("pitcheg_sustain", 100)), fmtn(n("pitcheg_release", 0.001)),
+                             fmtn(pd), fmtn(pvd), fmtn(n("pitcheg_vel2attack", 0)), fmtn(n("pitcheg_vel2decay", 0)),
+                             fmtn(n("pitcheg_vel2release", 0)) }, ",")
+  end
+  -- key-scaled hold and decay times (2026-11-05): Gumbo's own opcodes, timecents a key
+  local kah, kad, kfh, kfd = n("ampeg_hold_keytrack", 0), n("ampeg_decay_keytrack", 0), n("fileg_hold_keytrack", 0), n("fileg_decay_keytrack", 0)
+  if kah ~= 0 or kad ~= 0 or kfh ~= 0 or kfd ~= 0 then
+    out.keg = table.concat({ fmtn(kah), fmtn(kad), fmtn(kfh), fmtn(kfd) }, ",")
+  end
+  -- the bend range (2026-11-05): only when the SFZ says; the other side takes SFZ's default (200 / -200)
+  if r.bend_up ~= nil or r.bend_down ~= nil then
+    out.bend = fmtn(n("bend_up", 200)) .. "," .. fmtn(n("bend_down", -200))
+  end
   -- velocity on the loudness curve and the amp envelope's times
   local vp, va, vdc, vr = n("amp_velpow", 0), n("ampeg_vel2attack", 0), n("ampeg_vel2decay", 0), n("ampeg_vel2release", 0)
   if vp > 0 or va ~= 0 or vdc ~= 0 or vr ~= 0 then
@@ -505,7 +556,7 @@ local function shape_of(r, oo, report)
   end
   out.lfo = {}
   for s = 0, 2 do if slots[s] then out.lfo[#out.lfo + 1] = slots[s] end end
-  if not out.fil and not out.feg and #out.lfo == 0 and not out.vel then return nil end
+  if not out.fil and not out.feg and #out.lfo == 0 and not out.vel and not out.peg and not out.keg and not out.bend then return nil end
   return out
 end
 
@@ -526,6 +577,10 @@ local function key_name_from_file(path)
       words[#words + 1] = (w:sub(1, 1):upper() .. w:sub(2)):gsub("(%a)(%d+)$", "%1 %2")
     end
   end
+  -- a leading number of four or more digits is a file index ("0816 Std Kick"), not a name: dropped when a name
+  -- follows it (the owner, 2026-11-05: "do we have to keep the number in front? makes the name longer"). A short one
+  -- stays: "808 Kick", "909 Snare" are names.
+  if #words > 1 and words[1]:match("^%d%d%d%d+$") then table.remove(words, 1) end
   return table.concat(words, " "):sub(1, 24)
 end
 -- the stem two keys of one pitched instrument share ("Piano_C4_v1" and "Piano_D4_v1" -> "piano"): no digits, no
@@ -537,10 +592,14 @@ local function key_stem(name)
   end
   return table.concat(w, " ")
 end
--- names for the keys of a drum map, { [note] = name }; empty when the instrument is pitched (one recording spread over
--- several keys, or every key's file the same instrument at another pitch)
-local function drum_key_names(outs)
-  local names, keys, single, attack = {}, 0, 0, 0
+-- names for the keys of a drum map, { [note] = name }: a single-key recording names its key; a recording stretched over
+-- a few keys (a GM kit's kick on 35 and 36, an orchestra kit's timpani over 13) names every key it covers that no
+-- single-key recording took (2026-11-05, the owner: the Standard kit's kick had no pad). Empty when the instrument
+-- looks pitched (one recording spread over several keys, or every key's file the same instrument at another pitch)
+-- -- unless `kit` says the file declares it a drum kit (a SoundFont's bank 128): then the guess is skipped; a marching
+-- bass line's five drums, "MBass-2 hit" to "MBass-6 hit", are a kit, not a scale.
+local function drum_key_names(outs, kit)
+  local names, keys, single, attack, spans = {}, 0, 0, 0, {}
   for _, o in ipairs(outs) do
     if o.trigger == "attack" and o.sample ~= "*silence" and type(o.lokey) == "number" and type(o.hikey) == "number" then
       attack = attack + 1
@@ -550,12 +609,24 @@ local function drum_key_names(outs)
           local nm = key_name_from_file(o.sample)
           if nm ~= "" then names[o.lokey] = nm; keys = keys + 1 end
         end
+      elseif o.lokey < o.hikey then
+        spans[#spans + 1] = o
       end
     end
   end
-  local stems, ns = {}, 0
-  for _, nm in pairs(names) do local st = key_stem(nm); if not stems[st] then stems[st] = true; ns = ns + 1 end end
-  if keys < 6 or single < attack * 0.8 or ns < 4 or ns < keys * 0.3 then return {} end
+  if not kit then
+    local stems, ns = {}, 0
+    for _, nm in pairs(names) do local st = key_stem(nm); if not stems[st] then stems[st] = true; ns = ns + 1 end end
+    if keys < 6 or single < attack * 0.8 or ns < 4 or ns < keys * 0.3 then return {} end
+  end
+  for _, o in ipairs(spans) do
+    local nm = key_name_from_file(o.sample)
+    if nm ~= "" then
+      for n = math.max(0, o.lokey), math.min(127, o.hikey) do
+        if names[n] == nil then names[n] = nm end
+      end
+    end
+  end
   return names
 end
 M.key_name_from_file, M.drum_key_names = key_name_from_file, drum_key_names
@@ -755,10 +826,18 @@ local function resolve(r, ctx, report)
       ctx.audio[spath] = info
     end
     if not info then return nil, "missing_sample", spath end
-    -- a WAV or FLAC must have sound in it; another format (.ogg ...) is kept for REAPER to try, and counted
+    -- a WAV or FLAC must have sound in it; another format (.ogg: Gumbo plays it through REAPER's reader, measured
+    -- 2026-11-05) is kept and counted; its length comes from opts.probe when the caller has one (the RAM estimate)
     local ext = (spath:match("%.([%w]+)$") or ""):lower()
     if info.format == "other" and ext ~= "wav" and ext ~= "flac" then
       report.audio_other = (report.audio_other or 0) + 1
+      if ctx.probe and (info.frames or 0) < 1 then
+        local okp, f, ch, rt = pcall(ctx.probe, spath)
+        if okp and type(f) == "number" and f > 0 then
+          info = { format = "other", frames = math.floor(f), channels = tonumber(ch) or 1, rate = tonumber(rt) or 44100 }
+          ctx.audio[spath] = info
+        end
+      end
     elseif info.format ~= "wav" and info.format ~= "flac" or info.frames < 1 or info.channels < 1 or info.rate < 1 then
       return nil, "bad_audio", spath
     end
@@ -878,9 +957,20 @@ local function drum_part(regs, progs)
   end
   local n = 0; for _ in pairs(parts) do n = n + 1 end
   if n < 2 then return 0 end         -- one section: nothing to tell apart
-  for part, pr in pairs(parts) do
-    if (pr.label or ""):find("drum") or (pr.label or ""):find("perc") or (pr.label or ""):find("kit") or pr.all then return part end
+  -- the section that says it is MIDI bank 128 (the SoundFont importer's gumbo_bank) first; then, lowest section first
+  -- (pairs() has no order, and with every variation bank kept a bank of percussive organs could pass the name test),
+  -- a label saying drums; then every program name saying so
+  for _, r in ipairs(regs) do
+    if parts[r._part] and r.gumbo_bank and ("," .. tostring(r.gumbo_bank) .. ","):find(",128,", 1, true) then return r._part end
   end
+  local order = {}
+  for part in pairs(parts) do order[#order + 1] = part end
+  table.sort(order)
+  for _, part in ipairs(order) do
+    local lb = parts[part].label or ""
+    if lb:find("drum") or lb:find("perc") or lb:find("kit") then return part end
+  end
+  for _, part in ipairs(order) do if parts[part].all then return part end end
   return 0
 end
 function M.programs(sfz_path)
@@ -921,6 +1011,7 @@ function M.convert(sfz_path, out_path, opts)
   end
   res.bank = bank
   local ctx = { top_dir = dirname(sfz_path), audio = {}, cc_mode = opts.cc_mode == "fixed" and "fixed" or "live",
+                probe = opts.probe or nil,   -- (a Lua function, or a callable the tests hand in from python; pcall'd)
                 curves = build_curves(curve_list), used_curves = {} }
   local first_control = nil
   local outs, frames_total, missing = {}, 0, {}
@@ -983,7 +1074,7 @@ function M.convert(sfz_path, out_path, opts)
                             report.sample_files, report.ram_mb)
   local fields = {}
   for _, f in ipairs(M.FIELDS) do fields[#fields + 1] = f[1] end
-  L[#L + 1] = "// fields: sample " .. table.concat(fields, " ") .. " [amp_velcurve_N...] [loccN hiccN...] [mod=T,CC,A,B...] [prog fil feg lfo vel tokens]"
+  L[#L + 1] = "// fields: sample " .. table.concat(fields, " ") .. " [amp_velcurve_N...] [loccN hiccN...] [mod=T,CC,A,B...] [prog fil feg lfo vel peg keg bend tokens]"
   -- starting controller values (set_ccN, set_hdccN scaled to 0-127), so live CC gates begin where the SFZ meant
   local sets = {}
   for k, v in pairs(first_control or {}) do
@@ -1005,6 +1096,19 @@ function M.convert(sfz_path, out_path, opts)
   -- format 3: the bank's programs, in file order, and its drum section (names cut to 64 characters for the face)
   if bank then
     if bank.drums > 0 then L[#L + 1] = "// drums " .. bank.drums end
+    -- the MIDI bank numbers each section answers to, "// bank S N" (gumbo_bank= on its <global>, from the SoundFont
+    -- importer; a section without one gets the player's defaults: the first melodic section is bank 0, the drums 128)
+    local bank_of, bparts = {}, {}
+    for _, r in ipairs(regs) do
+      if r.gumbo_bank and bank_of[r._part] == nil then bank_of[r._part] = tostring(r.gumbo_bank); bparts[#bparts + 1] = r._part end
+    end
+    table.sort(bparts)
+    for _, part in ipairs(bparts) do
+      for nb in bank_of[part]:gmatch("[^,]+") do
+        local b = tonumber(nb)
+        if b and b >= 0 and b <= 255 and b == math.floor(b) then L[#L + 1] = "// bank " .. part .. " " .. b end
+      end
+    end
     for _, pg in ipairs(bank.progs) do
       L[#L + 1] = "// program " .. pg.part .. " " .. pg.lo .. " " .. pg.hi .. " " .. pg.name:gsub("[%c|]", " "):gsub("^[<>]+", ""):sub(1, 64)
     end
@@ -1019,11 +1123,33 @@ function M.convert(sfz_path, out_path, opts)
     -- a bank: key names only from its drum kits (a piano's keys keep their note names)
     local src = outs
     if bank then src = {}; for _, o in ipairs(outs) do if bank.drums > 0 and o._part == bank.drums then src[#src + 1] = o end end end
-    klab = #src > 0 and drum_key_names(src) or {}
+    klab = #src > 0 and drum_key_names(src, bank ~= nil) or {}
   end
   report.key_names = 0
   for _, n in ipairs(sorted_keys(klab)) do
     if klab[n] ~= "" then L[#L + 1] = "// label_key " .. n .. " " .. klab[n]; report.key_names = report.key_names + 1 end
+  end
+  -- a bank's kits each name their own keys (2026-11-05): "// key_name S P NOTE name" per kit, from that kit's own
+  -- recordings (drum_key_names, the one rule; the kit is declared, so no pitched-instrument guess). "// label_key"
+  -- above stays the file-wide union, for older Gumbos and ordinary kits. The player names the playing kit's pads from
+  -- these, so another kit's keys never show as silent pads (a GM set's Standard kit showed 84 pads for its 61 keys).
+  report.kit_key_names = 0
+  if bank and bank.drums > 0 then
+    for _, pg in ipairs(bank.progs) do
+      if pg.part == bank.drums then
+        local ko = {}
+        for _, o in ipairs(outs) do
+          if o._part == pg.part and (o._prog == nil or (o._prog[2] <= pg.lo and pg.lo <= o._prog[3])) then ko[#ko + 1] = o end
+        end
+        local kn = drum_key_names(ko, true)
+        for _, n in ipairs(sorted_keys(kn)) do
+          if kn[n] ~= "" then
+            L[#L + 1] = "// key_name " .. pg.part .. " " .. pg.lo .. " " .. n .. " " .. kn[n]
+            report.kit_key_names = report.kit_key_names + 1
+          end
+        end
+      end
+    end
   end
   for _, i in ipairs(sorted_keys(ctx.used_curves)) do
     local cv = { "// curve " .. i }
@@ -1046,6 +1172,9 @@ function M.convert(sfz_path, out_path, opts)
       if sh.feg then parts[#parts + 1] = "feg=" .. sh.feg end
       for _, l in ipairs(sh.lfo) do parts[#parts + 1] = "lfo=" .. l end
       if sh.vel then parts[#parts + 1] = "vel=" .. sh.vel end
+      if sh.peg then parts[#parts + 1] = "peg=" .. sh.peg end
+      if sh.keg then parts[#parts + 1] = "keg=" .. sh.keg end
+      if sh.bend then parts[#parts + 1] = "bend=" .. sh.bend end
     end
     L[#L + 1] = table.concat(parts, " ")
   end

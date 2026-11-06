@@ -20,7 +20,7 @@
 // (GBV_PART); gb_part / gb_cc / gb_ptab point at the part a MIDI event is for (gb_part_sel), audio thread only.
 
 @init
-GB_VOI = 1600000; GB_VS = 112;         // 68 slots x 112 = 7616 cells, under GB_NTP
+GB_VOI = 1600000; GB_VS = 124;         // 68 slots x 124 = 8432 cells -> 1608432, under GB_NTP (124 since 2026-11-05: the pitch envelope at 107..115)
 GB_MAXV = 64;                        // playing voices
 GB_FADES = 4;                        // extra slots a stolen voice fades out in
 // (1620000 .. 1686000 was free: gb_sfz's note)
@@ -36,6 +36,15 @@ GB_GLAST = 1634140;                  // 16: each part's last note, for glide (-1
 GB_CHG = 1634160;                    // 16: each part's volume x expression gain (CC7, CC11)
 GB_CV7 = 1634180; GB_CV11 = 1634200; // 16 each: the part's last CC7 / CC11 from MIDI (127 at each load, as before:
                                      // a file's set_cc7 never set the level)
+// the bend range (2026-11-05, formats round 2 item C): GB_BNDR = each part's raw bend -1..1; GB_BRNG = the range RPN 0
+// set on the part (cents; -1 = none received: the SETTINGS knob rules; 0 = the file asked for NO bend); GB_RPNM /
+// GB_RPNL = the RPN selected by CC101 / CC100 (127 = none). A region's own bend_up / bend_down (GBR_BUP / BDN) win
+GB_BNDR = 1634220; GB_BRNG = 1634240; GB_RPNM = 1634260; GB_RPNL = 1634280;   // 16 each -> 1634296
+// each MIDI channel's program (2026-11-05, variation banks): the section it plays (GB_CHSC) beside its program
+// (gb_sfz's GB_CHPG, 0..127), and the raw MIDI that picked it -- CC0 (bank select, GS: CC32 ignored), the last
+// program change, and whether one came while a load ran (applied once the new instrument is adopted)
+GB_CHSC = 1656800; GB_CHB0 = 1656820; GB_CHMP = 1656840; GB_CHLD = 1656860;   // 16 each -> 1656876
+memset(GB_CHB0, 0, 16); memset(GB_CHMP, 0, 16); memset(GB_CHLD, 0, 16);
 GBV_PART = 105; GBV_CG = 106;        // a voice's part, and its part gain now (glides to GB_CHG)
 GBV_ON = 0; GBV_REG = 1; GBV_NOTE = 2; GBV_POS = 3; GBV_SEMI = 4; GBV_RATIO = 5; GBV_INC = 6; GBV_GL = 7; GBV_GR = 8;
 GBV_ST = 9; GBV_ENV = 10; GBV_CNT = 11; GBV_AINC = 12; GBV_DCOEF = 13; GBV_SUSL = 14; GBV_RCOEF = 15; GBV_FCOEF = 16;
@@ -60,6 +69,12 @@ GBV_PLD = 77; GBV_ALD = 78; GBV_FLD = 79;   // LFO depths now (pitch cents, amp 
 // a packed instrument (gb_load, 2026-11-04): the voice's cache of GBV_PKN cells unpacked from cell GBV_PKQ on
 // (-1 = empty; emptied at every launch, so a voice never reads another sample's or another load's points)
 GBV_PKQ = 80; GBV_PKC = 81; GBV_PKN = 8;    // 81 .. 104: 8 cells x 3 points
+// the pitch envelope (2026-11-05, formats round 2 item A): nine cells in the filter envelope's order (depth, value,
+// stage, counter, attack step, decay coef, sustain, release coef, hold samples), so gb_eg_launch / gb_eg_tick run
+// either from its first cell. Depth in cents; the voice's rate takes 2^(value x depth / 1200) (gb_ratio)
+GBV_PEGD = 107; GBV_PEGE = 108; GBV_PEGST = 109; GBV_PEGCNT = 110; GBV_PEGAI = 111; GBV_PEGDC = 112; GBV_PEGSL = 113; GBV_PEGRC = 114; GBV_PEGHN = 115;
+GBV_BUP = 116; GBV_BDN = 117;        // the region's bend range in cents (up, down; both 0 = the part's RPN range, else the knob)
+GBV_VEL = 118;                       // the note's velocity (the release re-read at the let-go needs it, gb_release_time)
 // the per-sample lookups (no exp / tan / pow in @sample): the filter's g = tan(pi f / srate) by cent, a pitch ratio
 // by cent, a gain by tenth of a dB. Built in @init (it runs again when the sample rate changes).
 GB_LKG = 200000; GB_LKG_C0 = -3700; GB_LKG_ST = 2; GB_LKG_N = 8651;   // -3700 .. 13600 cents (about 1 Hz .. 21 kHz)
@@ -73,7 +88,19 @@ function gb_tables_build() local(i, f) (
   );
   i = 0; loop(GB_LKR_N, GB_LKR[i] = 2 ^ ((GB_LKR_C0 + i) / 1200); i += 1; );
   i = 0; loop(GB_LKA_N, GB_LKA[i] = 10 ^ ((GB_LKA_D0 + i * 0.1) / 20); i += 1; );
+  i = 0; loop(GB_OCT_N, GB_OCT[i] = 2 ^ (i - 12); i += 1; );
 );
+// whole octaves for gb_ratio (a pitch envelope may ask +-12000 cents, past GB_LKR's +-2400), and the two envelopes'
+// region cells by name: GB_EGF = the filter envelope's (gb_sfz GBR_EGD.., scattered), GB_EGP = the pitch envelope's
+// (GBR_PEGD.., in a row), eleven each in the order depth, delay, attack, hold, decay, sustain, release, vel2depth,
+// vel2attack, vel2decay, vel2release (2026-11-05)
+GB_OCT = 215000; GB_OCT_N = 25;      // 2^-12 .. 2^12 -> 215025
+GB_EGF = 215100; GB_EGP = 215120;    // 11 each -> 215131 (under GB_LKA 216000)
+GB_EMS = 215140;                     // 6: a note's controller-driven envelope offsets (gb_env_mods; @block only) -> 215146
+GB_EGF[0] = GBR_EGD; GB_EGF[1] = GBR_EGDLY; GB_EGF[2] = GBR_EGATT; GB_EGF[3] = GBR_EGHOLD; GB_EGF[4] = GBR_EGDEC; GB_EGF[5] = GBR_EGSUS;
+GB_EGF[6] = GBR_EGREL; GB_EGF[7] = GBR_EGVD; GB_EGF[8] = GBR_EGVA; GB_EGF[9] = GBR_EGVDC; GB_EGF[10] = GBR_EGVR;
+GB_EGP[0] = GBR_PEGD; GB_EGP[1] = GBR_PEGDLY; GB_EGP[2] = GBR_PEGATT; GB_EGP[3] = GBR_PEGHOLD; GB_EGP[4] = GBR_PEGDEC; GB_EGP[5] = GBR_PEGSUS;
+GB_EGP[6] = GBR_PEGREL; GB_EGP[7] = GBR_PEGVD; GB_EGP[8] = GBR_PEGVA; GB_EGP[9] = GBR_PEGVDC; GB_EGP[10] = GBR_PEGVR;
 gb_tables_build(); gb_tab_sr = srate;
 GB_MOD_GLIDE = 0.004;                // per sample: about 5 ms at 48 kHz
 GB_ST_ATT = 1; GB_ST_HOLD = 2; GB_ST_DEC = 3; GB_ST_SUS = 4; GB_ST_REL = 5; GB_ST_FADE = 6;
@@ -120,6 +147,38 @@ function gb_lkg(c) local(x, i) (
   GB_LKG[i] + (GB_LKG[i + 1] - GB_LKG[i]) * (x - i);
 );
 function gb_lkr(c) local(x, i) ( x = max(0, min(GB_LKR_N - 1.001, c - GB_LKR_C0)); i = x | 0; GB_LKR[i] + (GB_LKR[i + 1] - GB_LKR[i]) * (x - i); );
+// 2^(c / 1200) for any c within +-12 octaves: whole octaves from GB_OCT, the rest from gb_lkr (no pow per sample)
+function gb_ratio(c) local(o) (
+  c = max(-14400, min(14400, c)); o = floor(c / 1200);
+  GB_OCT[o + 12] * gb_lkr(c - o * 1200);
+);
+// one envelope (the filter's or the pitch's) at launch: o = its nine voice cells, t = its eleven region cells by
+// index (GB_EGF / GB_EGP), vv = velocity / 127, hs / ds = the key scaling of the hold and the decay (1 = none; the
+// mod envelope's keynum generators, gb_shape_launch). The times with their vel2 parts (sfizz: seconds x velocity / 127
+// added; below 0 = instant). Depth 0 (after vel2depth) = no envelope: the cells stay as memset left them
+function gb_eg_launch(o, r, t, vv, hs, ds) local(at, dc) (
+  o[0] = r[t[0]] + r[t[7]] * vv;
+  o[0] != 0 ? (
+    o[1] = 0; o[3] = (r[t[1]] * srate) | 0; o[2] = o[3] > 0 ? 0 : 1;
+    at = r[t[2]] + r[t[8]] * vv; dc = min(101, (r[t[4]] + r[t[9]] * vv) * ds);
+    o[4] = at > 0 ? 1 / (at * srate) : 1;
+    o[8] = (min(18, r[t[3]] * hs) * srate) | 0; o[6] = r[t[5]];
+    o[5] = dc > 0 ? gb_coef_sfz(dc) : 0;
+    o[7] = gb_coef_sfz(max(r[t[6]] + r[t[10]] * vv, 0.001));
+  );
+);
+// one sample of an envelope: delay (0), attack (1), hold (2), decay (3), sustain (4); released (5) with the voice,
+// from where it is. o[1] = its value 0..1
+function gb_eg_tick(o, rel) local(st, e) (
+  st = o[2]; e = o[1];
+  rel && st < 5 ? st = 5;
+  st == 0 ? ( o[3] -= 1; o[3] <= 0 ? st = 1; )
+  : st == 1 ? ( e += o[4]; e >= 1 ? ( e = 1; o[8] > 0 ? ( st = 2; o[3] = o[8]; ) : st = 3; ); )
+  : st == 2 ? ( o[3] -= 1; o[3] <= 0 ? st = 3; )
+  : st == 3 ? ( e *= o[5]; e <= o[6] + 0.001 ? ( e = o[6]; st = 4; ); )
+  : st == 5 ? e *= o[7];
+  o[1] = e; o[2] = st;
+);
 function gb_lka(db) local(x, i) ( x = max(0, min(GB_LKA_N - 1.001, (db - GB_LKA_D0) * 10)); i = x | 0; GB_LKA[i] + (GB_LKA[i + 1] - GB_LKA[i]) * (x - i); );
 // one 2-pole stage on x; s = its two state cells; mode 0 low, 1 high, 2 band (0 dB peak), 3 notch
 function gb_svf(x, s, mode, kk, a1, a2, a3) local(v1, v2, v3) (
@@ -136,25 +195,20 @@ function gb_shape_block(v) local(r, l) (
   l = r + GBR_LFO + GBR_LFOS;      v[GBV_ALD] = l[GBL_DEPTH] + gb_cc[1] / 127 * l[GBL_CCD];
   l = r + GBR_LFO + 2 * GBR_LFOS;  v[GBV_FLD] = l[GBL_DEPTH] + gb_cc[1] / 127 * l[GBL_CCD];
   // 1 = something to run per sample, 2 = idle for now (a SoundFont voice: its mod wheel vibrato at 0 costs nothing)
-  v[GBV_SHP] = v[GBV_FT] > 0 || v[GBV_EGD] != 0 || ((r + GBR_LFO)[GBL_ON] && v[GBV_PLD] != 0)
+  v[GBV_SHP] = v[GBV_FT] > 0 || v[GBV_EGD] != 0 || v[GBV_PEGD] != 0 || ((r + GBR_LFO)[GBL_ON] && v[GBV_PLD] != 0)
                || ((r + GBR_LFO + GBR_LFOS)[GBL_ON] && v[GBV_ALD] != 0) ? 1 : 2;
 );
 // a new voice of region r (note n, velocity vel)
-function gb_shape_launch(v, r, n, vel) local(k, l, o, vv, at, dc) (
+function gb_shape_launch(v, r, n, vel) local(k, l, o, vv, ks, hs, ds) (
   v[GBV_SHP] = 1; vv = vel / 127;
   v[GBV_FT] = r[GBR_FTYPE]; v[GBV_FK] = 10 ^ (-r[GBR_FRES] / 20);
   v[GBV_FC] = 1200 * log(r[GBR_FCUT] / 8.175799) / log(2) + r[GBR_FKT] * (n - r[GBR_FKC]) + r[GBR_FVT] * vv
               + (r[GBR_FRND] > 0 ? rand(r[GBR_FRND]) : 0);
-  v[GBV_EGD] = r[GBR_EGD] + r[GBR_EGVD] * vv;
-  v[GBV_EGD] != 0 ? (
-    v[GBV_EGE] = 0; v[GBV_EGCNT] = (r[GBR_EGDLY] * srate) | 0; v[GBV_EGST] = v[GBV_EGCNT] > 0 ? 0 : 1;
-    // the times, with their vel2 parts (sfizz: seconds x velocity / 127 added; below 0 = instant)
-    at = r[GBR_EGATT] + r[GBR_EGVA] * vv; dc = r[GBR_EGDEC] + r[GBR_EGVDC] * vv;
-    v[GBV_EGAI] = at > 0 ? 1 / (at * srate) : 1;
-    v[GBV_EGHN] = (r[GBR_EGHOLD] * srate) | 0; v[GBV_EGSL] = r[GBR_EGSUS];
-    v[GBV_EGDC] = dc > 0 ? gb_coef_sfz(dc) : 0;
-    v[GBV_EGRC] = gb_coef_sfz(max(r[GBR_EGREL] + r[GBR_EGVR] * vv, 0.001));
-  );
+  // the mod envelope's key scaling (a SoundFont's keynumToModEnvHold / Decay): both envelopes are that one envelope
+  ks = 60 - n;
+  hs = r[GBR_KFH] != 0 ? 2 ^ (r[GBR_KFH] * ks / 1200) : 1; ds = r[GBR_KFD] != 0 ? 2 ^ (r[GBR_KFD] * ks / 1200) : 1;
+  gb_eg_launch(v + GBV_EGD, r, GB_EGF, vv, hs, ds);    // the filter envelope
+  gb_eg_launch(v + GBV_PEGD, r, GB_EGP, vv, hs, ds);   // the pitch envelope
   k = 0;
   loop(3,
     l = r + GBR_LFO + k * GBR_LFOS; o = v + GBV_LFO + k * GBV_LFS;
@@ -166,9 +220,9 @@ function gb_shape_launch(v, r, n, vel) local(k, l, o, vv, at, dc) (
   );
   gb_shape_block(v);
 );
-// one sample of a shaped voice: the LFOs and the filter envelope move, gb_yl / gb_yr go through the filter and the
-// amp LFO; returns the pitch LFO's rate factor (1 = none)
-function gb_shape_tick(v) local(r, k, l, o, x, y, lv0, lv1, lv2, st, e, ft, c, g, kk, a1, a2, a3, md, pm)
+// one sample of a shaped voice: the LFOs and the two envelopes move, gb_yl / gb_yr go through the filter and the
+// amp LFO; returns the pitch rate factor of the pitch LFO and the pitch envelope together (1 = none)
+function gb_shape_tick(v) local(r, k, l, o, x, y, lv0, lv1, lv2, ft, c, g, kk, a1, a2, a3, md, pm, pc)
 (
   r = GB_REG + v[GBV_REG] * GB_RS;
   lv0 = lv1 = lv2 = 0; k = 0;
@@ -188,17 +242,9 @@ function gb_shape_tick(v) local(r, k, l, o, x, y, lv0, lv1, lv2, st, e, ft, c, g
     );
     k += 1;
   );
-  // the filter envelope: delay, attack, hold, decay, sustain; released with the voice, from where it is
-  v[GBV_EGD] != 0 ? (
-    st = v[GBV_EGST]; e = v[GBV_EGE];
-    v[GBV_ST] >= GB_ST_REL && st < 5 ? st = 5;
-    st == 0 ? ( v[GBV_EGCNT] -= 1; v[GBV_EGCNT] <= 0 ? st = 1; )
-    : st == 1 ? ( e += v[GBV_EGAI]; e >= 1 ? ( e = 1; v[GBV_EGHN] > 0 ? ( st = 2; v[GBV_EGCNT] = v[GBV_EGHN]; ) : st = 3; ); )
-    : st == 2 ? ( v[GBV_EGCNT] -= 1; v[GBV_EGCNT] <= 0 ? st = 3; )
-    : st == 3 ? ( e *= v[GBV_EGDC]; e <= v[GBV_EGSL] + 0.001 ? ( e = v[GBV_EGSL]; st = 4; ); )
-    : st == 5 ? e *= v[GBV_EGRC];
-    v[GBV_EGE] = e; v[GBV_EGST] = st;
-  );
+  // the filter envelope and the pitch envelope (gb_eg_tick): released with the voice, from where they are
+  v[GBV_EGD] != 0 ? gb_eg_tick(v + GBV_EGD, v[GBV_ST] >= GB_ST_REL);
+  v[GBV_PEGD] != 0 ? gb_eg_tick(v + GBV_PEGD, v[GBV_ST] >= GB_ST_REL);
   ft = v[GBV_FT];
   ft > 0 ? (
     c = v[GBV_FCB] + v[GBV_EGE] * v[GBV_EGD] + lv2 * v[GBV_FLD];
@@ -221,13 +267,19 @@ function gb_shape_tick(v) local(r, k, l, o, x, y, lv0, lv1, lv2, st, e, ft, c, g
     );
   );
   lv1 != 0 ? ( y = gb_lka(lv1 * v[GBV_ALD]); gb_yl *= y; gb_yr *= y; );
-  pm = lv0 != 0 ? gb_lkr(lv0 * v[GBV_PLD]) : 1;
+  // the pitch: the LFO's cents + the envelope's value x depth
+  pc = lv0 * v[GBV_PLD] + (v[GBV_PEGD] != 0 ? v[GBV_PEGE] * v[GBV_PEGD] : 0);
+  pm = pc != 0 ? gb_ratio(pc) : 1;
   pm;
 );
 
-// a voice's playback rate: its own semitones + pitch bend + TUNE + live controllers (cents) + glide still to go
-function gb_voice_inc(v) (
-  v[GBV_INC] = 2 ^ ((v[GBV_SEMI] + GB_BND[v[GBV_PART]] + gb_tune_st + v[GBV_MCENT] * 0.01 + v[GBV_GLS]) / 12) * v[GBV_RATIO];
+// a voice's playback rate: its own semitones + pitch bend + TUNE + live controllers (cents) + glide still to go.
+// The bend's range (2026-11-05): the region's own bend_up / bend_down when it has them, else the range RPN 0 set on the
+// part, else the SETTINGS knob (gb_bend_rng semitones, both ways)
+function gb_voice_inc(v) local(p, rb, up, dn, rg) (
+  p = v[GBV_PART]; rb = GB_BNDR[p]; up = v[GBV_BUP]; dn = v[GBV_BDN];
+  up == 0 && dn == 0 ? ( rg = GB_BRNG[p] >= 0 ? GB_BRNG[p] : gb_bend_rng * 100; up = rg; dn = -rg; );
+  v[GBV_INC] = 2 ^ ((v[GBV_SEMI] + (rb >= 0 ? rb * up : -rb * dn) * 0.01 + gb_tune_st + v[GBV_MCENT] * 0.01 + v[GBV_GLS]) / 12) * v[GBV_RATIO];
 );
 
 // ── format 2: live controllers (types in gumbo_sfz.lua's header) ──
@@ -281,6 +333,28 @@ function gb_voice_mod(v) local(ri, m, k, t, x, c, g, db, pan, cent) (
   );
 );
 
+// the amp envelope's controller-driven times (mod types 11..16, 2026-11-05): region ri's offsets from the current
+// part's controllers now, into GB_EMS (delay, attack, hold, decay, sustain %, release) -- read when a note starts
+function gb_env_mods(ri) local(k, m, t) (
+  memset(GB_EMS, 0, 6); k = 0;
+  loop((GB_REG + ri * GB_RS)[GBR_NMOD],
+    m = GB_MOD + ri * GB_MODS + k * 4; t = m[0] % 100;
+    t >= 11 && t <= 16 ? GB_EMS[t - 11] += gb_curve(m[3], gb_cc[m[1]] / 127) * m[2];
+    k += 1;
+  );
+);
+// the release time again at the let-go, from its controller as it stands then (a RELEASE knob turned while a chord
+// is held applies to that chord); only a region with a release mod pays for it. @block only (exp)
+function gb_release_time(v) local(ri, r, k, m, cc0, has, vv) (
+  ri = v[GBV_REG]; r = GB_REG + ri * GB_RS; has = 0; k = 0;
+  loop(r[GBR_NMOD], (GB_MOD + ri * GB_MODS + k * 4)[0] % 100 == 16 ? has = 1; k += 1; );
+  has ? (
+    cc0 = gb_cc; gb_cc = GB_CCP + v[GBV_PART] * 128;   // its own part's controllers (the caller's pointer kept)
+    gb_env_mods(ri); gb_cc = cc0; vv = v[GBV_VEL] / 127;
+    v[GBV_RCOEF] = gb_coef_sfz(max(max(r[GBR_REL] + r[GBR_VREL] * vv + GB_EMS[5], 0.001) * gb_relx, 0.001));
+  );
+);
+
 function gb_all_off() local(i) (
   i = 0; loop(GB_MAXV + GB_FADES, GB_VOI[i * GB_VS + GBV_ON] = 0; i += 1; );
   gb_vhi = 0;
@@ -297,21 +371,65 @@ function gb_part_of(ch) ( gb_nprg > 0 ? max(0, min(15, ch | 0)) : 0; );
 function gb_part_sel(s) ( gb_part = s; gb_cc = GB_CCP + s * 128; gb_ptab = GB_NTP + s * GB_NTS; );
 function gb_part_gain(s) ( GB_CHG[s] = (GB_CV7[s] / 127) ^ 2 * (GB_CV11[s] / 127) ^ 2; );
 
-function gb_sel(ch) local(e) (
-  e = GB_CHPG[max(0, min(15, ch | 0))];
-  e >= 128 ? ( gb_ssec = gb_drum_sec; gb_sprog = e - 128; ) : ( gb_ssec = gb_mel_sec; gb_sprog = e; );
+function gb_sel(ch) (
+  ch = max(0, min(15, ch | 0));
+  gb_ssec = GB_CHSC[ch]; gb_sprog = GB_CHPG[ch];
 );
 function gb_prog_ok(r) (
   r[GBR_PSEC] == 0 || (r[GBR_PSEC] == gb_ssec && gb_sprog >= r[GBR_PLO] && gb_sprog <= r[GBR_PHI]);
 );
-// v = the face's pick (0..127 melodic, 128 + p a kit): every channel; channel 10 keeps a kit when the pick is melodic
-function gb_prog_apply(v) local(i) (
-  v = max(0, min(255, v | 0));
-  i = 0; loop(16, GB_CHPG[i] = v; i += 1; );
-  v < 128 && gb_drum_sec > 0 ? GB_CHPG[9] = 128;
+// ── variation banks (2026-11-05): a program change picks (bank, program) as FluidSynth does by default ("gs" bank
+// select; fluid_chan.c fluid_channel_set_bank_msb, fluid_synth.c fluid_synth_program_change, read 2026-11-05): CC0
+// sets the bank, on the drum channel 128 + CC0; CC32 is ignored; the bank waits for the next program change. A
+// (bank, program) the file lacks falls back to bank 0's program, then bank 0's program 1 -- on the drum channel to the
+// kits' same program, then the first kit. The tables are the file's, so this runs only while the instrument is ready.
+// the section MIDI bank b picks: the file's "// bank" lines, else bank 0 = the first melodic section, 128 = the kits
+function gb_bank_sec(b) local(s) (
+  b = b | 0; s = b >= 0 && b < 256 ? GB_BNK[b] : 0;
+  s > 0 ? s : b == 0 ? gb_mel_sec : b == 128 ? gb_drum_sec : 0;
 );
+// does section s hold program p (the speed index, else the program list)
+function gb_has(s, p) local(i, q, f) (
+  s <= 0 || p < 0 || p > 127 ? 0
+  : gb_pix_ok && s < GB_PIX_SECS ? GB_PIX[((s | 0) * 128 + (p | 0)) * 2] >= 0
+  : ( f = 0; i = 0; loop(gb_nprg, q = GB_PRG + i * 5; q[0] == s && p >= q[1] && p <= q[2] ? f = 1; i += 1; ); f; );
+);
+function gb_chan_set(ch, s, p) ( GB_CHSC[ch] = s; GB_CHPG[ch] = p; );
+// the section and program channel ch gets for MIDI bank b, program p, packed as section * 128 + program (no table
+// written: the EQ memory asks it from @gfx too, gb_pick_ch0)
+function gb_resolve_pack(ch, b, p) local(s, d) (
+  p = max(0, min(127, p | 0));
+  gb_nprg == 0 ? p : (
+    s = gb_bank_sec(b);
+    gb_has(s, p) ? s * 128 + p : (
+      d = gb_bank_sec(ch == 9 && gb_drum_sec > 0 ? 128 : 0);
+      d * 128 + (gb_has(d, p) ? p : gb_has(d, 0) ? 0 : p);
+    );
+  );
+);
+// channel ch to MIDI bank b, program p
+function gb_resolve(ch, b, p) local(k) ( k = gb_resolve_pack(ch, b, p); gb_chan_set(ch, floor(k / 128), k % 128); );
+// the program channel 1 takes for the face's pick v, bank b (as gb_prog_set sets it), packed as gb_resolve_pack does:
+// the EQ memory's key (gb_eq) for a load the audio thread has not adopted yet
+function gb_pick_ch0(v, b) (
+  v = max(0, min(255, v | 0));
+  v >= 128 && gb_drum_sec > 0 ? gb_drum_sec * 128 + v - 128 : gb_resolve_pack(0, b, v & 127);
+);
+// the bank a program change on ch asks for: its CC0, on the drum channel (channel 10, when the file has kits) + 128
+function gb_midi_bank(ch) ( (ch == 9 && gb_drum_sec > 0 ? 128 : 0) + GB_CHB0[ch]; );
+// v = the face's pick (0..127 melodic, 128 + p a kit), b = its bank (slider 90; 0 = the main programs): every channel;
+// channel 10 keeps the first kit when the pick is melodic. gb_prog_set runs it; gb_prog_apply only while the
+// instrument is ready and adopted (gb_on_ready, which runs before the adoption is marked, calls gb_prog_set)
+function gb_prog_set(v, b) local(i) (
+  v = max(0, min(255, v | 0));
+  v >= 128 && gb_drum_sec > 0 ? ( i = 0; loop(16, gb_chan_set(i, gb_drum_sec, v - 128); i += 1; ); )
+  : ( i = 0; loop(16, i == 9 && gb_drum_sec > 0 ? gb_resolve(9, 128, 0) : gb_resolve(i, b, v & 127); i += 1; ); );
+);
+function gb_prog_apply(v, b) ( gb_ready && gb_gen_seen == gb_load_gen ? gb_prog_set(v, b); );
+// a program change on ch: now when the instrument is ready, else once the loading one is adopted (gb_on_ready)
 function gb_prog_change(ch, p) (
-  GB_CHPG[ch] = ch == 9 && gb_drum_sec > 0 ? 128 + p : p;
+  GB_CHMP[ch] = p;
+  gb_ready && gb_gen_seen == gb_load_gen ? gb_resolve(ch, gb_midi_bank(ch), p) : GB_CHLD[ch] = 1;
 );
 
 function gb_on_ready() local(i, r, s) (
@@ -321,11 +439,14 @@ function gb_on_ready() local(i, r, s) (
   loop(16,
     i = 0; loop(128, GB_CCP[s * 128 + i] = gb_cc_init[i]; i += 1; );
     GB_BND[s] = 0; GB_HELD[s] = 0; GB_GLAST[s] = -1; GB_CV7[s] = GB_CV11[s] = 127; gb_part_gain(s);
+    GB_BNDR[s] = 0; GB_BRNG[s] = -1; GB_RPNM[s] = 127; GB_RPNL[s] = 127;   // no bend, no RPN range yet, no RPN selected
     s += 1;
   );
   memset(GB_NTP, 0, 16 * GB_NTS); memset(GB_NTA, 0, 128);
   gb_bend = 0; gb_bend_dirty = 1; gb_part_sel(0);
-  gb_prog_apply(gb_prog_pick);       // a new instrument: every channel on the face's pick (a bank's programs, kit on 10)
+  gb_prog_set(gb_prog_pick, gb_bank_pick);   // a new instrument: every channel on the face's pick (kit on 10)
+  // ... then the program changes that came while it loaded, on their channels' banks (they used to be lost here)
+  i = 0; loop(16, GB_CHLD[i] ? ( GB_CHLD[i] = 0; gb_resolve(i, gb_midi_bank(i), GB_CHMP[i]); ); i += 1; );
   gb_sw_lo = 128; gb_sw_hi = -1; gb_sw_cur = -1; gb_kb_cur = -1;
   gb_last_reg = -1; gb_last_note = -1; gb_last_vel = 0;   // the display must not show the old instrument's note
   i = 0;
@@ -373,6 +494,7 @@ function gb_seq_turn(r) (
 );
 
 function gb_release(v) (
+  gb_release_time(v);
   v[GBV_DLY] > 0 ? v[GBV_ON] = 0 : ( v[GBV_RELD] = 1; v[GBV_ST] < GB_ST_REL ? v[GBV_ST] = GB_ST_REL; );
 );
 function gb_fade(v) ( v[GBV_DLY] > 0 ? v[GBV_ON] = 0 : v[GBV_ST] = GB_ST_FADE; );
@@ -382,7 +504,7 @@ function gb_fade(v) ( v[GBV_DLY] > 0 ? v[GBV_ON] = 0 : v[GBV_ST] = GB_ST_FADE; )
 function gb_release_at(v, ofs) (
   ofs <= 0 ? gb_release(v)
   : v[GBV_DLY] > 0 && ofs <= v[GBV_DLY] ? v[GBV_ON] = 0
-  : v[GBV_RELIN] = ofs + 1;
+  : ( gb_release_time(v); v[GBV_RELIN] = ofs + 1; );   // (the coefficient now, in @block; the release starts in @sample)
 );
 
 // the oldest voice among the regular slots matching (group, note) -- note < 0 means any note; group < 0 means any
@@ -423,7 +545,7 @@ function gb_steal_slot(s) local(f, k, fv, best, bage) (
 );
 
 // start region ri for note n at velocity vel, ofs samples into the block, its level scaled by gsc
-function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, last, pos, db, lin, pan, mc, mi, vv, at, dc) (
+function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, last, pos, db, lin, pan, mc, mi, vv, at, dc, ks, hs, ds) (
   r = GB_REG + ri * GB_RS; grp = r[GBR_GROUP];
   // a region of group G turns off every voice whose off_by is G
   grp != 0 ? (
@@ -456,6 +578,7 @@ function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, l
         v[GBV_SEMI] = (n - r[GBR_KEYC]) * r[GBR_KTRACK] * 0.01 + r[GBR_TUNE] * 0.01 + r[GBR_TRANSP];
         v[GBV_RATIO] = s[GBS_SR] / srate;
         v[GBV_GLS] = gb_launch_gl;     // glide: start from the last note's pitch (0 = no glide)
+        v[GBV_BUP] = r[GBR_BUP]; v[GBV_BDN] = r[GBR_BDN];   // its bend range (0, 0 = the part's or the knob's)
         gb_voice_inc(v);
         db = r[GBR_VOLDB]; r[GBR_AMPRAND] > 0 ? db += rand(r[GBR_AMPRAND]);
         // the face's VELOCITY knob: 100 % = as played, 0 % = every note full (layer choice keeps the real velocity)
@@ -476,16 +599,24 @@ function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, l
         );
         v[GBV_LMODE] = r[GBR_LMODE]; v[GBV_LS] = r[GBR_LSTART]; v[GBV_LE] = min(r[GBR_LEND], last);
         (v[GBV_LMODE] == GB_LM_CONT || v[GBV_LMODE] == GB_LM_SUST) && v[GBV_LE] <= v[GBV_LS] ? v[GBV_LMODE] = GB_LM_NOLOOP;
-        v[GBV_DLY] = ofs + (r[GBR_DELAY] * srate) | 0;
-        v[GBV_HOLDN] = (r[GBR_HOLD] * srate) | 0;
-        v[GBV_SUSL] = max(0, min(1, r[GBR_SUS] * 0.01));
+        // the controllers on the envelope's times (mod types 11..16; GB_EMS = delay, attack, hold, decay, sustain %,
+        // release offsets as the part's controllers stand now; 2026-11-05)
+        r[GBR_NMOD] > 0 ? gb_env_mods(ri) : memset(GB_EMS, 0, 6);
+        v[GBV_VEL] = vel;
+        v[GBV_DLY] = ofs + (max(0, r[GBR_DELAY] + GB_EMS[0]) * srate) | 0;
+        // key-scaled hold and decay (2026-11-05, a SoundFont's keynumToVolEnvHold / Decay, as FluidSynth: the time x
+        // 2^(k x (60 - key) / 1200), so a positive k rings the low keys longer; hold at most 18 s, decay 101 s)
+        ks = 60 - n; vv = vel / 127;
+        hs = r[GBR_KAH] != 0 ? 2 ^ (r[GBR_KAH] * ks / 1200) : 1; ds = r[GBR_KAD] != 0 ? 2 ^ (r[GBR_KAD] * ks / 1200) : 1;
+        v[GBV_HOLDN] = (min(18, max(0, r[GBR_HOLD] + GB_EMS[2]) * hs) * srate) | 0;
+        v[GBV_SUSL] = max(0, min(1, (r[GBR_SUS] + GB_EMS[4]) * 0.01));
         // the envelope times, each with its vel2 part (sfizz: seconds x velocity / 127 added; below 0 = instant)
-        vv = vel / 127; dc = r[GBR_DEC] + r[GBR_VDEC] * vv;
+        dc = min(101, (r[GBR_DEC] + r[GBR_VDEC] * vv + GB_EMS[3]) * ds);
         v[GBV_DCOEF] = dc > 0 ? gb_coef_sfz(dc) : 0;
-        v[GBV_RCOEF] = gb_coef_sfz(max(max(r[GBR_REL] + r[GBR_VREL] * vv, 0.001) * gb_relx, 0.001));   // the face's RELEASE knob scales it
+        v[GBV_RCOEF] = gb_coef_sfz(max(max(r[GBR_REL] + r[GBR_VREL] * vv + GB_EMS[5], 0.001) * gb_relx, 0.001));   // the face's RELEASE knob scales it
         v[GBV_FCOEF] = gb_coef_sfz(max(r[GBR_OFFTIME], 0.001));
         // the face's ATTACK knob adds to the region's own attack (0 s = as recorded)
-        at = r[GBR_ATT] + r[GBR_VATT] * vv + gb_att_add;
+        at = r[GBR_ATT] + r[GBR_VATT] * vv + gb_att_add + GB_EMS[1];
         at > 0 ? ( v[GBV_ENV] = 0; v[GBV_AINC] = 1 / (at * srate); v[GBV_ST] = GB_ST_ATT; )
                        : ( v[GBV_ENV] = 1; v[GBV_ST] = v[GBV_HOLDN] > 0 ? GB_ST_HOLD : GB_ST_DEC; v[GBV_CNT] = v[GBV_HOLDN]; );
         v[GBV_GROUP] = grp; v[GBV_OFFBY] = r[GBR_OFFBY]; v[GBV_OFFMODE] = r[GBR_OFFMODE]; v[GBV_TRIG] = r[GBR_TRIG];
@@ -500,10 +631,29 @@ function gb_launch(ri, n, vel, ofs, gsc) local(r, sm, s, i, v, k, grp, frames, l
   );
 );
 
-// every region of trigger kind tr (attack-like, or release-like) that matches note n at velocity vel
-function gb_fire(n, vel, ofs, release, gsc, prevheld) local(i, r, tr, ok, rnd) (
-  rnd = rand(1); i = 0;
-  loop(gb_nreg,
+// the regions a note on (gb_ssec, gb_sprog) may play lie in section 0's span and the program's own (gb_sfz
+// gb_prog_index): their union, in file order, as one or two ranges gb_s1a..gb_s1b, gb_s2a..gb_s2b (empty: a > b).
+// Every region in them is still tested in full, so the regions played and their order are the full search's.
+function gb_span() local(e, a0, a1, b0, b1) (
+  gb_s2a = 0; gb_s2b = -1;
+  !gb_pix_ok ? ( gb_s1a = 0; gb_s1b = gb_nreg - 1; ) : (
+    a0 = gb_pix0a; a1 = gb_pix0b; b0 = -1; b1 = -1;
+    gb_ssec > 0 && gb_ssec < GB_PIX_SECS && gb_sprog >= 0 && gb_sprog < 128 ? (
+      e = GB_PIX + ((gb_ssec | 0) * 128 + (gb_sprog | 0)) * 2; b0 = e[0]; b1 = e[1];
+    );
+    a0 < 0 ? ( a0 = b0; a1 = b1; b0 = -1; );
+    a0 < 0 ? ( gb_s1a = 0; gb_s1b = -1; )
+    : b0 < 0 ? ( gb_s1a = a0; gb_s1b = a1; )
+    : b0 <= a1 + 1 && a0 <= b1 + 1 ? ( gb_s1a = min(a0, b0); gb_s1b = max(a1, b1); )
+    : b0 < a0 ? ( gb_s1a = b0; gb_s1b = b1; gb_s2a = a0; gb_s2b = a1; )
+    : ( gb_s1a = a0; gb_s1b = a1; gb_s2a = b0; gb_s2b = b1; );
+  );
+);
+
+// regions a..b of trigger kind tr (attack-like, or release-like) that match note n at velocity vel
+function gb_fire_in(a, b, n, vel, ofs, release, gsc, prevheld, rnd) local(i, r, tr, ok) (
+  i = a;
+  while (i <= b) (
     r = GB_REG + i * GB_RS; tr = r[GBR_TRIG];
     ok = release ? (tr == GB_TR_RELEASE || tr == GB_TR_RELKEY) && (release == 2 ? tr == GB_TR_RELEASE : 1)
                  : tr == GB_TR_ATTACK || (tr == GB_TR_FIRST && prevheld == 0) || (tr == GB_TR_LEGATO && prevheld > 0);
@@ -512,6 +662,13 @@ function gb_fire(n, vel, ofs, release, gsc, prevheld) local(i, r, tr, ok, rnd) (
     );
     i += 1;
   );
+);
+// every region that matches note n at velocity vel, on the current program (gb_sel)
+function gb_fire(n, vel, ofs, release, gsc, prevheld) local(rnd, a2, b2) (
+  rnd = rand(1);
+  gb_span(); a2 = gb_s2a; b2 = gb_s2b;
+  gb_fire_in(gb_s1a, gb_s1b, n, vel, ofs, release, gsc, prevheld, rnd);
+  gb_fire_in(a2, b2, n, vel, ofs, release, gsc, prevheld, rnd);
 );
 
 // is n a keyswitch key (it switches; it is no held note for trigger=first / legato, glide or mono)
@@ -542,11 +699,9 @@ function gb_note_on(n, vel, ofs) local(prev, i, v, sw) (
 );
 
 // release-trigger regions for note n; release == 1 at note-off (both kinds), 2 at pedal-up (trigger=release only)
-function gb_fire_release(n, ofs, release) local(i, r, tr, held_s, rnd) (
-  held_s = max(0, (gb_t + ofs - gb_ptab[256 + n]) / srate);
-  gb_sel(gb_ptab[512 + n]);
-  rnd = rand(1); i = 0;
-  loop(gb_nreg,
+function gb_frel_in(a, b, n, ofs, release, held_s, rnd) local(i, r, tr) (
+  i = a;
+  while (i <= b) (
     r = GB_REG + i * GB_RS; tr = r[GBR_TRIG];
     (release == 1 ? (tr == GB_TR_RELKEY || (tr == GB_TR_RELEASE && gb_cc[64] < 64)) : tr == GB_TR_RELEASE)
       && n >= r[GBR_LOKEY] && n <= r[GBR_HIKEY] && gb_ptab[128 + n] >= r[GBR_LOVEL] && gb_ptab[128 + n] <= r[GBR_HIVEL]
@@ -555,6 +710,14 @@ function gb_fire_release(n, ofs, release) local(i, r, tr, held_s, rnd) (
     );
     i += 1;
   );
+);
+function gb_fire_release(n, ofs, release) local(held_s, rnd, a2, b2) (
+  held_s = max(0, (gb_t + ofs - gb_ptab[256 + n]) / srate);
+  gb_sel(gb_ptab[512 + n]);
+  rnd = rand(1);
+  gb_span(); a2 = gb_s2a; b2 = gb_s2b;
+  gb_frel_in(gb_s1a, gb_s1b, n, ofs, release, held_s, rnd);
+  gb_frel_in(a2, b2, n, ofs, release, held_s, rnd);
 );
 
 // note n off, in the current part. Its release sounds only for a note that was on: a stray or repeated note-off
@@ -592,6 +755,15 @@ function gb_cc_in(c, val, ofs) local(was, i, v) (
   );
   c == 7 ? GB_CV7[gb_part] = val; c == 11 ? GB_CV11[gb_part] = val;
   c == 7 || c == 11 ? gb_part_gain(gb_part);   // volume and expression: this part's voices glide there (gb_render)
+  // RPN 0, the pitch-bend range (the GM way, 2026-11-05): CC101 / CC100 select it, then CC6 = semitones, CC38 = cents
+  // (0 semitones = the file wants no bend, kept as 0); 127 / 127 (or any other RPN) ends it. The part's voices
+  // re-pitch at once (gb_bend_dirty); a region with its own bend_up / bend_down keeps its own
+  c == 101 ? GB_RPNM[gb_part] = val; c == 100 ? GB_RPNL[gb_part] = val;
+  (c == 6 || c == 38) && GB_RPNM[gb_part] == 0 && GB_RPNL[gb_part] == 0 ? (
+    was = max(0, GB_BRNG[gb_part]);    // (-1 = none yet)
+    GB_BRNG[gb_part] = c == 6 ? val * 100 + was % 100 : floor(was / 100) * 100 + min(99, val);
+    gb_bend_dirty = 1;
+  );
   // all sound off cuts, all notes off releases -- this part's voices only; both forget the part's held notes and
   // pending pedal releases, or a later note would count them as still held (trigger=first / legato, the pedal)
   c == 120 ? ( i = 0; loop(GB_MAXV + GB_FADES, v = GB_VOI + i * GB_VS; v[GBV_ON] && v[GBV_PART] == gb_part ? v[GBV_ON] = 0; i += 1; ); );
@@ -602,10 +774,11 @@ function gb_cc_in(c, val, ofs) local(was, i, v) (
   );
 );
 
-// a pitch-bend value 0..16383 (8192 = centre) -> semitones, over the SETTINGS page's range
-// (the current part's; part 0's is mirrored in gb_bend for the face's wheel)
+// a pitch-bend value 0..16383 (8192 = centre) -> the part's raw bend -1..1 (GB_BNDR; each voice applies its range,
+// gb_voice_inc) and, over the SETTINGS page's range, semitones for the face's wheel (part 0's is mirrored in gb_bend)
 function gb_bend_in(v14) (
-  GB_BND[gb_part] = (v14 - 8192) / 8192 * gb_bend_rng;
+  GB_BNDR[gb_part] = (v14 - 8192) / 8192;
+  GB_BND[gb_part] = GB_BNDR[gb_part] * gb_bend_rng;
   gb_part == 0 ? gb_bend = GB_BND[0];
   gb_bend_dirty = 1;
 );
@@ -616,7 +789,9 @@ function gb_bend_in(v14) (
 function gb_midi_msg(m1, m2, m3, ofs) local(st) (
   st = m1 & $xF0;
   gb_note_ch = m1 & $x0F;
-  st == $xC0 ? gb_prog_change(gb_note_ch, m2 & 127);   // kept while a load runs too: the next notes use it
+  // bank select and program change are kept while a load runs too (gb_prog_change: applied once it is adopted)
+  st == $xB0 && m2 == 0 ? GB_CHB0[gb_note_ch] = m3 & 127;
+  st == $xC0 ? gb_prog_change(gb_note_ch, m2 & 127);
   gb_ready && gb_gen_seen == gb_load_gen ? (
     gb_part_sel(gb_part_of(gb_note_ch));
     st == $x90 && m3 > 0 ? gb_note_on(m2, m3, ofs)
@@ -804,4 +979,46 @@ function gb_render() local(i, v, st, e, p, ip, f, ptr, last, lp, looping, i0, i2
   gb_gs += (gb_gtarget - gb_gs) * 0.002;
   gb_pl_s += (gb_pl - gb_pl_s) * 0.002; gb_pr_s += (gb_pr - gb_pr_s) * 0.002;
   spl0 = ol * gb_gs * gb_pl_s; spl1 = or_ * gb_gs * gb_pr_s;
+);
+
+// ── the MIDI editor's lane names (the owner, 2026-11-05: "can it rename the midi editor lanes for the drum kits") ──
+// REAPER 7.83+'s set_midi_note_name (measured 2026-10-26, .dev_tests/nn_probe.jsfx: a track's own note names win over
+// these, a track name of "" hides them, an open editor reads them when it opens; older REAPERs get the stub below).
+// Named after what the face shows: the kit channel 1 plays -> its keys, on every channel; a melodic program while the
+// file has kits -> channel 10's kit, on channel 10 only (a GM song); an ordinary kit (no programs) -> its
+// "// label_key" names; a melodic instrument -> none. A kit's names are its own "// key_name" lines (GB_KN), else the
+// file-wide union (GB_KLB). Rebuilt in @block when the load or those two channels' programs change; @block only.
+<?
+!jsfx_has_set_midi_note_name ?
+  printf("function set_midi_note_name(a,b,c,d) ( 0 ); \n");
+?>
+gb_nn_gen = -1; gb_nn_a = -1; gb_nn_b = -1;
+function gb_nn_str(off, len) local(k) (
+  #gb_nn = ""; k = 0; loop(len, sprintf(#gb_nnc, "%c", GB_LCH[off + k]); strcat(#gb_nn, #gb_nnc); k += 1; );
+);
+// kit (sec, prog)'s names on channel ch (-1 = every channel): its key_name lines, else the union; how many were named
+function gb_nn_kit(sec, prog, ch) local(i, e, n) (
+  n = 0; i = 0;
+  loop(gb_nkn,
+    e = GB_KN + i * 5;
+    e[0] == sec && e[1] == prog ? ( gb_nn_str(e[3], e[4]); set_midi_note_name(0, e[2], ch, #gb_nn); n += 1; );
+    i += 1;
+  );
+  n == 0 ? (
+    i = 0;
+    loop(128, GB_KLB[i * 2 + 1] > 0 ? ( gb_nn_str(GB_KLB[i * 2], GB_KLB[i * 2 + 1]); set_midi_note_name(0, i, ch, #gb_nn); n += 1; ); i += 1; );
+  );
+  n;
+);
+function gb_note_names() local(a, b) (
+  gb_ready && gb_gen_seen == gb_load_gen ? (
+    a = GB_CHSC[0] * 128 + GB_CHPG[0]; b = GB_CHSC[9] * 128 + GB_CHPG[9];
+    gb_nn_gen != gb_load_gen || gb_nn_a != a || gb_nn_b != b ? (
+      gb_nn_gen = gb_load_gen; gb_nn_a = a; gb_nn_b = b;
+      set_midi_note_name(-1, 0, 0, "");
+      gb_nprg == 0 ? ( gb_nkey > 0 ? gb_nn_kit(-1, -1, -1); )
+      : gb_drum_sec > 0 && GB_CHSC[0] == gb_drum_sec ? gb_nn_kit(gb_drum_sec, GB_CHPG[0], -1)
+      : gb_drum_sec > 0 && GB_CHSC[9] == gb_drum_sec ? gb_nn_kit(gb_drum_sec, GB_CHPG[9], 9);
+    );
+  );
 );

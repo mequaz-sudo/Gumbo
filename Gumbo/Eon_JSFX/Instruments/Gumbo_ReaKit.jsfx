@@ -25,6 +25,7 @@ slider15:64<8,64,1>-Voices
 slider16:440<415,466,0.1>-Tuning A4 (Hz)
 slider17:1<0,1,1{Off,On}>-Name tracks after the instrument
 slider18:1<0,1,1{Hidden,Shown}>-Browser shown (the side handle)
+slider20:1<0,1,1{Hidden,Shown}>-Keyboard shown (the bottom handle; the window only, the strip keeps its keys)
 // the EQ (sliders 21..72: low shelf, low-mid bell, high-mid bell, high shelf) and TONE (73..85): Quezy's band layout, 13 sliders a band (gb_eq.jsfx-inc)
 slider19:0<0,1,1{Before EQ,After EQ}>-Drive position
 slider21:2<0,4,1>-EQ low mode
@@ -97,6 +98,12 @@ slider86:0<0,4,1{Arial,Verdana,Tahoma,Segoe UI,Consolas}>-Typeface
 slider87:0<-3,6,1>-Text size
 slider88:0<0,2,1{Ember,LCD,Theme}>-Screen look
 slider89:0<0,255,1>-Program (a bank: 0-127 melodic, 128 + kit; the face's PROGRAM pick)
+slider90:0<0,255,1>-Program bank (a bank: the MIDI bank of the face's pick; 0 = the main programs)
+slider91:1<0,1,1{Off,On}>-Pad icons (the drum pads' icons from their names; OPTIONS > PADS)
+slider92:2<0,2,1{Off,Soft,Bold}>-Pad colours (the drum families' colours on the pads and the keys, soft or bold; OPTIONS > PADS)
+slider93:1<0,1,1{Hidden,Shown}>-Display shown (the chevron at the display's top right folds it to a bar)
+slider94:0<0,1,1>-Look set (internal: 1 once this instance took the saved default look or the user set its OPTIONS; a fresh one is 0)
+slider95:0<0,1,1{Off,On}>-EQ hold (the EQ stays as it is through a program or instrument change; the EQ page's HOLD)
 
 options:gmem=Swing_Media_Transfer,maxmem=134217728,gfx_hz=60,gfx_idle,no_meter
 in_pin:none
@@ -163,11 +170,13 @@ gb_bend_rng = max(1, min(24, slider14 | 0)); gb_vmax = max(8, min(GB_MAXV, slide
 gb_tone = max(-1, min(1, slider7 * 0.01)); gb_drive = max(0, min(1, slider8 * 0.01));
 gb_att_add = max(0, min(2, slider9)); gb_width = max(0, min(2, slider10 * 0.01)); gb_drv_post = slider19 >= 0.5;
 // a bank's program picked on the face (or automated): every channel takes it (gb_voice, gb_prog_apply)
-gb_prog_pick = max(0, min(255, slider89 | 0));
-gb_prog_pick != gb_prog_last || gb_prog_req != gb_prog_done ? (
-  gb_prog_last = gb_prog_pick; gb_prog_done = gb_prog_req; gb_prog_apply(gb_prog_pick);
+gb_prog_pick = max(0, min(255, slider89 | 0)); gb_bank_pick = max(0, min(255, slider90 | 0));
+gb_prog_pick != gb_prog_last || gb_bank_pick != gb_bank_last || gb_prog_req != gb_prog_done ? (
+  gb_prog_last = gb_prog_pick; gb_bank_last = gb_bank_pick; gb_prog_done = gb_prog_req;
+  gb_prog_apply(gb_prog_pick, gb_bank_pick);
 );
 gb_midi_block();
+gb_note_names();                     // the MIDI editor's lane names follow the kit (gb_voice)
 gb_voices_block(slider1);
 gb_eq_block(gb_tone);                // TONE and the EQ on Quezy's engine (gb_eq)
 rkth_native_tick();
@@ -187,6 +196,7 @@ meter_process_sample(spl0, spl1);
 // in memory before any play or render (Research R7); an undo that does not change the path costs nothing.
 gb_ser_ver = 3; file_var(0, gb_ser_ver);
 file_avail(0) >= 0 ? (
+  gb_had_state = 1;                  // restored from a project (not a fresh insert): the face keeps this instance's look (gbf_defaults_take); @init never resets it
   file_string(0, #gb_sread);
   // @gfx may be in the middle of a load: let it finish its piece, then take over. Still held after the wait (about a
   // second): never take it anyway -- hand the instrument to @gfx, which loads it on its next pass (gb_ser_pend)
@@ -196,13 +206,14 @@ file_avail(0) >= 0 ? (
     strlen(#gb_want) == 0 ? (
       gb_unload(); strcpy(#gb_path, "");   // saved with no instrument: none plays (undo back to an empty Gumbo)
     ) : strcmp(#gb_want, #gb_path) != 0 || !gb_ready ? (
-      gb_job_abort();
+      gb_eqm_key = 0;                // the restored sliders are the restored program's EQ: should @gfx's follow run
+      gb_job_abort();                // between this load's end and the key below, key 0 adopts them as they are (gb_eq)
       gb_job_start(#gb_want);
       gb_ser_guard = 0;
       while (!gb_job_step(200000000, 2000000) && gb_ser_guard < 100000) ( gb_ser_guard += 1; );
       gb_job == GB_J_DONE ? strcpy(#gb_path, #gb_want);
     );
-    gb_eqm_key = gb_eqm_hash(#gb_path);   // the restored sliders are this instrument's EQ
+    gb_eqm_key = gb_eqm_key_of(#gb_path, gb_pick_ch0(slider89, slider90));   // the restored sliders are this program's EQ (the pick's: the audio thread adopts it)
     gb_unlock();
   ) : (
     strcpy(#gb_ser_pth, #gb_sread);
@@ -225,9 +236,9 @@ gb_lock_try() ? (
   gb_ser_pend ? (
     gb_ser_pend = 0;
     strcpy(#gb_want, #gb_ser_pth);
-    strlen(#gb_want) == 0 ? ( gb_unload(); strcpy(#gb_path, ""); gb_eqm_key = gb_eqm_hash(#gb_path); )
-    : strcmp(#gb_want, #gb_path) != 0 || !gb_ready ? ( gb_job_abort(); gb_job_start(#gb_want); gb_ser_late = 1; )
-    : gb_eqm_key = gb_eqm_hash(#gb_path);
+    strlen(#gb_want) == 0 ? ( gb_unload(); strcpy(#gb_path, ""); gb_eqm_key = 0; )
+    : strcmp(#gb_want, #gb_path) != 0 || !gb_ready ? ( gb_eqm_key = 0; gb_job_abort(); gb_job_start(#gb_want); gb_ser_late = 1; )
+    : gb_eqm_key = gb_eqm_key_of(#gb_path, gb_pick_ch0(slider89, slider90));
   );
   // a dropped file: .gumbo.txt loads; anything else gets a note in the display (window only: strips get no drops)
   gfx_getdropfile(0, #gb_drop) ? (
@@ -235,7 +246,7 @@ gb_lock_try() ? (
     strcpy(#gb_ext, "");
     gb_dn > 4 ? strcpy_substr(#gb_ext, #gb_drop, gb_dn - 4, 4);
     stricmp(#gb_ext, ".txt") == 0 ? ( gbh_err = 0; strcpy(#gb_want, #gb_drop); gb_job_start(#gb_want); )
-    : stricmp(#gb_ext, ".sfz") == 0 || stricmp(#gb_ext, ".sf2") == 0 ? gbh_request(#gb_drop)   // the Gumbo helper converts it (gb_helper.jsfx-inc; a SoundFont too)
+    : stricmp(#gb_ext, ".sfz") == 0 || stricmp(#gb_ext, ".sf2") == 0 || stricmp(#gb_ext, ".sf3") == 0 ? gbh_request(#gb_drop)   // the Gumbo helper converts it (gb_helper.jsfx-inc; a SoundFont too, .sf3 = compressed since 2026-11-05)
     : ( gbh_err = 0; gb_job = GB_J_FAILED; gb_err = GB_E_NOTTEXT; );
     gfx_getdropfile(-1);
   );
@@ -245,14 +256,20 @@ gb_lock_try() ? (
     gb_job_step(1048576, 500) ? (
       gb_job == GB_J_DONE ? (
         strcpy(#gb_path, #gb_want);
-        gb_ser_late ? ( gb_ser_late = 0; gb_eqm_key = gb_eqm_hash(#gb_path); ) : gb_eqm_pend = 1;
+        gb_ser_late ? ( gb_ser_late = 0; gb_eqm_key = gb_eqm_key_of(#gb_path, gb_pick_ch0(slider89, slider90)); ) : gb_eqm_pend = 1;
       );
     );
   );
   gb_unlock();
 );
-// a new instrument: its own EQ comes back (gb_eq), after the lock (slider_automate may run @serialize in this thread)
-gb_eqm_pend ? ( gb_eqm_pend = 0; gb_eqm_switch(gb_eqm_hash(#gb_path)); );
+// the EQ follows what plays (gb_eq; 2026-11-05 per program): a finished load's pick now, after the lock (slider_automate
+// may run @serialize in this thread); then the program channel 1 plays, once the audio thread adopted the load AND
+// took the face's pick (a restored or automated slider 89 waits a block: @serialize keyed the restored EQ by the pick,
+// and channel 1 still plays the pick before). HOLD (slider 95, the EQ page) keeps the EQ through any change
+gb_eqm_hold = slider95 >= 0.5;
+gb_eqm_pend ? ( gb_eqm_pend = 0; gb_eqm_switch(gb_eqm_key_of(#gb_path, gb_pick_ch0(slider89, slider90))); );
+gb_ready && gb_gen_seen == gb_load_gen && gb_prog_last == max(0, min(255, slider89 | 0)) && gb_bank_last == max(0, min(255, slider90 | 0)) ?
+  gb_eqm_follow(#gb_path, GB_CHSC[0] * 128 + GB_CHPG[0]);
 // the Gumbo helper: is it running, did the list change, a sent .sfz's reply (every pass, idle ones too, so an import
 // finishes with the window closed)
 gbh_watch(); gbh_tick();

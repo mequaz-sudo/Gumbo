@@ -43,6 +43,11 @@ function rk_piano_colours(tr, tg, tb, kr, kg, kb) (
   rk_piano_tint_r = tr; rk_piano_tint_g = tg; rk_piano_tint_b = tb;
   rk_piano_ks_r = kr; rk_piano_ks_g = kg; rk_piano_ks_b = kb;
 );
+// a colour per key (Gumbo's drum families on a kit's keys; the owner, 2026-11-05: "Family colors"): a table of 128 x 3
+// (r, g, b; r < 0 = none), or -1 for none. A white key takes 0.45 of its colour over its ivory, a black key 0.30 over its
+// ebony; held, hovered, keyswitch and out-of-range keys keep their own looks.
+rk_piano_kcol = -1; rk_piano_kcol_mix = 0.45;   // the mix: how much of its colour a white key takes (a black key two thirds of that)
+function rk_piano_key_colours(tbl) ( rk_piano_kcol = tbl; );
 
 // Pitch classes 1,3,6,8,10 are the black keys (C=0).
 function rk_piano_is_black(note) local(pc) (
@@ -129,6 +134,10 @@ local(wc, wsz, bb, bl, n, wi, a, lit, pc, f, anyr, tr, tg, tb) (
       lit ? gfx_set(r, g, b, 1)
       : f & RKP_KSON ? gfx_set(rk_piano_ks_r, rk_piano_ks_g, rk_piano_ks_b, 1)
       : f & RKP_KS ? gfx_set(0.82 + (rk_piano_ks_r - 0.82) * 0.45, 0.82 + (rk_piano_ks_g - 0.82) * 0.45, 0.82 + (rk_piano_ks_b - 0.82) * 0.45, 1)
+      : rk_piano_kcol >= 0 && rk_piano_kcol[n * 3] >= 0 ? (
+          tg = n == hov ? 0.92 : 0.84;
+          gfx_set(tg + (rk_piano_kcol[n * 3] - tg) * rk_piano_kcol_mix, tg + (rk_piano_kcol[n * 3 + 1] - tg) * rk_piano_kcol_mix, tg + (rk_piano_kcol[n * 3 + 2] - tg) * rk_piano_kcol_mix, 1);
+        )
       : anyr && !(f & RKP_RANGE) ? (n == hov ? gfx_set(0.62, 0.62, 0.66, 1) : gfx_set(0.52, 0.52, 0.56, 1))
       : (f & RKP_RANGE) && tr ? (
           tg = n == hov ? 0.92 : 0.84;
@@ -161,6 +170,7 @@ local(wc, wsz, bb, bl, n, wi, a, lit, pc, f, anyr, tr, tg, tb) (
       lit ? gfx_set(r * 0.75, g * 0.75, b * 0.75, 1)
       : f & RKP_KSON ? gfx_set(rk_piano_ks_r * 0.80, rk_piano_ks_g * 0.80, rk_piano_ks_b * 0.80, 1)
       : f & RKP_KS ? gfx_set(rk_piano_ks_r * 0.50, rk_piano_ks_g * 0.50, rk_piano_ks_b * 0.50, 1)
+      : rk_piano_kcol >= 0 && rk_piano_kcol[n * 3] >= 0 ? gfx_set(0.10 + rk_piano_kcol[n * 3] * rk_piano_kcol_mix * 0.67, 0.10 + rk_piano_kcol[n * 3 + 1] * rk_piano_kcol_mix * 0.67, 0.12 + rk_piano_kcol[n * 3 + 2] * rk_piano_kcol_mix * 0.67, 1)
       : anyr && !(f & RKP_RANGE) ? (n == hov ? gfx_set(0.36, 0.36, 0.40, 1) : gfx_set(0.28, 0.28, 0.31, 1))
       : (f & RKP_RANGE) && tr ? gfx_set(0.10 + rk_piano_tint_r * 0.10, 0.10 + rk_piano_tint_g * 0.10, 0.12 + rk_piano_tint_b * 0.10, 1)
       : (n == hov ? gfx_set(0.26, 0.26, 0.31, 1) : gfx_set(0.10, 0.10, 0.13, 1));

@@ -19,10 +19,13 @@
 @init
 // (2026-11-03: the region table moved up and grew -- a full GM SoundFont has 6,000-7,000 regions, and the old
 // 4,096 x 64 at 200000 silently lost the rest; each region also carries its filter, filter envelope and LFOs now.
-// 200000 .. 470000 holds gb_voice's lookup tables, 1620000 .. 1686000 is free.)
-GB_REG = 2000000; GB_RS = 112; GB_MAXREG = 16384;         // -> 3835008, under GB_MOD
+// 200000 .. 470000 holds gb_voice's lookup tables, 1620000 .. 1686000 was free: gb_voice's part tables now sit at
+// 1620000 .. 1634216, the speed index and the bank tables at 1640000 .. 1656764, gb_voice's channel tables at
+// 1656800 .. 1656876.)
+// (2026-11-05: 32,768 regions -- a GM bank with its variation banks; MuseScore General has ~20,000)
+GB_REG = 2000000; GB_RS = 128; GB_MAXREG = 32768;         // -> 6194304, under GB_MOD (128 since 2026-11-05: the pitch envelope, key scaling, bend range at 108..124)
 GB_SMP = 470000;  GB_SS = 8;   GB_MAXSMP = 4096;          // -> 502768
-GB_PCH = 510000;  GB_PCH_CAP = 1000000;                   // -> 1510000
+GB_PCH = 510000;  GB_PCH_CAP = 890000;                    // -> 1400000 (was 1,000,000: the names' store took the top)
 GB_VCT = 1520000; GB_VCT_MAX = 512;                       // 512 x 128 -> 1585536
 GB_FN  = 1700000;                                         // field names, 3 x 48
 gb_cc_init = 1612000;                                     // 128 starting CC values from the file's <control> line
@@ -62,26 +65,50 @@ GBR_SHAPE = 100;                     // 1 = the region has any of the above (the
 GBR_VPOW = 101;                      // amp_velpow: gain = (v/127)^POW (0 = the curve, else sfizz's square); Gumbo's own opcode
 GBR_VATT = 102; GBR_VDEC = 103; GBR_VREL = 104;   // ampeg_vel2attack / decay / release: s added at velocity 127 (sfizz)
 GBR_EGVA = 105; GBR_EGVDC = 106; GBR_EGVR = 107;  // fileg_vel2attack / decay / release
+// the pitch envelope (2026-11-05, formats round 2 item A): token peg= with feg's eleven fields (pitcheg_*, the depth
+// in cents; a SoundFont's modEnvToPitch), the cells in a row in the order depth, delay, attack, hold, decay, sustain,
+// release, vel2depth, vel2attack, vel2decay, vel2release (gb_voice's GB_EGP names them; GB_EGF the filter's above)
+GBR_PEGD = 108; GBR_PEGDLY = 109; GBR_PEGATT = 110; GBR_PEGHOLD = 111; GBR_PEGDEC = 112; GBR_PEGSUS = 113; GBR_PEGREL = 114;
+GBR_PEGVD = 115; GBR_PEGVA = 116; GBR_PEGVDC = 117; GBR_PEGVR = 118;
+// key-scaled envelope times (2026-11-05, item B; token keg=AHOLD,ADECAY,FHOLD,FDECAY): Gumbo's own opcodes
+// ampeg_hold_keytrack / ampeg_decay_keytrack / fileg_hold_keytrack / fileg_decay_keytrack, timecents per key -- a
+// SoundFont's generators 39 / 40 / 31 / 32: the time x 2^(k x (60 - key) / 1200), a positive k longer on the low keys
+GBR_KAH = 119; GBR_KAD = 120; GBR_KFH = 121; GBR_KFD = 122;
+// the bend range (2026-11-05, item C; token bend=UP,DOWN, cents, written only when the SFZ sets bend_up or bend_down):
+// 0 and 0 = none of its own (the part's RPN 0 range, else the SETTINGS knob: gb_voice gb_voice_inc)
+GBR_BUP = 123; GBR_BDN = 124;
 // format 2 tables (gumbo_sfz.lua M.FORMAT_VERSION 2), in the free space between gb_cc_init and GB_FN:
 //   GB_MOD    per region GB_MAXMOD mods of 4 cells: type, cc, a, b (types in gumbo_sfz.lua's header)
 //   GB_CCV    custom curves for live controllers, 128 cells each; GB_CCVMAP[curve index 0..255] = slot + 1
 //   GB_LBL    the library's controller names: cc, char offset, length;  GB_SWL the keyswitch names: note, offset, length
 //   GB_KLB    each key's name (a drum kit's sounds: "// label_key NOTE name"), by note: char offset, length
 //   GB_LCH    the names' characters
-GB_MAXMOD = 4; GB_MODS = 16;
-GB_MOD = 3850000;                                         // GB_MAXREG x 16 -> 4112144, under GB_AUD (gb_load)
+GB_MAXMOD = 8; GB_MODS = 32;                              // (8 since 2026-11-05: the envelope-time controllers of a library need the room)
+GB_MOD = 6200000;                                         // GB_MAXREG x 32 -> 7248576, under GB_AUD (gb_load)
 GB_CCV = 1686000; GB_CCV_MAX = 16;                        // 16 x 128 -> 1688048
 GB_CCVMAP = 1688100;                                      // 256 -> 1688356
 GB_LBL = 1688400; GB_LBL_MAX = 32;                        // 32 x 3 -> 1688496
 GB_SWL = 1688500; GB_SWL_MAX = 64;                        // 64 x 3 -> 1688692
-GB_LCH = 1688700; GB_LCH_CAP = 8000;                      // -> 1696700, under GB_FN
+// (2026-11-05: the names' store moved from 1688700 (cap 8,000) to the top of the paths' space, so a GM set's kits can
+// each name their own keys: 37 kits x ~60 names)
+GB_LCH = 1400000; GB_LCH_CAP = 60000;                     // -> 1460000
+// a bank's kits' own key names (2026-11-05): "// key_name S P NOTE name" -> GB_KN entries of 5: section, program,
+// note, char offset, length. The face names the playing kit's pads from these ("// label_key" is the file-wide union,
+// kept for older Gumbos and ordinary kits)
+GB_KN = 1460000; GB_KN_MAX = 4096;                        // 4096 x 5 -> 1480480, under GB_VCT
 GB_KLB = 1697000;                                         // 128 x 2: each key's name (char offset, length; 0 = none) -> 1697256
 // format 3 (a bank, 2026-11-02): its programs "// program S LO HI name" (section, lo, hi, name offset, length in
 // GB_LCH) and the section channel 10 plays ("// drums S" -> gb_drum_sec); GB_CHPG = each MIDI channel's program
 // (gb_voice: 0..127 = a melodic program, 128 + p = drum kit p)
 GB_CSVT = 1697270;                                        // 4: gb_csv4's scratch for a prog= token
 GB_CHPG = 1697280;                                        // 16 channels
-GB_PRG = 1697300; GB_PRG_MAX = 256;                       // 256 x 5 -> 1698580, under GB_FN
+// (2026-11-05: 512 programs, the variation banks -- MuseScore General 309 -- in the gap after gb_eq's GB_EQM_SL
+// (1749157 since the EQ memory grew to 128 programs), before the face's GBF_IDX_BASE 1764000; 1697300 .. 1698580 is free since)
+GB_PRG = 1750000; GB_PRG_MAX = 512;                       // 512 x 5 -> 1752560
+// variation banks (2026-11-05): "// bank S N" -> GB_BNK[N] = S (MIDI bank N picks section S; 0 = no section), and
+// GB_SECB[S] = the first bank number naming S (-1 = none: the first melodic section is bank 0, the drums 128)
+GB_BNK = 1656400;                                         // 256 -> 1656656 (after gb_prog_index's GB_PIX)
+GB_SECB = 1656700; GB_SECB_N = 64;                        // -> 1656764
 // word values
 GB_LM_NOLOOP = 0; GB_LM_ONESHOT = 1; GB_LM_CONT = 2; GB_LM_SUST = 3;
 GB_TR_ATTACK = 0; GB_TR_RELEASE = 1; GB_TR_RELKEY = 2; GB_TR_FIRST = 3; GB_TR_LEGATO = 4;
@@ -203,6 +230,8 @@ function gb_csv_n(a, b, n, dflt) local(k, p, q) (
 );
 // fil=TYPE,CUTOFF,RES,KEYTRACK,KEYCENTER,VELTRACK,RANDOM,CC,CCDEPTH  feg=DELAY,ATTACK,HOLD,DECAY,SUSTAIN%,RELEASE,DEPTH,
 // VEL2DEPTH[,VEL2ATTACK,VEL2DECAY,VEL2RELEASE]  lfo=SLOT,WAVE,FREQ,DEPTH,DELAY,FADE,CC1DEPTH  vel=POW,ATT,DEC,REL
+// peg= as feg= (the pitch envelope, 2026-11-05; depths in cents)  keg=AHOLD,ADECAY,FHOLD,FDECAY (timecents a key)
+// bend=UP,DOWN (cents; read in gb_parse_region beside prog=)
 // -> region r (the converter writes them; see GBR_FTYPE). A keytrack below 0 is Gumbo's (sfizz clamps it): the
 // SoundFont importer needs it. Attack / decay / release may go below 0 when a vel2 part adds to them (clamped at launch).
 function gb_parse_shape(r, c, a, b) local(k, l) (
@@ -223,6 +252,17 @@ function gb_parse_shape(r, c, a, b) local(k, l) (
     r[GBR_EGD] = max(-30000, min(30000, GB_CSVN[6])); r[GBR_EGVD] = max(-30000, min(30000, GB_CSVN[7]));
     r[GBR_EGVA] = max(-100, min(100, GB_CSVN[8])); r[GBR_EGVDC] = max(-100, min(100, GB_CSVN[9])); r[GBR_EGVR] = max(-100, min(100, GB_CSVN[10]));
     r[GBR_EGD] != 0 || r[GBR_EGVD] != 0 ? r[GBR_SHAPE] = 1;
+  ) : c == 'p' ? (                     // peg (2026-11-05): the pitch envelope, feg's eleven fields, the depths in cents
+    gb_csv_n(a, b, 11, 0);
+    r[GBR_PEGDLY] = max(0, GB_CSVN[0]); r[GBR_PEGATT] = max(-100, min(100, GB_CSVN[1])); r[GBR_PEGHOLD] = max(0, GB_CSVN[2]);
+    r[GBR_PEGDEC] = max(-100, min(100, GB_CSVN[3])); r[GBR_PEGSUS] = max(0, min(100, GB_CSVN[4])) / 100; r[GBR_PEGREL] = max(-100, min(100, GB_CSVN[5]));
+    r[GBR_PEGD] = max(-30000, min(30000, GB_CSVN[6])); r[GBR_PEGVD] = max(-30000, min(30000, GB_CSVN[7]));
+    r[GBR_PEGVA] = max(-100, min(100, GB_CSVN[8])); r[GBR_PEGVDC] = max(-100, min(100, GB_CSVN[9])); r[GBR_PEGVR] = max(-100, min(100, GB_CSVN[10]));
+    r[GBR_PEGD] != 0 || r[GBR_PEGVD] != 0 ? r[GBR_SHAPE] = 1;
+  ) : c == 'k' ? (                     // keg (2026-11-05): key scaling of the hold and decay times, timecents a key
+    gb_csv_n(a, b, 4, 0);
+    r[GBR_KAH] = max(-1200, min(1200, GB_CSVN[0])); r[GBR_KAD] = max(-1200, min(1200, GB_CSVN[1]));
+    r[GBR_KFH] = max(-1200, min(1200, GB_CSVN[2])); r[GBR_KFD] = max(-1200, min(1200, GB_CSVN[3]));
   ) : c == 'v' ? (                     // vel
     gb_csv_n(a, b, 4, 0);
     r[GBR_VPOW] = max(0, min(20, GB_CSVN[0]));
@@ -301,6 +341,9 @@ function gb_parse_region(len) local(r, p, s0, s1, f, a, eq, b, n, c, v, g, cc, l
                 g[1] = max(0, min(127, g[1] | 0));
                 r[GBR_NMOD] += 1;
               ) : gb_mods_dropped += 1;
+            ) : c == 'b' && n == 4 && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 3) == 'd' ? (   // bend=UP,DOWN (cents)
+              gb_csv_n(eq + 1, b, 2, 0);
+              r[GBR_BUP] = max(-12000, min(12000, GB_CSVN[0])); r[GBR_BDN] = max(-12000, min(12000, GB_CSVN[1]));
             ) : c == 'p' && n == 4 && str_getchar(#gb_ln, a + 3) == 'g' ? (   // prog=S,LO,HI (format 3)
               gb_csv4(eq + 1, b, GB_CSVT);
               r[GBR_PSEC] = max(0, GB_CSVT[0] | 0);
@@ -308,8 +351,10 @@ function gb_parse_region(len) local(r, p, s0, s1, f, a, eq, b, n, c, v, g, cc, l
             ) : n == 3 && ((c == 'f' && str_getchar(#gb_ln, a + 1) == 'i' && str_getchar(#gb_ln, a + 2) == 'l')
                         || (c == 'f' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'g')
                         || (c == 'l' && str_getchar(#gb_ln, a + 1) == 'f' && str_getchar(#gb_ln, a + 2) == 'o')
-                        || (c == 'v' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'l')) ? (
-              gb_parse_shape(r, c == 'l' || c == 'v' ? c : str_getchar(#gb_ln, a + 1), eq + 1, b);   // fil= feg= lfo= vel=
+                        || (c == 'v' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'l')
+                        || (c == 'p' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'g')
+                        || (c == 'k' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'g')) ? (
+              gb_parse_shape(r, c == 'l' || c == 'v' || c == 'p' || c == 'k' ? c : str_getchar(#gb_ln, a + 1), eq + 1, b);   // fil= feg= lfo= vel= peg= keg=
             ) : gb_unknown_tokens += 1;
           );
         );
@@ -371,6 +416,22 @@ function gb_parse_key_name(len) local(p, q, n, i, k) (
     gb_lch_top += k; gb_nkey += 1;
   );
 );
+// a bank's kit's own key names: "// key_name S P NOTE name" -> a GB_KN entry (the name cut to 24 characters)
+function gb_parse_key_entry(len) local(p, q, e, k, i) (
+  gb_nkn < GB_KN_MAX ? (
+    e = GB_KN + gb_nkn * 5; p = 12; k = 0;
+    while (k < 3 && p < len) (
+      q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+      e[k] = gb_num(p, q, -1) | 0; k += 1; p = q + 1;
+    );
+    k = max(0, min(min(len - p, 24), GB_LCH_CAP - gb_lch_top));
+    e[0] > 0 && e[1] >= 0 && e[1] <= 127 && e[2] >= 0 && e[2] <= 127 && k > 0 ? (
+      e[3] = gb_lch_top; e[4] = k;
+      i = 0; loop(k, GB_LCH[gb_lch_top + i] = str_getchar(#gb_ln, p + i); i += 1; );
+      gb_lch_top += k; gb_nkn += 1;
+    );
+  );
+);
 // format 3: "// program S LO HI name" -> GB_PRG (the face's program list; the name cut to 64 characters, and to what
 // GB_LCH has left, so a long bank's last names come short rather than missing)
 function gb_parse_program(len) local(p, q, e, k, i) (
@@ -390,6 +451,15 @@ function gb_parse_program(len) local(p, q, e, k, i) (
     gb_nprg += 1;
     // the melodic section: the first program not in the drum section ("// drums" comes before the programs)
     gb_mel_sec == 0 && e[0] != gb_drum_sec ? gb_mel_sec = e[0];
+  );
+);
+// variation banks: "// bank S N" -> MIDI bank N (0..255: the drum channel's are 128 + CC0) picks section S
+function gb_parse_bank(len) local(p, q, s, b) (
+  p = 8; q = p; while (q < len && str_getchar(#gb_ln, q) != ' ') ( q += 1; );
+  s = gb_num(p, q, 0) | 0; b = gb_num(q + 1, len, -1) | 0;
+  s > 0 && b >= 0 && b < 256 ? (
+    GB_BNK[b] = s;
+    s < GB_SECB_N && GB_SECB[s] < 0 ? GB_SECB[s] = b;
   );
 );
 // program entry i's name into #gb_ls; returns its length
@@ -459,9 +529,11 @@ function gb_parse_line() local(len) (
   : len >= 13 && strncmp(#gb_ln, "// label_cc ", 12) == 0 ? gb_nlbl = gb_parse_name(12, len, GB_LBL, gb_nlbl, GB_LBL_MAX)
   : len >= 13 && strncmp(#gb_ln, "// sw_label ", 12) == 0 ? gb_nswl = gb_parse_name(12, len, GB_SWL, gb_nswl, GB_SWL_MAX)
   : len >= 14 && strncmp(#gb_ln, "// label_key ", 13) == 0 ? gb_parse_key_name(len)
+  : len >= 19 && strncmp(#gb_ln, "// key_name ", 12) == 0 ? gb_parse_key_entry(len)
   : len >= 10 && strncmp(#gb_ln, "// curve ", 9) == 0 ? gb_parse_curve(len)
   : len >= 10 && strncmp(#gb_ln, "// drums ", 9) == 0 ? gb_drum_sec = max(0, gb_num(9, len, 0) | 0)
   : len >= 13 && strncmp(#gb_ln, "// program ", 11) == 0 ? gb_parse_program(len)
+  : len >= 11 && strncmp(#gb_ln, "// bank ", 8) == 0 ? gb_parse_bank(len)
   : len >= 20 && strncmp(#gb_ln, "// regions ", 11) == 0 ? gb_parse_ram(len);
 );
 
@@ -469,8 +541,40 @@ function gb_parse_line() local(len) (
 function gb_tables_reset() local(i) (
   gb_nreg = 0; gb_nsmp = 0; gb_pch_top = 0; gb_nvc = 0; gb_fmt_ver = 0;
   gb_bad_values = 0; gb_bad_lines = 0; gb_unknown_tokens = 0; gb_gates_dropped = 0; gb_table_full = 0;
-  gb_mods_dropped = 0; gb_nccv = 0; gb_nlbl = 0; gb_nswl = 0; gb_lch_top = 0; gb_nkey = 0;
+  gb_mods_dropped = 0; gb_nccv = 0; gb_nlbl = 0; gb_nswl = 0; gb_lch_top = 0; gb_nkey = 0; gb_nkn = 0;
   gb_nprg = 0; gb_drum_sec = 0; gb_mel_sec = 0; gb_hdr_mb = 0;
+  gb_pix_ok = 0;                     // no speed index until the parse has finished (gb_prog_index)
+  memset(GB_BNK, 0, 256); memset(GB_SECB, -1, GB_SECB_N);
   memset(GB_CCVMAP, 0, 256); memset(GB_KLB, 0, 256);
   i = 0; loop(128, gb_cc_init[i] = 0; i += 1; );
+);
+
+// the speed index (2026-11-05): each (section, program)'s first and last region, and section 0's (plays always), so a
+// note searches only those spans (gb_voice gb_span) instead of every region -- the General MIDI bank's 11,004 cost
+// ~1.9 ms a note offline. Built once when the parse ends (the loader's thread, gb_ready = 0). The spans may hold other
+// programs' regions (an SFZ bank need not be in program order): the voice side still tests every region it reads. A
+// section number past GB_PIX_SECS turns the index off: every note searches every region, as before.
+GB_PIX = 1640000; GB_PIX_SECS = 64;                       // 64 x 128 x 2 -> 1656384 (free: 1634216 .. 1686000)
+function gb_prog_index() local(i, r, s, p, e) (
+  memset(GB_PIX, -1, GB_PIX_SECS * 256);
+  gb_pix0a = -1; gb_pix0b = -1; gb_pix_ok = 1;
+  i = 0;
+  loop(gb_nreg,
+    r = GB_REG + i * GB_RS; s = r[GBR_PSEC];
+    s == 0 ? (
+      gb_pix0a < 0 ? gb_pix0a = i;
+      gb_pix0b = i;
+    ) : s >= GB_PIX_SECS ? (
+      gb_pix_ok = 0;
+    ) : (
+      p = r[GBR_PLO];
+      while (p <= r[GBR_PHI]) (
+        e = GB_PIX + (s * 128 + p) * 2;
+        e[0] < 0 ? e[0] = i;
+        e[1] = i;
+        p += 1;
+      );
+    );
+    i += 1;
+  );
 );

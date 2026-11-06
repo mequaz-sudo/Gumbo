@@ -142,10 +142,62 @@ local prefer = {}
 -- fresh) is never taken here too: two docks pulling one surface would leave it in neither. wanted_skipped tells the
 -- empty dock's note why.
 local wanted_skipped = false
+-- WHERE AN EFFECT LIVES (2026-11-05, the user: "I would like each and every one to be able to be their own dock ... it
+-- depends on how the user wants to work"): per effect, machine-wide, in the full dock's ExtState: "route_<key>" = tab
+-- (its own dock tab) or dock (here). Every effect starts in its own tab (the user, 2026-11-05: "can the pop out on
+-- they own be the default"); unset = tab. The full dock never takes
+-- an effect set to its own tab, even with that tab closed (closing it used to drop the effect in here: the user's
+-- confusion); its chip is outlined instead and a click opens the tab. A double-click on a name follows the same
+-- setting (GainKit Plus's dock_request, the Quezy helper). route_t: a stamp every change bumps, so open docks look again.
+local ROUTE = { t = r.GetExtState("EON_ReaKitDock", "route_t") }
+function ROUTE.tab(k)
+  local key = KINDS[k] and KINDS[k].key
+  if not key or key == "gmb" then return false end
+  local v = r.GetExtState("EON_ReaKitDock", "route_" .. key)
+  return v ~= "dock"
+end
+function ROUTE.set(k, tab)
+  r.SetExtState("EON_ReaKitDock", "route_" .. KINDS[k].key, tab and "tab" or "dock", true)
+  r.SetExtState("EON_ReaKitDock", "route_t", string.format("%.3f", r.time_precise()), false)
+end
+-- the effect's own tab takes it (fg on track tr): the request first, then the tab started when it is not up; a tab that
+-- holds that copy already is left alone (its show request would pop it out)
+function ROUTE.open(k, fg, tr)
+  if not (tr and fg and KINDS[k]) then return end
+  local x = "EON_ReaKitDock_" .. KINDS[k].key
+  local up = r.time_precise() - (tonumber(r.GetExtState(x, "alive")) or 0) < 1.0
+  if up and (("," .. r.GetExtState(x, "held") .. ","):find("|" .. fg .. ",", 1, true)) then return end
+  r.SetExtState(x, "show_req", r.GetTrackGUID(tr) .. "|" .. fg .. "|" .. string.format("%.3f", r.time_precise()), false)
+  if up then return end
+  local p = DIR .. "ReaKit FX - Dock " .. KINDS[k].name .. ".lua"
+  if not r.file_exists(p) then return end
+  local id = r.AddRemoveReaScript(true, 0, p, true)
+  if id and id ~= 0 then r.Main_OnCommand(id, 0) end
+end
+-- STRIP GATHERS (the user, 2026-11-05: "when i wanna show the strip will it automatically move the non pinned open fx
+-- to the strip?" -> "yes build that"): while the full dock is open with STRIP on, a one-plugin tab that is NOT pinned
+-- to a track lets its effect go and the full dock's strip takes it; a pinned tab keeps its own. STRIP off: the strip
+-- lets go and each open tab takes its effect back. Nothing in the route settings changes (a gathering, not a move).
+function ROUTE.full_strip()                              -- the full dock is open with STRIP on
+  return r.GetExtState("EON_ReaKitDock", "strip") == "1"
+     and r.time_precise() - (tonumber(r.GetExtState("EON_ReaKitDock", "alive")) or 0) < 1.0
+end
+function ROUTE.tab_pinned(key)                           -- that effect's tab is open and pinned to a track
+  local x = "EON_ReaKitDock_" .. key
+  return r.time_precise() - (tonumber(r.GetExtState(x, "alive")) or 0) < 1.0 and r.GetExtState(x, "pin") ~= ""
+end
+-- (the self-audit, 2026-11-05) the full dock leaves effect k to its tab: set to its own tab and not gathered (STRIP on
+-- gathers it unless its tab is pinned). The ONE test for the strip's skip, the chip's outline, a chip click and its menu:
+-- an effect the strip gathered was outlined too, and a click opened its tab, which then gave it straight back.
+function ROUTE.away(k)
+  return not ONLY and ROUTE.tab(k) and not (strip and not ROUTE.tab_pinned(KINDS[k].key))
+end
 local function held_elsewhere(fg)
   local now = r.time_precise()
+  local gather = not ONLY and strip                      -- the full dock's strip: an unpinned tab is letting go
   local function in_ext(x)
     if x == EXT or now - (tonumber(r.GetExtState(x, "alive")) or 0) > 1.0 then return false end
+    if gather and x ~= "EON_ReaKitDock" and r.GetExtState(x, "pin") == "" then return false end
     return (("," .. r.GetExtState(x, "held") .. ","):find("|" .. fg .. ",", 1, true)) ~= nil
   end
   if in_ext("EON_ReaKitDock") then return true end
@@ -160,6 +212,8 @@ local function wanted(tr)
   local want_fg = not strip and prefer[r.GetTrackGUID(tr)]
   for f = 0, r.TrackFX_GetCount(tr) - 1 do
     local k = kind_of(tr, f)
+    if k and (strip or k == kind) and ROUTE.away(k) then wanted_skipped = "tab"; k = nil end
+    if k and ONLY and r.GetExtState(EXT, "pin") == "" and ROUTE.full_strip() then wanted_skipped = "strip"; k = nil end
     if k and (strip or k == kind) and held_elsewhere(r.TrackFX_GetFXGUID(tr, f)) then wanted_skipped = true; k = nil end
     if k and (strip or k == kind) then
       local e = { fg = r.TrackFX_GetFXGUID(tr, f), fx = f, kind = k }
@@ -222,6 +276,18 @@ local more_left, more_right = false, false
 local on_view = {}                     -- STRIP: the effects on view, by FX GUID (their chips light)
 local last_sel_g = false               -- the followed track's GUID last tick (false = never looked)
 local scan_cool = 0
+local empty_scans = 0                  -- scans in a row that found nothing of this dock's kind anywhere (autoclose)
+local want_close_auto = false          -- the close is the dock's own (empty), not the user's: autoclosed stays set
+-- any ReaKit effect of this dock's kind on any of these tracks (their own chains), route and pins aside
+local function any_here(tracks)
+  for _, t in ipairs(tracks) do
+    for f = 0, r.TrackFX_GetCount(t) - 1 do
+      local k = kind_of(t, f)
+      if k and (not ONLY or k == kind) then return true end
+    end
+  end
+  return false
+end
 local chain_t = 0                      -- when the shown track's chain was last looked at (0 = look now)
 local recheck_t = 0                    -- when the followed track was last looked at while the dock shows another
 -- What the dock let go of in each project tab the user went away from, by project: { cur, first, held }. One per
@@ -624,15 +690,22 @@ local function show_track(tr, list)
 end
 local function none_note(tr)
   release_all(); cur = nil
-  note = wanted_skipped and string.format("%s is shown in another dock tab.", strip and "ReaKit FX" or KINDS[kind].name)
+  note = wanted_skipped == "strip" and string.format("%s is in the ReaKit FX dock's strip while STRIP is on.", KINDS[kind].name)
+         or wanted_skipped == "tab" and not strip and string.format("%s lives in its own dock tab: click its chip.", KINDS[kind].name)
+         or wanted_skipped and string.format("%s is shown in another dock tab.", strip and "ReaKit FX" or KINDS[kind].name)
          or string.format("No %s on %s.", strip and "ReaKit FX" or KINDS[kind].name, tr and track_name(tr) or "the selected track")
 end
 
 -- force: the effect or the pin changed, so look again even when the followed track did not change
 local function follow(force)
+  local now = r.time_precise()
+  -- a route change or a STRIP switch anywhere: look again now, and a few more times over 2.5 s, because the dock
+  -- letting go of an effect publishes that a moment later (held), and until then it reads as held elsewhere
+  local rt = r.GetExtState("EON_ReaKitDock", "route_t")
+  if rt ~= ROUTE.t then ROUTE.t = rt; force = true; ROUTE.until_t = now + 2.5; ROUTE.again_t = now end
+  if not force and ROUTE.until_t and now < ROUTE.until_t and now - ROUTE.again_t >= 0.4 then force = true; ROUTE.again_t = now end
   local tr = followed()
   local g = tr and r.GetTrackGUID(tr) or ""
-  local now = r.time_precise()
   if g ~= last_sel_g or force then
     last_sel_g, recheck_t = g, now
     local list = wanted(tr)
@@ -651,18 +724,40 @@ local function follow(force)
     local list = wanted(tr)
     if #list > 0 then show_track(tr, list) end
   end
-  if not cur and not note and pin == "" then
+  -- (the self-audit, 2026-11-05: the empty check runs with or without a note; the candidate scan only without one, as
+  -- before. And a scan that found nothing to show because every copy lives in another dock tab says so, instead of
+  -- "Select a track with ...": the chips are the way in.)
+  if not cur and pin == "" then
     if scan_cool > 0 then scan_cool = scan_cool - 1; return end
     scan_cool = 30                                       -- showing nothing: look about once a second
-    dbg("holding nothing: scan")
     local cands = {}
     if tr then cands[1] = tr end
     cands[#cands + 1] = r.GetMasterTrack(0)
     for i = 0, r.CountTracks(0) - 1 do cands[#cands + 1] = r.GetTrack(0, i) end
-    for _, t in ipairs(cands) do
-      local list = wanted(t)
-      if #list > 0 then show_track(t, list); return end
+    if not note then
+      dbg("holding nothing: scan")
+      local skipped = false
+      for _, t in ipairs(cands) do
+        local list = wanted(t)
+        if #list > 0 then show_track(t, list); return end
+        if wanted_skipped then skipped = wanted_skipped end
+      end
+      if skipped then wanted_skipped = skipped; none_note(tr) end
     end
+    -- EMPTY: the whole project has none of what this dock shows (the user, 2026-11-05: "the empty docks, do those
+    -- have to show when its not there" -> "closing itself"): after three empty scans (~3 s, a project still loading
+    -- gets its time) the dock closes itself and says so (autoclosed, kept); GainKit Plus opens it again when a track
+    -- with that effect is selected. The X or the action clears the mark (closed_by_user): then it stays shut.
+    -- Not pinned (this branch), and only when NO ReaKit effect of its kind is anywhere: an effect set to live in its
+    -- own tab is still "there" for the full dock (wanted skips it; the chips show it).
+    if not any_here(cands) then
+      empty_scans = empty_scans + 1
+      if empty_scans >= 4 then                         -- the first scan is at once: four = about 3 s
+        dbg("empty: closing itself (autoclosed)")
+        r.SetExtState(EXT, "autoclosed", "1", true)
+        want_close = true; want_close_auto = true
+      end
+    else empty_scans = 0 end
   end
 end
 
@@ -911,19 +1006,37 @@ end
 local function tabs_hidden()
   return compact_on() and (cfg_num("dock_mini_tab_size") or 0) >= 4000
 end
+-- (2026-11-05, the user: "the show tabs button doesnt always work"): the switch is REAPER-wide, so its record (what to
+-- put back, and whether to hide again at the next start) is SHARED by every dock of ours, in the full dock's ExtState;
+-- it was each dock's own, so a one-plugin tab put back what it never saw, and any tab closing (Quezy's closes itself
+-- when Quezy floats out) brought REAPER's tabs back while other docks were still open. TABS.others(): another dock of
+-- ours is open now.
+local TABS = { X = "EON_ReaKitDock" }
+function TABS.others()
+  local now = r.time_precise()
+  local function up(x) return x ~= EXT and now - (tonumber(r.GetExtState(x, "alive")) or 0) < 1.0 end
+  if up("EON_ReaKitDock") then return true end
+  for _, k in ipairs(KINDS) do if up("EON_ReaKitDock_" .. k.key) then return true end end
+  return up("EON_ReaKitDock_gmb")
+end
+-- MEASURED 2026-11-05 (tabs_visual3_run.py, REAPER 7.84): the dockers are laid out again only when the compact
+-- switch FLIPS; a new size limit alone changes nothing on screen (DockWindowRefresh, a refresh of the window, a nudge
+-- of the main window: none re-lays them out). So with the switch already on (the user's REAPER: "hide tabs aint
+-- working"), the size is set and the switch flipped off and on again: one flip either way re-lays out with the new size.
+local function relayout() if flip_compact() then flip_compact() end end
 local function set_tabs_hidden(on)
   if not r.set_config_var_string or compact_action() == 0 then return end   -- an older REAPER: nothing to do
   local compact = compact_on()
   if on then
     local size = cfg_num("dock_mini_tab_size")
-    if size and size < 4000 then r.SetExtState(EXT, "mini_tab_size_was", tostring(size), true) end
-    r.SetExtState(EXT, "compact_was", compact and "1" or "0", true)
+    if size and size < 4000 then r.SetExtState(TABS.X, "mini_tab_size_was", tostring(size), true) end
+    r.SetExtState(TABS.X, "compact_was", compact and "1" or "0", true)
     r.set_config_var_string("dock_mini_tab_size", "4000", 1)
-    if not compact then flip_compact() end
+    if not compact then flip_compact() else relayout() end
   else
-    if compact and r.GetExtState(EXT, "compact_was") == "0" then flip_compact() end
-    local was = tonumber(r.GetExtState(EXT, "mini_tab_size_was")) or 200      -- REAPER's own default
+    local was = tonumber(r.GetExtState(TABS.X, "mini_tab_size_was")) or 200   -- REAPER's own default
     r.set_config_var_string("dock_mini_tab_size", tostring(math.min(was, 3999)), 1)
+    if compact and r.GetExtState(TABS.X, "compact_was") == "0" then flip_compact() elseif compact then relayout() end
   end
   r.DockWindowRefresh()
   dbg("tabs hidden: " .. tostring(on) .. " -> " .. tostring(tabs_hidden()) .. " (compact " ..
@@ -1021,7 +1134,7 @@ ICON.tips = {
   gear = "Options", fold = "Fold the bar", close = "Close the dock", left = "Earlier effects", right = "Later effects",
   handle = "Click: open the bar", ticon = "Track icon: click to pick one; right-click for the track's menu", name = "Click to rename the track; right-click for its menu",
   num = "Track colour: click for the palette",
-  slot = "SLOT: the same effect row on every mixer strip; the wheel here steps it",
+  slot = "MIXER SLOT: the same effect row on every mixer strip; the wheel here steps it",
 }
 
 -- ── renaming the track on the bar ─────────────────────────────────────────────────────────────────
@@ -1126,7 +1239,7 @@ local function draw_bar()
       count[e.kind] = (count[e.kind] or 0) + 1
       local n = count[e.kind]
       chips[#chips + 1] = { kind = e.kind, fg = e.fg, long = KINDS[e.kind].long .. (n > 1 and " " .. n or ""),
-                            short = KINDS[e.kind].short .. (n > 1 and tostring(n) or "") }
+                            short = KINDS[e.kind].short .. (n > 1 and tostring(n) or ""), tab = ROUTE.away(e.kind) }
     else
       local m = chips[#chips]
       if m and m.other then
@@ -1174,10 +1287,10 @@ local function draw_bar()
     end
     t[#t + 1] = { ICON.ctrack, "closetrack", false, false }
     t[#t + 1] = { ICON.call, "closeall", false, false }
-    if not ONLY then                                     -- a one-plugin tab: no STRIP, no SLOT
-      t[#t + 1] = { "STRIP", "strip", strip, false }
-      t[#t + 1] = { "SLOT", "slot", false, false }        -- the same effect row on every mixer strip (SLOT below)
-    end
+    if not ONLY then t[#t + 1] = { "STRIP", "strip", strip, false } end   -- a one-plugin tab: no STRIP
+    -- MIXER SLOT: the same effect row on every mixer strip ("ReaKit FX - Mixer slot.lua"); on every tab's bar too
+    -- (the user, 2026-11-05: "it just needs somewhere convinet to be")
+    t[#t + 1] = { "MIXER SLOT", "slot", false, false }
     t[#t + 1] = { ICON.pin, "pin", pinned, false }
     t[#t + 1] = { tabs_label, "tabs", false, false }
     t[#t + 1] = { ICON.gear, "gear", false, false }
@@ -1370,6 +1483,10 @@ local function draw_bar()
         x = x + cw + gap
       else
         x = chip(x, yr, labels[i], lit(c), not c.fg, "chip" .. i)
+        if c.tab and c.fg then                           -- in its own dock tab: an outline in the accent, never lit
+          gfx.set(0.84, 0.44, 0.14, 0.9)
+          gfx.rect(x0, yr + math.floor(4 * sc), x - gap - x0, row - math.floor(8 * sc), 0)
+        end
       end
       c.x0, c.x1, c.y0, c.y1 = x0, x - gap, yr, yr + row
     end
@@ -1418,6 +1535,7 @@ local function draw_bar()
     if c then
       if c.other then tip = "Not a ReaKit effect; drop a chip beside it"
       elseif not c.fg then tip = "Not on this track: right-click or drag in to add"
+      elseif c.tab then tip = KINDS[c.kind].name .. " lives in its own dock tab: click to open it there"
       else tip = KINDS[c.kind].name .. ": click to show, drag to move it in the chain" end
     end
     if tip then
@@ -1505,6 +1623,7 @@ local function set_strip(on)
   if on == strip or ONLY then return end
   strip = on
   r.SetExtState(EXT, "strip", on and "1" or "0", true)
+  r.SetExtState("EON_ReaKitDock", "route_t", string.format("%.3f", r.time_precise()), false)   -- the tabs look again
   first = 1
   local tr = cur and track_by_guid(cur.proj, cur.tg, cur.tr)
   if not tr then follow(true); return end
@@ -1591,7 +1710,7 @@ local function move_fx(fg, before)
 end
 
 -- Right-click a dim effect button (the shown track has none of it): add it to that track (the user, 2026-10-03:
--- "when the track does not have the fx can we right click add it"). Found as "Add a track with all seven" finds
+-- "when the track does not have the fx can we right click add it"). Found as "Add a track with all eight" finds
 -- them: by its listed name (any install), then the ReaPack package's path, then the EON install's; the right FILE
 -- only, a namesake is taken out again. GainKit goes first in the chain (where the GainKit Plus actions put it),
 -- the others at the end. Then it is the effect shown (STRIP off), or brought on view (STRIP on).
@@ -1734,7 +1853,8 @@ local function gear_pick(pick)
   elseif pick >= 12 and pick <= 14 then                           -- the icon colour's strength (TINT.soft)
     opt_set("tintk", ({ "30", "50", "100" })[pick - 11]); if opt.tint == "1" then TINT.pass(true) end
   elseif pick >= 15 and pick <= 17 then opt_set("layout", ({ "auto", "across", "down" })[pick - 14])
-  elseif pick == 18 then opt_set("tips", opt.tips == "0" and "1" or "0") end
+  elseif pick == 18 then opt_set("tips", opt.tips == "0" and "1" or "0")
+  elseif pick >= 19 and KINDS[pick - 18] and KINDS[pick - 18].key ~= "gmb" then ROUTE.set(pick - 18, not ROUTE.tab(pick - 18)) end
   has_key = ""
 end
 -- The EON palette (EON Floatter's P; the Swing FX picker's slate): 0xRRGGBBAA
@@ -2012,6 +2132,20 @@ local function menu_frame()
     heading("CHIPS", hue_c)
     row("Full effect names", opt.labels == "long", function() opt_set("labels", opt.labels == "long" and "short" or "long") end, hue_c, "names", chip_preview)
     row("Double-click pops an effect out", opt.dblclick == "1", function() opt_set("dblclick", opt.dblclick == "1" and "0" or "1") end, hue_c, "pop")
+    -- where each effect lives (ROUTE): lit = its own dock tab, unlit = the full dock; four to a line
+    ImGui.Dummy(ctx, 0, 2)
+    ImGui.AlignTextToFramePadding(ctx)
+    ImGui.TextColored(ctx, MENU.c.muted, "    Own dock tab (lit) or the full dock")
+    local ni = 0
+    for k, kd in ipairs(KINDS) do
+      if kd.key ~= "gmb" then
+        if ni % 4 == 0 then ImGui.Text(ctx, "   ") end
+        ImGui.SameLine(ctx, 0, ni % 4 == 0 and 8 or 4)
+        local on_t = ROUTE.tab(k)
+        if pill("##route_" .. kd.key, kd.short, on_t, 52, nil) then ROUTE.set(k, not on_t); picked = true end
+        ni = ni + 1
+      end
+    end
     ImGui.Dummy(ctx, 0, 2)
     ImGui.Separator(ctx)
     ImGui.Dummy(ctx, 0, 1)
@@ -2076,6 +2210,9 @@ local function gear_menu(mx, my)
     .. on(opt.layout == "across") .. "Layout: effects side by side|"
     .. on(opt.layout == "down") .. "Layout: effects stacked down|"
     .. on(opt.tips ~= "0") .. "Tooltips"
+  for k, kd in ipairs(KINDS) do                          -- 19..26: where each effect lives (ROUTE)
+    if kd.key ~= "gmb" then m = m .. "|" .. on(ROUTE.tab(k)) .. kd.name .. " in its own dock tab" end
+  end
   gfx.x, gfx.y = mx, my
   local pick = gfx.showmenu(m)
   if pick and pick > 0 then gear_pick(pick) end
@@ -2239,15 +2376,19 @@ function RMENU.chip(c, mx, my, forced)
   local on = r.TrackFX_GetEnabled(tr, fx)
   local held
   for _, s in ipairs(slots) do if s.fg == c.fg then held = s end end
-  local m = "Show " .. name .. " in the dock|"
+  local tab, own = ROUTE.away(c.kind), not ONLY and ROUTE.tab(c.kind)   -- in its tab now; set to live there
+  local m = "Show " .. name .. (tab and " in its own dock tab|" or " in the dock|")
     .. "Open " .. name .. " in its own window|"
     .. (on and "" or "!") .. "Bypass " .. name .. "|"
     .. (fx == 0 and "#" or "") .. "Move to the start of the chain|"
     .. (fx == r.TrackFX_GetCount(tr) - 1 and "#" or "") .. "Move to the end of the chain|"
-    .. "Remove " .. name .. " from the track"
+    .. "Remove " .. name .. " from the track|"
+    .. (ONLY and "#" or own and "!" or "") .. "Keep " .. name .. " in its own dock tab"
   gfx.x, gfx.y = mx, my
   local pick = forced or gfx.showmenu(m)
-  if pick == 1 then show_copy(c.fg, c.kind)
+  if pick == 7 and not ONLY then ROUTE.set(c.kind, not own); return end
+  if pick == 1 and tab then ROUTE.open(c.kind, c.fg, tr)
+  elseif pick == 1 then show_copy(c.fg, c.kind)
   elseif pick == 2 then if held and held.canvas then pop_out(held) else r.TrackFX_Show(tr, fx, 3) end
   elseif pick == 3 then
     r.Undo_BeginBlock(); r.TrackFX_SetEnabled(tr, fx, not on)
@@ -2303,7 +2444,8 @@ local function bar_mouse()
       local d = drag
       drag = nil
       if not d.moved then
-        if d.fg then show_copy(d.fg, d.kind) else set_kind(d.kind) end
+        if d.fg and ROUTE.away(d.kind) then ROUTE.open(d.kind, d.fg, shown_track())
+        elseif d.fg then show_copy(d.fg, d.kind) else set_kind(d.kind) end
       elseif d.inside and not d.noop and d.before ~= nil then
         if d.fg then move_fx(d.fg, d.before) else add_kind(d.kind, d.before) end
       end
@@ -2524,8 +2666,9 @@ local function quit()
   -- shows them again and remembers to hide them at its next start (tabs_rehide)
   if not quit_tabs_done then                                       -- once: quit runs again from atexit, after the
     quit_tabs_done = true                                          -- tabs are back (a global: the 200-local limit)
-    if tabs_hidden() then r.SetExtState(EXT, "tabs_rehide", "1", true); pcall(set_tabs_hidden, false)
-    else r.SetExtState(EXT, "tabs_rehide", "0", true) end
+    if TABS.others() then                                          -- another dock of ours is still open: its business
+    elseif tabs_hidden() then r.SetExtState(TABS.X, "tabs_rehide", "1", true); pcall(set_tabs_hidden, false)
+    else r.SetExtState(TABS.X, "tabs_rehide", "0", true) end
   end
   release_all()
   pcall(KEEP.tick, true)                                           -- no kept float outlives the dock
@@ -2543,6 +2686,7 @@ local function quit()
 end
 local function closed_by_user()
   r.SetExtState(EXT, "wall", "0", true)                            -- not open again with REAPER
+  r.SetExtState(EXT, "autoclosed", "", true)                       -- nor when a track with the effect is selected
 end
 
 local function loop()
@@ -2769,7 +2913,7 @@ local function loop()
   end
   COLP.after()                                           -- REAPER's colour dialog, between frames
   if (COLP.on and "1" or "0") ~= COLP.pub then COLP.pub = COLP.on and "1" or "0"; r.SetExtState(EXT, "colp", COLP.pub, false) end
-  if want_close then closed_by_user(); quit(); gfx.quit(); return end   -- the bar's X
+  if want_close then if not want_close_auto then closed_by_user() end; quit(); gfx.quit(); return end   -- the bar's X, or empty
   if opt.tint == "1" then TINT.pass(false) end                    -- the icons follow the track colours
   layout()
   sweep()
@@ -2807,419 +2951,12 @@ local function find_own_window()
   if #all == 1 then return all[1] end                  -- one alone (a floating window with no owner): no doubt
 end
 
--- ── SLOT: the same effect row on every mixer strip (the user, 2026-10-07: "can we scroll our mixer by fx slot how
--- users can scroll in reason's daw") ──────────────────────────────────────────────────────────────────────────────
--- REAPER has no call that scrolls a strip's FX list. What it has (measured 2026-10-06..08, slotresearch*_probe.lua;
--- the handoff's "Scroll by FX slot" sections): the list scrolls one effect per WM_MOUSEWHEEL message to the strips'
--- window (REAPERMCPDisplay) while the REAL pointer is over that strip's FX area (the message's own coordinates are
--- ignored), the delta in wParam's HIGH word; GetThingFromPoint over an embedded face answers "mcp.fxembed N" with
--- N = the FX index, so a strip's scroll reads back. SLOT.go(n): for every strip on screen, the pointer is parked at
--- the top-left corner of its FX area (a spot that moves no parameter), <its FX count> "up" messages then n - 1
--- "down" ones are SENT (synchronous: the next strip follows in the same tick), and the pointer goes back where it
--- was. Strips and rows come from REAPER's own hit-tests (GetTrackFromPoint along x, GetThingFromPoint down each
--- strip), never from a theme's numbers; a list of plain (not embedded) rows scrolls the same way but reads back
--- as "?". Strips the mixer has scrolled away are PAGED to (SetMixerScroll, a forced repaint so the page is laid
--- out at once, the view put back at the end): every track the mixer shows gets the row, not only the visible ones.
--- The bar's SLOT button: a click lists the slots (as many as the longest chain in the mixer has), the wheel over
--- it steps. SLOT is a global on purpose (the 200-local limit, see TINT).
--- Tests: slot_req = "<n>" | "step:<d>" | "menu:<pick>"; published slot = the last run's report.
-SLOT = { n = 1, max = 2, last = "", pub = nil }
-function SLOT.displays()                                          -- the mixer's strip windows (the tracks', the master's)
-  if not (r.JS_WindowMessage_Send and r.JS_Mouse_SetPosition and r.GetThingFromPoint and r.JS_Window_ListAllTop) then
-    return nil, "needs js_ReaScriptAPI and a newer REAPER"
-  end
-  if r.GetToggleCommandState(40078) ~= 1 then return nil, "the mixer is not open" end
-  -- by CLASS, not by the window's title (a localized REAPER names the mixer otherwise): the strip windows under the
-  -- main window (a docked mixer) and under every top-level window the main window owns (a floating one)
-  local roots = { MAIN }
-  local _, tops = r.JS_Window_ListAllTop()
-  for a in (tops or ""):gmatch("[^,]+") do
-    local h = r.JS_Window_HandleFromAddress(tonumber(a))
-    if h and h ~= MAIN and r.JS_Window_IsVisible(h) and r.JS_Window_GetRelated(h, "OWNER") == MAIN then roots[#roots + 1] = h end
-  end
-  local out = {}
-  for _, root in ipairs(roots) do
-    local arr = r.new_array({}, 512)
-    local got = r.JS_Window_ArrayAllChild(root, arr)             -- too small: a NEGATIVE count and nothing filled
-    if got and got < 0 then arr = r.new_array({}, -got + 16); r.JS_Window_ArrayAllChild(root, arr) end   -- (measured 2026-10-08)
-    for _, ad in ipairs(arr.table()) do
-      local c = ad ~= 0 and r.JS_Window_HandleFromAddress(ad)
-      if c and r.JS_Window_GetClassName(c) == "REAPERMCPDisplay" and r.JS_Window_IsVisible(c) then
-        local _, L, T, R, B = r.JS_Window_GetRect(c)
-        if R - L > 40 and B - T > 80 then out[#out + 1] = { h = c, L = L, T = T, R = R, B = B } end
-      end
-    end
-  end
-  if #out > 0 then return out end
-  return nil, "no mixer strips on screen"
-end
-function SLOT.strips(d)                                           -- one window's strips, left to right: track, edges
-  local step = math.max(4, math.floor(6 * sc))                    -- a strip is 50+ px wide; its edges +-6 px are fine
-  for _, f in ipairs({ 0.72, 0.5, 0.9 }) do                       -- a row every strip answers on (the fader's); three tries
-    local out, prev, ptr, start = {}, nil, nil, 0
-    local y = d.T + math.floor((d.B - d.T) * f)
-    for x = d.L + 1, d.R - 1, step do
-      local tr = r.GetTrackFromPoint(x, y)
-      local key = tr and r.GetTrackGUID(tr) or ""
-      if key ~= prev then
-        if prev and prev ~= "" then out[#out + 1] = { tr = ptr, x0 = start, x1 = x - 1 } end
-        prev, ptr, start = key, tr, x
-      end
-    end
-    if prev and prev ~= "" then out[#out + 1] = { tr = ptr, x0 = start, x1 = d.R - 1 } end
-    if #out > 0 then return out end
-  end
-  return {}
-end
-function SLOT.fxrow(x, y, want_tr)                                -- an FX LIST row at a point (of want_tr when given), or nil
-  -- "mcp.fxembed N" (an embedded face) and "mcp.fxlist N fx:M" (a plain row) are the list; "mcp.fx" alone is the
-  -- FX BUTTON of a layout with no list (I Logic V2 at this size, 2026-10-08: a wheel burst there scrolled the whole
-  -- mixer sideways), "mcp.fxparm" the parameter knobs: neither scrolls a list. The row must belong to the strip being
-  -- done: a mixer showing tracks in several rows puts another track's strip in the same column (self-audit 2026-10-08)
-  local tr, info = r.GetThingFromPoint(x, y)
-  if tr and info and (not want_tr or tr == want_tr) and (info:find("^mcp%.fxembed") or info:find("^mcp%.fxlist")) then return info end
-end
-function SLOT.fxtop(d, s)                                         -- the top of a strip's FX area: its y and the row's name
-  local x = math.floor((s.x0 + s.x1) / 2)
-  local step = math.max(4, math.floor(8 * sc))                    -- a plain FX row is 16+ px tall: 8 px cannot skip one; the
-                                                                  -- walk-up below finds the first pixel (the scan was the cost)
-  for y = d.T + 2, d.B - 2, step do
-    local info = SLOT.fxrow(x, y, s.tr)
-    if info then
-      local y0 = y
-      while y0 > d.T + 1 and SLOT.fxrow(x, y0 - 1, s.tr) do y0 = y0 - 1 end   -- up to the area's first pixel
-      return y0, info
-    end
-  end
-end
-function SLOT.cover(d, s, top)                                    -- a window over the strip right above its FX area's found top
-  -- (the user's run, 2026-10-08: four strips whose FX area read 232 px lower, a window over their upper part; the
-  -- scroll under it works, but the read-back at the lower spot reads a lower face). nil = nothing over it
-  if not (r.JS_Window_FromPoint and top) then return nil end
-  local y = top - math.max(2, math.floor(2 * sc))
-  if y <= d.T then return nil end
-  local wnd = r.JS_Window_FromPoint(math.floor((s.x0 + s.x1) / 2), y)
-  if not wnd or wnd == d.h or r.JS_Window_IsChild(d.h, wnd) then return nil end
-  return wnd
-end
-function SLOT.cover_any(d, s)                                     -- a window over ANY part of the strip (its whole FX area may be
-  -- under it: no FX row visible at all; Codex delta review 2026-10-08), down its middle, coarse steps; nil = none
-  if not r.JS_Window_FromPoint then return nil end
-  local cx, step = math.floor((s.x0 + s.x1) / 2), math.max(6, math.floor(10 * sc))
-  for y = d.T + 2, d.B - 2, step do
-    local wnd = r.JS_Window_FromPoint(cx, y)
-    if wnd and wnd ~= d.h and not r.JS_Window_IsChild(d.h, wnd) then return wnd end
-  end
-  return nil
-end
-function SLOT.cover_name(wnd)                                     -- for the report: a REAPER window by its title, others by class
-  local root = wnd                                                -- up to its top-level window (WS_CHILD off); the extension
-  for _ = 1, 32 do                                                -- has no GetRoot
-    local st = r.JS_Window_GetLong(root, "STYLE")
-    if not st or (math.floor(st) & 0x40000000) == 0 then break end
-    local p = r.JS_Window_GetParent(root)
-    if not p then break end
-    root = p
-  end
-  local cls = r.JS_Window_GetClassName(root) or "?"
-  local mine = root == MAIN or in_this_reaper(root)
-  return mine and ("REAPER's '" .. (r.JS_Window_GetTitle(root) or "") .. "'") or ("another program's window (" .. cls .. ")")
-end
-function SLOT.scroll(d, s, n, top, once)                          -- one strip: to the top, then n - 1 down; the top row read back
-                                                                  -- once: one round, nothing judged (a strip under a window)
-  local py = top + math.floor(3 * sc)
-  local cx = math.floor((s.x0 + s.x1) / 2)                        -- read back mid-strip: the corner misread once in five
-  -- the parking spot must BE a list row (a wheel anywhere else is the mixer's own: sideways scroll): the corner,
-  -- else mid-strip, else this strip is left alone
-  local px = s.x0 + math.floor(4 * sc)
-  if not SLOT.fxrow(px, py, s.tr) then px = cx end
-  if not SLOT.fxrow(px, py, s.tr) then
-    local t = r.GetThingFromPoint(cx, py)                         -- another strip there: the page moved since the scan
-    if t and t ~= s.tr then return nil, "another strip at the spot", false, false, false, true end
-    return nil, "no list row at the spot", false, true
-  end
-  local lx, ly = px & 0xFFFF, py & 0xFFFF
-  local count = r.TrackFX_GetCount(s.tr)
-  local want = math.min(n, count) - 1
-  local k, info, atend, valid, moved
-  local function read()                                           -- the top row mid-strip: its index (embedded), its name, and
-    local tr, inf = r.GetThingFromPoint(cx, py)                   -- whether a LIST row OF THIS STRIP was read at all (a window
-    local ok = tr == s.tr and inf and (inf:find("^mcp%.fxembed") or inf:find("^mcp%.fxlist")) and true or false   -- over it: no)
-    -- ANOTHER track's strip under the spot now: the page moved while this strip was being done (a real-mouse run,
-    -- 2026-10-08: Tom Lo's burst landed on Snare); the caller scans the page again and finds it in its new place
-    moved = tr ~= nil and tr ~= s.tr
-    return ok and tonumber(inf:match("^mcp%.fxembed (%d+)")) or nil, inf, ok
-  end
-  -- a mouse in motion pulls the pointer off its spot in the middle of a burst (the sandbox: one strip in ~30 did not
-  -- move while 144 strip-scrolls with nobody at the mouse all did): read back, park and send again, three tries
-  for _ = 1, 3 do
-    r.JS_Mouse_SetPosition(px, py)
-    for _ = 1, count do r.JS_WindowMessage_Send(d.h, "WM_MOUSEWHEEL", 0, 120, lx, ly) end
-    for _ = 2, n do r.JS_WindowMessage_Send(d.h, "WM_MOUSEWHEEL", 0, -120, lx, ly) end
-    k, info, valid = read()
-    if once or moved then break end                                -- (moved: the burst went to another strip, which wants the
-                                                                   -- same row: harmless; this one is done again by the caller)
-    if valid and not k then break end                              -- a plain row on top: nothing to check
-    if k == want then break end
-    if k and k < want then
-      -- short of it. Either the list stops because its end is in view (a tall mixer shows the rest of the chain
-      -- below the top row; measured 2026-10-08: a 1040-tall mixer tops out at index 3 of 7), or the burst was
-      -- broken: the mouse moved the pointer off the spot, or another window covers the strip there (REAPER's
-      -- hit-test then names no track). The pointer still on the spot and REAPER naming this track there = the
-      -- end, as far as that list goes; anything else = another round
-      local qx, qy = r.GetMousePosition()
-      if qx == px and qy == py and r.GetThingFromPoint(px, py) == s.tr then atend = true; break end
-    end
-  end
-  return k, info, atend, false, valid, moved
-end
-function SLOT.shown()                                             -- the tracks the mixer shows, in order (the master apart)
-  local t = {}
-  for i = 0, r.CountTracks(0) - 1 do
-    local tr = r.GetTrack(0, i)
-    if r.GetMediaTrackInfo_Value(tr, "B_SHOWINMIXER") == 1 then t[#t + 1] = tr end
-  end
-  return t
-end
-function SLOT.longest()                                           -- the longest chain among the mixer's tracks (+ the master)
-  local m = r.TrackFX_GetCount(r.GetMasterTrack(0))
-  for _, tr in ipairs(SLOT.shown()) do m = math.max(m, r.TrackFX_GetCount(tr)) end
-  return m
-end
-function SLOT.run(disps, n)
-  local t_start, t_scan, t_wheel, t_paint = r.time_precise(), 0, 0, 0
-  local done, missed, norow, tops, strips, pages = 0, 0, 0, {}, 0, 1   -- done: as asked (or as far as the list goes);
-  local seen, lines, bad = {}, {}, {}                             -- missed: a list that did not land or could not be
-  local covered, hidden, deferred = 0, {}, {}                     -- covered: scrolled under a window, not checked
-  local covered_g, edge_covered = {}, false                       -- edge_covered: a page's first strip was still under a
-                                                                  -- window at the left edge: paging cannot help, no more waiting
-  local left0 = r.GetMixerScroll()                                -- the view to put back; nil = the mixer cannot page
-  local master = r.GetMasterTrack(0)
-  local function page(final, only, last)                          -- read back; norow: a strip with FX but no list row.
-                                                                  -- only: this track alone (the page's own first strip);
-                                                                  -- last: the page's last scan (a strip whose page moves
-                                                                  -- under it is then judged where it stands)
-    local did, blank, relayout = 0, 0, false                      -- Every strip on screen not done yet. A strip with FX
-    for _, d in ipairs(disps) do                                  -- but no rows yet (never painted) is left for a second
-      local t0 = r.time_precise()                                 -- pass after the page's paint (blank counts them);
-      local list = SLOT.strips(d)                                 -- final: counted as "no rows" instead
-      t_scan = t_scan + r.time_precise() - t0
-      for _, s in ipairs(list) do
-        local g = r.GetTrackGUID(s.tr)
-        if not seen[g] and (not only or g == only) then
-          local count = r.TrackFX_GetCount(s.tr)
-          t0 = r.time_precise()
-          local top, row
-          if count > 0 then top, row = SLOT.fxtop(d, s) end
-          t_scan = t_scan + r.time_precise() - t0
-          local cover = (count > 0 and top) and SLOT.cover(d, s, top) or nil
-          if count > 0 and not top and final then cover = SLOT.cover_any(d, s) end   -- no row even after the paint: a window
-          -- over the whole FX area? Or a strip cut off by the window's edge (only a sliver shows, no row in it: the big-
-          -- project test, 2026-10-08, lost the cut-off strip of every page as "no rows")
-          local cut = count > 0 and not top and final and (s.x0 <= d.L + 2 or s.x1 >= d.R - 2)
-          if count > 0 and not top and not final then
-            blank = blank + 1
-          elseif cut and not cover and left0 and s.tr ~= master and g ~= only then
-            deferred[g] = true                                    -- its own page shows it whole at the left edge
-          elseif cover and left0 and s.tr ~= master and g ~= only and not edge_covered then
-            -- a window over its upper part: left for its own page, which brings it to the left edge, out from under
-            -- it (the paging below takes the first track not done, and does that one with `only` even if it is still
-            -- covered there); the master never moves: done as it stands; no paging: done as it stands
-            deferred[g] = true
-          elseif count == 0 then
-            seen[g] = true; did = did + 1; strips = strips + 1      -- no FX: nothing to scroll
-          else
-            local _, nm = r.GetSetMediaTrackInfo_String(s.tr, "P_NAME", "", false)
-            if nm == "" then nm = s.tr == master and "MASTER" or "(unnamed)" end
-            local mark, info, atend, kind = "-", nil, false, nil
-            if not top and cover then kind = "w"                  -- its FX area under a window, nothing to park on: not moved
-            elseif not top then kind = "norow"
-            else
-              if SLOT.test_move and nm == SLOT.test_move then     -- tests only (slot_req "move:"): the page shifted by one
-                SLOT.test_move = nil                              -- strip right before this strip's burst, as a moving page
-                local lt = r.GetMixerScroll()                     -- would (slotmove_probe.lua): one strip back, else on
-                local ix = lt and math.floor(r.GetMediaTrackInfo_Value(lt, "IP_TRACKNUMBER"))
-                local to = ix and (ix >= 2 and r.GetTrack(0, ix - 2) or r.GetTrack(0, ix))
-                if to then r.SetMixerScroll(to) end
-              end
-              t0 = r.time_precise()
-              local k, inf, ae, nospot, valid, mv = SLOT.scroll(d, s, n, top, cover ~= nil)
-              t_wheel = t_wheel + r.time_precise() - t0
-              info, atend = inf, ae
-              if mv and not last then kind = "moved"              -- another strip under the spot now: scanned again below
-              elseif nospot then kind = "norow"
-              elseif cover then kind = "c"                         -- scrolled, its top out of sight
-              elseif not valid then kind = "x"                     -- no list row of its own readable after the burst
-              elseif k and k ~= math.min(n, count) - 1 and not atend then kind = "k"; mark = tostring(k)
-              else kind = "done"; mark = (k and tostring(k) or "?") .. (atend and "e" or "") end   -- "3e": as far as that list goes
-            end
-            if kind == "moved" then
-              relayout = true
-              dbg("   slot: " .. nm .. ": the page moved under it; scanned again")
-            else
-              seen[g] = true; did = did + 1; strips = strips + 1
-              if kind == "w" then missed = missed + 1; bad[#bad + 1] = nm; mark = "w"; covered_g[g] = true
-              elseif kind == "norow" then norow = norow + 1; bad[#bad + 1] = nm
-              elseif kind == "c" then covered = covered + 1; hidden[#hidden + 1] = nm; mark = "c"; covered_g[g] = true
-              elseif kind == "x" then missed = missed + 1; bad[#bad + 1] = nm; mark = "x"
-              elseif kind == "k" then missed = missed + 1; bad[#bad + 1] = nm
-              else done = done + 1 end
-              tops[#tops + 1] = mark
-              lines[#lines + 1] = string.format("%s: x %d..%d, %d fx, area top y %s (%s) -> %s%s = %s%s", nm, s.x0, s.x1, count,
-                                                tostring(top), tostring(row), tostring(info), atend and " (the end)" or "", mark,
-                                                cover and ("; under " .. SLOT.cover_name(cover)) or "")
-              dbg("   slot: " .. lines[#lines])
-            end
-          end
-        end
-      end
-    end
-    return did, blank, relayout
-  end
-  local dc                                                        -- the off-screen bitmap's DC (below), nil = none
-  local function paint()                                          -- the page laid out into the bitmap, the screen untouched
-    local t0 = r.time_precise()
-    for _, d in ipairs(disps) do
-      if dc then r.JS_WindowMessage_Send(d.h, "WM_PAINT", dc, 0, 0, 0)
-      elseif r.JS_Window_InvalidateRect and r.JS_Window_Update then
-        r.JS_Window_InvalidateRect(d.h, 0, 0, d.R - d.L, d.B - d.T, true); r.JS_Window_Update(d.h)
-      end
-    end
-    t_paint = t_paint + r.time_precise() - t0
-  end
-  -- a strip the mixer never painted has no FX rows yet, and REAPER lays a page out only while painting it
-  -- (slotpage_probe.lua: "[mcp]" right after SetMixerScroll). A forced repaint on screen lays it out but shows
-  -- every page (the user, 2026-10-08: "it kinda jitters"), so a page that needs it is painted into a bitmap of our
-  -- own instead: WM_PAINT sent with that bitmap's DC (slotpage2_probe.lua: the rows appear, the screen's pixels do
-  -- not change). Without the LICE calls, the on-screen repaint stays as the fallback. Only a page with strips that
-  -- have FX but no rows gets the paint (the user: every wheel notch stalled REAPER for ~100 ms).
-  if r.JS_LICE_CreateBitmap and r.JS_LICE_GetDC and r.JS_Window_AddressFromHandle then
-    local w, h = 1, 1
-    for _, d in ipairs(disps) do w, h = math.max(w, d.R - d.L), math.max(h, d.B - d.T) end
-    SLOT.bmp = r.JS_LICE_CreateBitmap(true, w, h)                  -- freed by SLOT.go, whatever happens below
-    local hdc = SLOT.bmp and r.JS_LICE_GetDC(SLOT.bmp)
-    dc = hdc and r.JS_Window_AddressFromHandle(hdc)
-  end
-  local function do_page()                                        -- the page now in the mixer: every strip not done yet,
-    for attempt = 1, 4 do                                         -- painted off screen when it holds never-painted strips,
-      local last = attempt == 4 or SLOT.test_norescan             -- and scanned again while it moves under the run (a
-      local _, blank, mv = page(false, nil, last)                 -- self-audit run, 2026-10-08: the page moved by one
-      if blank > 0 then                                           -- strip mid-run); the fourth scan judges strips where
-        paint()                                                   -- they stand
-        local _, _, mv2 = page(true, nil, last)
-        mv = mv or mv2
-      end
-      if not mv then return end
-    end
-  end
-  do_page()                                                       -- the page on screen first
-  -- then the mixer turned page by page for the tracks it shows but has scrolled away (the user, 2026-10-08:
-  -- "paging"): the first such track made the leftmost strip (SetMixerScroll), its page done, until none is left;
-  -- the view put back (SLOT.go). Tracks the mixer hides stay out: nothing can show them. A strip left for later
-  -- (a window over it) is such a track too: its page brings it to the left edge.
-  if left0 then
-    local shown = SLOT.shown()
-    -- every turn below ends with its first track done (or named as never on screen), so the shown tracks bound it;
-    -- a fixed cap of 64 left the rest of a big project quietly undone (Codex delta review 2026-10-08)
-    for _ = 1, #shown + 1 do
-      local nxt
-      for _, tr in ipairs(shown) do if not seen[r.GetTrackGUID(tr)] then nxt = tr; break end end
-      if not nxt then break end
-      r.SetMixerScroll(nxt)
-      pages = pages + 1
-      local gn = r.GetTrackGUID(nxt)
-      do_page()
-      if not seen[gn] then page(true, gn, true) end               -- the page's first strip: at the left edge now; done as it
-      if covered_g[gn] then edge_covered = true; page(true, nil, true) end   -- (still covered there: the rest as they stand)
-      if not seen[gn] then                                        -- stands, under a window or not. Still not done: it never
-        seen[gn] = true                                           -- came on screen (counted, named: never skipped quietly; the
-        if r.TrackFX_GetCount(nxt) > 0 then                       -- self-test 2026-10-08 found one skipped); a track with no FX
-          missed = missed + 1                                     -- has nothing to scroll: no word about it
-          local _, nm = r.GetSetMediaTrackInfo_String(nxt, "P_NAME", "", false)
-          bad[#bad + 1] = nm ~= "" and nm or "(unnamed)"; tops[#tops + 1] = "n"
-          lines[#lines + 1] = (nm ~= "" and nm or "(unnamed)") .. ": never came on screen = n"
-        end
-      end
-    end
-    for _, tr in ipairs(shown) do                                 -- (none can be left; if one is, it is counted, not lost)
-      local g = r.GetTrackGUID(tr)
-      if not seen[g] then
-        seen[g] = true
-        if r.TrackFX_GetCount(tr) > 0 then
-          missed = missed + 1
-          local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
-          bad[#bad + 1] = nm ~= "" and nm or "(unnamed)"; tops[#tops + 1] = "n"
-          lines[#lines + 1] = (nm ~= "" and nm or "(unnamed)") .. ": not reached = n"
-        end
-      end
-    end
-    if r.GetMixerScroll() ~= left0 then r.SetMixerScroll(left0) end
-  end
-  SLOT.n, SLOT.max = n, math.max(2, math.min(SLOT.longest(), 32))
-  local ms = function(t) return math.floor(t * 1000 + 0.5) end
-  SLOT.last = string.format("slot %d: %d strips on %d pages, %d scrolled, %d missed, %d no rows, %d behind a window, %d ms (scan %d, wheel %d, paint %d); tops %s",
-                            n, strips, pages, done, missed, norow, covered, ms(r.time_precise() - t_start), ms(t_scan), ms(t_wheel), ms(t_paint), table.concat(tops, ","))
-  dbg(SLOT.last)
-  -- the word on the bar (draw_bar): quiet when every strip did as asked (Codex delta review 2026-10-08: the causes
-  -- told apart, and a run that went well clears an older word: SLOT.go); the strips concerned are named
-  local tried = done + missed + norow + covered
-  local function names(t) return #t > 0 and (": " .. table.concat(t, ", ", 1, math.min(#t, 4)) .. (#t > 4 and " ..." or "")) or "" end
-  if strips == 0 then SLOT.say("SLOT: no strips found in the mixer")
-  elseif tried > 0 and done + covered == 0 and missed == 0 then SLOT.say("SLOT: nothing scrolled: the strips show no effect rows")
-  elseif tried > 0 and done + covered == 0 then SLOT.say("SLOT: nothing scrolled: the lists did not move")
-  elseif missed + norow > 0 then SLOT.say(string.format("SLOT: %d of %d strips did not move%s", missed + norow, tried, names(bad)))
-  elseif covered > 0 and covered == tried then SLOT.say("SLOT: a window covers the mixer's effect rows: scrolled, not checked")
-  elseif covered > 0 then SLOT.say(string.format("SLOT: %d behind a window, scrolled but not checked%s", covered, names(hidden))) end
-  -- the run's report, a small file beside REAPER's data (<resource>/Data/ReaKit_FX_slot_report.txt): what every
-  -- strip did, for a look when a strip is reported; a temp file first, then renamed (the house rule)
-  SLOT.report(lines)
-  return missed + norow == 0
-end
-function SLOT.report(lines)
-  local p = r.GetResourcePath() .. "/Data/ReaKit_FX_slot_report.txt"
-  local fh = io.open(p .. ".tmp", "w")
-  if not fh then return end
-  fh:write(os.date("%Y-%m-%d %H:%M:%S"), "  ", SLOT.last, "\n", table.concat(lines, "\n"), "\n")
-  fh:close()
-  os.remove(p); os.rename(p .. ".tmp", p)
-end
-function SLOT.say(msg) SLOT.msg, SLOT.msg_t = msg, r.time_precise(); dbg(msg) end
-function SLOT.go(n)
-  n = math.max(1, math.floor(tonumber(n) or 1))
-  local disps, why = SLOT.displays()
-  if not disps then SLOT.last = "slot " .. n .. ": " .. why; SLOT.say("SLOT: " .. why); return false end
-  local mx, my = r.GetMousePosition()
-  SLOT.msg = nil                                                  -- an older word goes; this run speaks for itself
-  local left = r.GetMixerScroll()                                 -- the mixer's leftmost strip: a wheel that misses a list
-  local ok, res = pcall(SLOT.run, disps, n)                       -- scrolls the mixer sideways; put back if so
-  if SLOT.bmp then pcall(r.JS_LICE_DestroyBitmap, SLOT.bmp); SLOT.bmp = nil end   -- the paging's off-screen bitmap
-  r.JS_Mouse_SetPosition(mx, my)                                  -- the pointer back where it was, whatever happened
-  if left and r.GetMixerScroll() ~= left then r.SetMixerScroll(left); dbg("slot: the mixer had scrolled sideways; put back") end
-  SLOT.test_move, SLOT.test_norescan = nil, nil                   -- the test switches last one run
-  if not ok then SLOT.last = "slot " .. n .. ": error " .. tostring(res); SLOT.say("SLOT: something went wrong; see the trace"); dbg(SLOT.last); return false end
-  return res
-end
-function SLOT.step(d) SLOT.pending = (SLOT.pending or 0) + d end   -- the wheel's notches add up; ONE run per tick (SLOT.tick)
-function SLOT.tick()                                              -- from the loop: a flick of three notches = one run, not three
-  local d = SLOT.pending or 0
-  if d == 0 then return end
-  SLOT.pending = 0
-  SLOT.max = math.max(2, math.min(SLOT.longest(), 32))            -- fresh: before any run it was 2, so a first flick stopped
-  SLOT.go(math.max(1, math.min(SLOT.max, SLOT.n + d)))            -- at slot 2 (self-audit 2026-10-08)
-end
-function SLOT.menu(mx, my, forced)                                -- forced: the pick's number (tests), no menu shown
-  local disps, why = SLOT.displays()
-  SLOT.max = math.max(2, math.min(SLOT.longest(), 32))            -- as many slots as the longest chain in the mixer has
-  local m = {}
-  if not disps then m[1] = "#" .. why:sub(1, 1):upper() .. why:sub(2)
-  else for i = 1, SLOT.max do m[i] = (i == SLOT.n and "!" or "") .. (i == 1 and "Top of every strip" or "Slot " .. i) end end
-  gfx.x, gfx.y = mx, my
-  local pick = forced or gfx.showmenu(table.concat(m, "|"))
-  if disps and pick and pick >= 1 then SLOT.go(pick) end
-end
+-- ── MIXER SLOT: the same effect row on every mixer strip, in its own file beside this one (2026-11-05: shared
+-- with the one-plugin tabs and the "ReaKit FX - Mixer slot" actions). SLOT is a global (the 200-local limit).
+SLOT = assert(loadfile(DIR .. "ReaKit FX - Mixer slot.lua"))({ r = r, dbg = dbg, sc = function() return sc end })
 
 local dockstate = tonumber(r.GetExtState(EXT, "dockstate")) or 1    -- docked, in the first docker
-if r.GetExtState(EXT, "tabs_rehide") == "1" and not tabs_hidden() then pcall(set_tabs_hidden, true) end   -- hidden when it last closed (quit)
+if r.GetExtState(TABS.X, "tabs_rehide") == "1" and not tabs_hidden() then pcall(set_tabs_hidden, true) end   -- hidden when it last closed (quit)
 gfx.ext_retina = 1                                                  -- sizes in real pixels; the scale comes back here
 gfx.init(TITLE, C.W0, C.H0, dockstate)
 gfx.update()
@@ -3235,6 +2972,7 @@ end
 local style = r.JS_Window_GetLong(dock, "STYLE")
 if style then r.JS_Window_SetLong(dock, "STYLE", math.floor(style) | 0x02000000) end
 pcall(function() r.set_action_options(1 | 4) end)                   -- run again = close it; the button lights
+r.SetExtState(EXT, "autoclosed", "", true)                          -- open: not an empty dock that closed itself
 for _, k in ipairs({ "close", "kind_req", "pin_req", "tabs_req", "strip_req", "scroll_req", "add_req", "move_req", "addat_req",
                      "closefx_req", "opt_req", "gear_req", "fold_req", "menu_req", "pick_req", "name_req", "colp_req", "rmenu_req", "gfxdock_req", "slot_req" }) do
   r.SetExtState(EXT, k, "", false)                                  -- old requests must not reach this run

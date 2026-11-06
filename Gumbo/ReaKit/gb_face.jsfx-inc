@@ -53,7 +53,8 @@ function gbf_fam_col(i) (   // a family colour, as in the mockup's tiles
   : i == 5 ? ( gbf_fc_r = 0.48; gbf_fc_g = 0.42; gbf_fc_b = 0.88; ) : i == 6 ? ( gbf_fc_r = 0.76; gbf_fc_g = 0.36; gbf_fc_b = 0.88; )
   : i == 7 ? ( gbf_fc_r = 0.88; gbf_fc_g = 0.69; gbf_fc_b = 0.19; ) : i == 8 ? ( gbf_fc_r = 0.88; gbf_fc_g = 0.40; gbf_fc_b = 0.23; )
   : i == 9 ? ( gbf_fc_r = 0.25; gbf_fc_g = 0.75; gbf_fc_b = 0.38; ) : i == 10 ? ( gbf_fc_r = 0.18; gbf_fc_g = 0.72; gbf_fc_b = 0.79; )
-  : ( gbf_fc_r = 0.91; gbf_fc_g = 0.28; gbf_fc_b = 0.60; );
+  : i == 11 ? ( gbf_fc_r = 0.91; gbf_fc_g = 0.28; gbf_fc_b = 0.60; )
+  : ( gbf_fc_r = 0.80; gbf_fc_g = 0.76; gbf_fc_b = 0.70; );   // 12 Other (a GM bank): a plain key colour, not Vox's pink
 );
 
 // the family icons: Gumbo's own copies (EON_Gumbo/gumbo_icons, in the Gumbo package itself since 2026-11-04, when the
@@ -238,21 +239,29 @@ function gbf_scr(r, g, b, a) ( rk_scr_set(r, g, b, a); );
 function gbf_box(x, y, w, h) ( gfx_rect(x, y, w, 1); gfx_rect(x, y + h - 1, w, 1); gfx_rect(x, y, 1, h); gfx_rect(x + w - 1, y, 1, h); );
 function gbf_hit(x, y, w, h) ( mx >= x && mx < x + w && my >= y && my < y + h; );
 
-// the keyboard follows the loaded instrument: its lowest to highest playable key, whole octaves, two at least
+// ── the face follows the instrument channel 1 plays (2026-11-05): a bank's program, else the whole file. gbf_pgk
+// changes with each load and each program change (gbf_prog_sync); the keyboard's range, the lit keys, the
+// recorded-notes dots, the key names and the pads are rebuilt from that program's regions when it does. They used to be
+// built once per load from every region in the file: a GM set's Standard kit showed 84 pads, 23 of them other kits'
+// keys -- silent (the owner, 2026-11-05).
+gbf_pgk = -1;
+function gbf_in_prog(r) ( r[GBR_PSEC] == 0 || (r[GBR_PSEC] == gbf_pg_sec && gbf_pg_p >= r[GBR_PLO] && gbf_pg_p <= r[GBR_PHI]); );
+// the keyboard: the playing instrument's lowest to highest playable key, whole octaves, two at least
 function gbf_range() local(i, r, lo, hi) (
-  gb_ready && gbf_range_gen != gb_load_gen ? (
-    gbf_range_gen = gb_load_gen; lo = 127; hi = 0; i = 0;
+  gb_ready && gbf_range_gen != gbf_pgk ? (
+    gbf_range_gen = gbf_pgk; lo = 127; hi = 0; i = 0;
     loop(gb_nreg,
       r = GB_REG + i * GB_RS;
-      r[GBR_TRIG] == GB_TR_ATTACK && r[GBR_HIKEY] >= r[GBR_LOKEY] ? ( lo = min(lo, r[GBR_LOKEY]); hi = max(hi, r[GBR_HIKEY]); );
-      r[GBR_SWLO] >= 0 && r[GBR_SWHI] >= r[GBR_SWLO] ? ( lo = min(lo, r[GBR_SWLO]); hi = max(hi, r[GBR_SWHI]); );   // the keyswitches show
+      gbf_in_prog(r) ? (
+        r[GBR_TRIG] == GB_TR_ATTACK && r[GBR_HIKEY] >= r[GBR_LOKEY] ? ( lo = min(lo, r[GBR_LOKEY]); hi = max(hi, r[GBR_HIKEY]); );
+        r[GBR_SWLO] >= 0 && r[GBR_SWHI] >= r[GBR_SWLO] ? ( lo = min(lo, r[GBR_SWLO]); hi = max(hi, r[GBR_SWHI]); );   // the keyswitches show
+      );
       i += 1;
     );
     hi < lo ? ( lo = 36; hi = 96; );
-    // a drum kit with named keys: just its keys (ends on white keys), so each key is wide enough for its name;
-    // anything else: whole octaves
-    // (a GM bank's kit names do not make the whole bank a kit: whole octaves, 2026-11-04)
-    gb_nkey > 0 && gb_nprg == 0 ? ( lo = max(0, lo - rk_piano_is_black(lo)); hi = min(127, hi + rk_piano_is_black(hi)); )
+    // a drum kit with named keys (an ordinary kit, or a bank's kit playing): just its keys (ends on white keys), so
+    // each key is wide enough for its name; anything else: whole octaves
+    gbf_nkn > 0 && (gb_nprg == 0 || gbf_pg_kit) ? ( lo = max(0, lo - rk_piano_is_black(lo)); hi = min(127, hi + rk_piano_is_black(hi)); )
                 : ( lo = max(21, floor(lo / 12) * 12); hi = min(108, floor(hi / 12) * 12 + 11); );
     hi - lo < 23 ? hi = min(127, lo + 23);
     gbf_lo = lo; gbf_hi = hi;
@@ -264,13 +273,6 @@ function gbf_key_x(x, w, lo, hi, n) local(wsz) (
   wsz = w / rk_piano_white_count(lo, hi);
   rk_piano_is_black(n) ? x + rk_piano_whites_before(lo, n) * wsz : x + (rk_piano_whites_before(lo, n) + 0.5) * wsz;
 );
-// does some attack region have its root on note n?
-function gbf_recorded(n) local(i, r, f) (
-  f = 0; i = 0;
-  while (!f && i < gb_nreg) ( r = GB_REG + i * GB_RS; r[GBR_TRIG] == GB_TR_ATTACK && (r[GBR_KEYC] | 0) == n && r[GBR_SMP] >= 0 ? f = 1; i += 1; );
-  f;
-);
-
 // the instrument's name: the browser list's friendly one when the loaded file is in it ("Upright Piano"), else
 // the file's own name without its ending
 function gbf_name() local(i, n) (
@@ -297,6 +299,11 @@ function gbf_status() (
     : gbh_err == 7 ? strcpy(#gbf_st, "To dock Gumbo with a double-click, start the Gumbo helper")
     : gbh_err == 5 ? strcpy(#gbf_st, "Starred for now. To keep favourites, start the Gumbo helper")
     : gbh_err == 6 ? strcpy(#gbf_st, "The Gumbo helper could not save your favourites")
+    : gbh_err == 8 ? strcpy(#gbf_st, "Pad look set for now. To keep pad looks, start the Gumbo helper")
+    : gbh_err == 9 ? strcpy(#gbf_st, "The Gumbo helper could not save the pad look")
+    : gbh_err == 4 ? strcpy(#gbf_st, "Pad look set for now: this instrument is not in the library list, so it cannot be kept")
+    : gbh_err == 15 ? strcpy(#gbf_st, "To keep a default look for new Gumbos, start the Gumbo helper")
+    : gbh_err == 16 ? strcpy(#gbf_st, "The Gumbo helper could not keep the default look")
     : gbh_err == 31 ? strcpy(#gbf_st, "Could not import: its sound files are missing")
     : gbh_err == 32 ? strcpy(#gbf_st, "Could not import: the file (or one it includes) could not be read")
     : gbh_err == 33 ? strcpy(#gbf_st, "Could not import: nothing in it Gumbo can play")
@@ -348,25 +355,165 @@ function gbf_knob(k, cx, cy, r, val, vmin, vmax, vdef, ndet, label, valtxt, dim)
 );
 
 // ── the Ember display ──
-// a bank (format 3): the program channel 1 plays now (GB_CHPG, written by the audio thread; read only here) ->
-// gbf_pg_i = its entry in GB_PRG (-1 = not in this bank), gbf_pg_p = its program number, gbf_pg_kit = a drum kit
-function gbf_prog_cur() local(e, sec, i, q) (
-  e = GB_CHPG[0];
-  gbf_pg_kit = e >= 128 && gb_drum_sec > 0; sec = gbf_pg_kit ? gb_drum_sec : gb_mel_sec; gbf_pg_p = e >= 128 ? e - 128 : e;
+// a bank (format 3): the program channel 1 plays now (GB_CHSC + GB_CHPG, written by the audio thread; read only
+// here) -> gbf_pg_i = its entry in GB_PRG (-1 = not in this bank), gbf_pg_p = its program number, gbf_pg_kit = a
+// drum kit, gbf_pg_sec = its section
+function gbf_prog_cur() local(i, q) (
+  gbf_pg_sec = GB_CHSC[0]; gbf_pg_p = GB_CHPG[0];
+  gbf_pg_kit = gbf_pg_sec == gb_drum_sec && gb_drum_sec > 0;
   gbf_pg_i = -1; i = 0;
-  loop(gb_nprg, q = GB_PRG + i * 5; gbf_pg_i < 0 && q[0] == sec && gbf_pg_p >= q[1] && gbf_pg_p <= q[2] ? gbf_pg_i = i; i += 1; );
+  loop(gb_nprg, q = GB_PRG + i * 5; gbf_pg_i < 0 && q[0] == gbf_pg_sec && gbf_pg_p >= q[1] && gbf_pg_p <= q[2] ? gbf_pg_i = i; i += 1; );
 );
-// play entry i of GB_PRG: slider 89 (every channel takes it, gb_prog_apply). The display's box and list, the browser rows
+// entry i's MIDI bank (a variation's; 0 for the main programs and the kits, and for a section no "// bank" line names)
+function gbf_pg_bank(i) local(s) (
+  s = (GB_PRG + i * 5)[0];
+  s == gb_drum_sec && gb_drum_sec > 0 ? 0 : s > 0 && s < GB_SECB_N && GB_SECB[s] > 0 ? GB_SECB[s] : 0;
+);
+// a bank's programs by GM group (the menu's groups, the side list's labels): 0..15 by program number, 16 the kits
+function gbf_gm_fam(g) (
+  g == 0 ? "Piano" : g == 1 ? "Chromatic Percussion" : g == 2 ? "Organ" : g == 3 ? "Guitar" : g == 4 ? "Bass"
+  : g == 5 ? "Strings" : g == 6 ? "Ensemble" : g == 7 ? "Brass" : g == 8 ? "Reed" : g == 9 ? "Pipe"
+  : g == 10 ? "Synth Lead" : g == 11 ? "Synth Pad" : g == 12 ? "Synth Effects" : g == 13 ? "Ethnic"
+  : g == 14 ? "Percussive" : g == 15 ? "Sound Effects" : "Drum kits";
+);
+function gbf_pg_drum(i) ( gb_drum_sec > 0 && (GB_PRG + i * 5)[0] == gb_drum_sec; );
+function gbf_pg_group(i) ( gbf_pg_drum(i) ? 16 : ((GB_PRG + i * 5)[1] / 8) | 0; );
+// the family tile a bank's program files under (the owner, 2026-11-05: "the side panel browser don't have the
+// categories for the GM library"): by its GM group, a few by number; the kits under Drums, a kit with "808" in its name
+// under 808s; the sound effects under Other (12: ALL INSTRUMENTS only). A bank that is not GM gets these too -- Gumbo
+// is a GM player, its banks are GM SoundFonts.
+function gbf_pg_tile(i) local(p, g) (
+  gbf_pg_drum(i) ? ( gb_prog_name(i); matchi("*808*", #gb_ls) ? 1 : 0; )
+  : (
+    p = (GB_PRG + i * 5)[1]; g = (p / 8) | 0;
+    g == 0 ? ( p == 4 || p == 5 || p == 7 ? 4 : 3 )            // pianos; the electric pianos and the clavinet
+    : g <= 2 ? ( p == 22 ? 9 : 3 )                               // mallets and organs; the harmonica
+    : g == 3 ? 10 : g == 4 ? 2                                   // guitars; basses
+    : g == 5 ? ( p == 46 ? 10 : p == 47 ? 0 : 7 )                // strings; the harp; the timpani
+    : g == 6 ? ( p >= 52 && p <= 54 ? 11 : 7 )                   // ensembles; the choirs
+    : g == 7 ? 8 : g <= 9 ? 9 : g == 10 ? 6 : g <= 12 ? 5        // brass; reeds and pipes; leads; pads and effects
+    : g == 13 ? ( p == 109 || p == 111 ? 9 : p == 110 ? 7 : 10 ) // ethnic: the bagpipe and shanai, the fiddle, the plucked
+    : g == 14 ? 0 : 12;                                          // percussive; sound effects
+  );
+);
+GBF_PGFAM = 1755000;                 // 512 -> 1755512: entry i's tile (rebuilt with GBF_PGORD, once per finished load; after GBF_KNM's 1754556)
+GBF_PGMATCH = 1756000;               // 512 -> 1756512: does entry i's name match the search (rebuilt when the search or the load changes)
+gbf_pgm_q = -1; gbf_pgm_gen = -1; gbf_pg_followed = -1; gbf_pg_at = -1;
+function gbf_pg_match_build() local(i) (
+  gb_ready && (gbf_pgm_q != gbf_q_gen || gbf_pgm_gen != gb_load_gen) ? (
+    gbf_pgm_q = gbf_q_gen; gbf_pgm_gen = gb_load_gen; i = 0;
+    loop(gb_nprg, gb_prog_name(i); GBF_PGMATCH[i] = strlen(#gbf_qp) <= 2 || matchi(#gbf_qp, #gb_ls); i += 1; );
+  );
+);
+// is entry i in the side list now: the search's matches, else the picked tile's programs, else all
+function gbf_pg_shown(i) ( strlen(#gbf_q) > 0 ? GBF_PGMATCH[i] : gbf_cat < 0 || GBF_PGFAM[i] == gbf_cat; );
+// the bank's programs in menu order (2026-11-05, the owner: a variation sits beside its main program): by program
+// number, the kits last, each number's entries in file order (the main bank, then the variations by bank). The menus,
+// the < > steps and the browser rows walk it. Rebuilt once per finished load: GBF_PGORD[k] = an entry of GB_PRG.
+GBF_PGORD = 1753000;                 // 512 -> 1753512 (after gb_sfz's GB_PRG, in the gap before GBF_IDX_BASE)
+gbf_pgord_gen = -1;
+function gbf_pg_order() local(k, key, i, q) (
+  gb_ready && (gbf_pgord_gen != gb_load_gen || gbf_pgord_n != gb_nprg) ? (
+    gbf_pgord_gen = gb_load_gen; gbf_pgord_n = gb_nprg; k = 0; key = 0;
+    loop(256,
+      i = 0;
+      loop(gb_nprg,
+        q = GB_PRG + i * 5;
+        (q[0] == gb_drum_sec && gb_drum_sec > 0 ? 128 : 0) + q[1] == key ? ( GBF_PGORD[k] = i; k += 1; );
+        i += 1;
+      );
+      key += 1;
+    );
+    i = 0; loop(gb_nprg, GBF_PGFAM[i] = gbf_pg_tile(i); i += 1; );   // and each entry's tile, for the side list
+  );
+);
+// play entry i of GB_PRG: slider 89 + its bank in slider 90 (every channel takes it, gb_prog_apply). The display's box
+// and list, the browser rows
 function gbf_prog_pick(i) local(q) (
   i >= 0 && i < gb_nprg ? (
     q = GB_PRG + i * 5;
     slider89 = (q[0] == gb_drum_sec && gb_drum_sec > 0 ? 128 : 0) + q[1]; slider_automate(slider89);
+    slider90 = gbf_pg_bank(i); slider_automate(slider90);
     gb_prog_req += 1;                 // even the same pick again: MIDI may have moved the channels since
   );
 );
 // the display's < > (and the wheel over it): the bank's next / previous entry, round the ends (not in the bank: > the first)
-function gbf_prog_step(d) (
-  gb_nprg > 0 ? gbf_prog_pick(gbf_pg_i < 0 ? (d > 0 ? 0 : gb_nprg - 1) : (gbf_pg_i + d + gb_nprg) % gb_nprg);
+function gbf_prog_step(d) local(k, p) (
+  gb_nprg > 0 ? (
+    gbf_pg_order();
+    p = -1; k = 0; loop(gb_nprg, GBF_PGORD[k] == gbf_pg_i ? p = k; k += 1; );
+    gbf_prog_pick(GBF_PGORD[p < 0 ? (d > 0 ? 0 : gb_nprg - 1) : (p + d + gb_nprg) % gb_nprg]);
+  );
+);
+// a bank's program box: < PROGRAM n  Name ▾ > at (x0, y0), up to wmax wide; its place stays in gbf_pg_x/y/w/h
+// (gbf_pg_a = each arrow's width; the clicks: gb_face_p2 gbf_prog_click). Drawn by the display and by its folded bar.
+function gbf_prog_box(x0, y0, wmax) local(s, k, bx, bw, c, v, bh) (
+  s = gbf_s;
+  gbf_prog_cur();
+  gbf_pg_x = x0; gbf_pg_y = y0;
+  gbf_pg_h = max(24 * s, 13 * s * gbf_tk + 10 * s); gbf_pg_w = max(gbf_pg_h * 4, min(380 * s, wmax));
+  gbf_pg_a = gbf_pg_h;
+  gbf_scr(0.04, 0.03, 0.03, 1); gfx_rect(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h);
+  gbf_scr(0.55, 0.36, 0.21, 1); gbf_box(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h);
+  // the two arrow cells, lit under the mouse
+  k = 0;
+  loop(2,
+    bx = k == 0 ? gbf_pg_x : gbf_pg_x + gbf_pg_w - gbf_pg_a;
+    gbf_hit(bx, gbf_pg_y, gbf_pg_a, gbf_pg_h) && !gbf_menu_block ? gbf_scr(0.36, 0.24, 0.15, 1) : gbf_scr(0.20, 0.14, 0.10, 1);
+    gfx_rect(bx + 1, gbf_pg_y + 1, gbf_pg_a - 2, gbf_pg_h - 2);
+    gbf_scr(1, 0.69, 0.40, 1); c = bx + gbf_pg_a * 0.5; v = gbf_pg_y + gbf_pg_h * 0.5; bw = gbf_pg_h * 0.16;
+    k == 0 ? gfx_triangle(c - bw, v, c + bw * 0.8, v - bw * 1.3, c + bw * 0.8, v + bw * 1.3)
+           : gfx_triangle(c + bw, v, c - bw * 0.8, v - bw * 1.3, c - bw * 0.8, v + bw * 1.3);
+    k += 1;
+  );
+  // the name cell: PROGRAM 46 (small), the name (large), a small ▾ for the list
+  bx = gbf_pg_x + gbf_pg_a; bw = gbf_pg_w - 2 * gbf_pg_a;
+  gbf_hit(bx, gbf_pg_y, bw, gbf_pg_h) && !gbf_menu_block ? ( gbf_scr(0.16, 0.11, 0.08, 1); gfx_rect(bx, gbf_pg_y + 1, bw, gbf_pg_h - 2); );
+  gbf_font(max(7, floor(9 * s)), 'b'); gbf_scr(0.79, 0.54, 0.35, 1);
+  c = gbf_pg_i >= 0 ? gbf_pg_bank(gbf_pg_i) : 0;   // a variation names its bank
+  c > 0 ? sprintf(#gbf_tmp, "PROGRAM %d  BANK %d", gbf_pg_p + 1, c)
+        : sprintf(#gbf_tmp, "%s %d", gbf_pg_kit ? "KIT" : "PROGRAM", gbf_pg_p + 1);
+  gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_);
+  gfx_x = bx + 8 * s; gfx_y = gbf_pg_y + (gbf_pg_h - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp);
+  c = gfx_x + 8 * s;
+  gbf_pg_i >= 0 ? gb_prog_name(gbf_pg_i) : strcpy(#gb_ls, "(not in this set)");
+  gbf_font(max(9, floor(13 * s)), 'b'); gbf_scr(1, 0.69, 0.40, 1);
+  gfx_measurestr(#gb_ls, gbf_tw, gbf_th_);
+  gfx_x = c; gfx_y = gbf_pg_y + (gbf_pg_h - gbf_th_) * 0.5;
+  gfx_drawstr(#gb_ls, 0, bx + bw - 16 * s, gbf_pg_y + gbf_pg_h);
+  c = bx + bw - 9 * s; v = gbf_pg_y + gbf_pg_h * 0.5; bh = 3.5 * s;
+  gbf_scr(0.79, 0.54, 0.35, 1); gfx_triangle(c - bh, v - bh * 0.6, c + bh, v - bh * 0.6, c, v + bh * 0.8);
+);
+// the display folded to a bar (the owner, 2026-11-05: "can we make the lcd collapsable?"): the name, a bank's program
+// box, else the status line; the page below takes the room. slider93 holds the state; gbf_display_fold_btn is the
+// chevron at the display's top right that flips it, drawn over either form.
+function gbf_display_bar(x, y, w, h) local(s, fs, bx, bh) (
+  s = gbf_s;
+  gbf_scr(0.08, 0.07, 0.06, 1); gfx_rect(x, y, w, h);
+  gbf_scr(0.23, 0.16, 0.12, 1); gbf_box(x, y, w, h);
+  gbf_name(); gbf_status();
+  fs = max(10, floor(14 * s));
+  gbf_font(fs, 'b'); gbf_scr(1, 0.69, 0.40, 1);
+  gfx_x = x + 12 * s; gfx_y = y + (h - fs) * 0.5;
+  strlen(#gb_want) ? gfx_drawstr(#gbf_name, 0, x + w * 0.3, y + h) : gfx_drawstr("GUMBO");
+  bx = max(gfx_x + 14 * s, x + w * 0.3);
+  gbf_pg_h = 0; gbf_chip_y = -1000;
+  gb_ready && gb_nprg > 0 ? (
+    bh = max(24 * s, 13 * s * gbf_tk + 10 * s);
+    gbf_prog_box(bx, y + (h - bh) * 0.5, w * 0.42);
+  ) : (
+    gbf_font(max(9, floor(11 * s)), 0); gbf_warn ? gbf_scr(1, 0.55, 0.3, 1) : gbf_scr(0.79, 0.54, 0.35, 1);
+    gfx_x = bx; gfx_y = y + (h - 11 * s) * 0.5; gfx_drawstr(#gbf_st, 0, x + w - 40 * s, y + h);
+  );
+);
+function gbf_display_fold_btn(x, y, w) local(s, bx, by, bs, hot, cx, cy) (
+  s = gbf_s; bs = 16 * s; bx = x + w - bs - 6 * s; by = y + 6 * s;
+  hot = !gbf_menu_block && gbf_hit(bx, by, bs, bs);
+  gbf_scr(hot ? 0.36 : 0.20, hot ? 0.24 : 0.14, hot ? 0.15 : 0.10, 1); gfx_rect(bx, by, bs, bs);
+  gbf_scr(1, 0.69, 0.40, 1); cx = bx + bs * 0.5; cy = by + bs * 0.5;
+  slider93 >= 0.5 ? gfx_triangle(cx - 4 * s, cy + 2 * s, cx + 4 * s, cy + 2 * s, cx, cy - 2 * s)
+                  : gfx_triangle(cx - 4 * s, cy - 2 * s, cx + 4 * s, cy - 2 * s, cx, cy + 2 * s);
+  lmb_down && hot ? ( lmb_down = 0; slider93 = slider93 >= 0.5 ? 0 : 1; slider_automate(slider93); );
 );
 function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch, fr, step, c, i, j, a, b, v, kx, kw, n, lo, hi, nb, bl, bh, cnt, k, bx, bw, seg, db, pk, gn)
 (
@@ -390,39 +537,8 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
   gbf_pg_h = 0;
   gbf_chip_y = y + 12 * s + fs * gbf_tk + 22 * s;   // the playing-style chips (gb_face_p2): under the box when there is one
   gb_ready && gb_nprg > 0 ? (
-    gbf_prog_cur();
-    gbf_pg_x = x + 16 * s; gbf_pg_y = gfx_y + 16 * s;
-    gbf_pg_h = max(24 * s, 13 * s * gbf_tk + 10 * s); gbf_pg_w = max(gbf_pg_h * 4, min(380 * s, x + w * 0.5 - gbf_pg_x));
-    gbf_pg_a = gbf_pg_h;
+    gbf_prog_box(x + 16 * s, gfx_y + 16 * s, w * 0.5 - 16 * s);
     gbf_chip_y = gbf_pg_y + gbf_pg_h + 6 * s;
-    gbf_scr(0.04, 0.03, 0.03, 1); gfx_rect(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h);
-    gbf_scr(0.55, 0.36, 0.21, 1); gbf_box(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h);
-    // the two arrow cells, lit under the mouse
-    k = 0;
-    loop(2,
-      bx = k == 0 ? gbf_pg_x : gbf_pg_x + gbf_pg_w - gbf_pg_a;
-      gbf_hit(bx, gbf_pg_y, gbf_pg_a, gbf_pg_h) && !gbf_menu_block ? gbf_scr(0.36, 0.24, 0.15, 1) : gbf_scr(0.20, 0.14, 0.10, 1);
-      gfx_rect(bx + 1, gbf_pg_y + 1, gbf_pg_a - 2, gbf_pg_h - 2);
-      gbf_scr(1, 0.69, 0.40, 1); c = bx + gbf_pg_a * 0.5; v = gbf_pg_y + gbf_pg_h * 0.5; bw = gbf_pg_h * 0.16;
-      k == 0 ? gfx_triangle(c - bw, v, c + bw * 0.8, v - bw * 1.3, c + bw * 0.8, v + bw * 1.3)
-             : gfx_triangle(c + bw, v, c - bw * 0.8, v - bw * 1.3, c - bw * 0.8, v + bw * 1.3);
-      k += 1;
-    );
-    // the name cell: PROGRAM 46 (small), the name (large), a small ▾ for the list
-    bx = gbf_pg_x + gbf_pg_a; bw = gbf_pg_w - 2 * gbf_pg_a;
-    gbf_hit(bx, gbf_pg_y, bw, gbf_pg_h) && !gbf_menu_block ? ( gbf_scr(0.16, 0.11, 0.08, 1); gfx_rect(bx, gbf_pg_y + 1, bw, gbf_pg_h - 2); );
-    gbf_font(max(7, floor(9 * s)), 'b'); gbf_scr(0.79, 0.54, 0.35, 1);
-    sprintf(#gbf_tmp, "%s %d", gbf_pg_kit ? "KIT" : "PROGRAM", gbf_pg_p + 1);
-    gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_);
-    gfx_x = bx + 8 * s; gfx_y = gbf_pg_y + (gbf_pg_h - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp);
-    c = gfx_x + 8 * s;
-    gbf_pg_i >= 0 ? gb_prog_name(gbf_pg_i) : strcpy(#gb_ls, "(not in this set)");
-    gbf_font(max(9, floor(13 * s)), 'b'); gbf_scr(1, 0.69, 0.40, 1);
-    gfx_measurestr(#gb_ls, gbf_tw, gbf_th_);
-    gfx_x = c; gfx_y = gbf_pg_y + (gbf_pg_h - gbf_th_) * 0.5;
-    gfx_drawstr(#gb_ls, 0, bx + bw - 16 * s, gbf_pg_y + gbf_pg_h);
-    c = bx + bw - 9 * s; v = gbf_pg_y + gbf_pg_h * 0.5; bh = 3.5 * s;
-    gbf_scr(0.79, 0.54, 0.35, 1); gfx_triangle(c - bh, v - bh * 0.6, c + bh, v - bh * 0.6, c, v + bh * 0.8);
     gbf_font(max(9, floor(11 * s)), 0);
     gfx_y = gbf_pg_y + gbf_pg_h - 10 * s;   // a "sounds left out" line comes 14 below this: just under the box
   );
@@ -486,7 +602,7 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
     bl = rk_piano_is_black(n);
     gbf_scr(bl ? 0.16 : 0.35, bl ? 0.12 : 0.25, bl ? 0.09 : 0.19, 1);
     gfx_rect(kx + (n - lo) * bw, y + 26 * s + d, max(1, bw - 1), bl ? 12 * s : 18 * s);
-    gb_ready && gbf_rec_gen == gb_load_gen ? ( GBF_REC[n] ? ( gbf_scr(1, 0.69, 0.40, 1); gfx_circle(kx + (n - lo + 0.5) * bw, y + 50 * s + d, max(1.5, 2 * s), 1); ); );
+    gb_ready && gbf_rec_gen == gbf_pgk ? ( GBF_REC[n] ? ( gbf_scr(1, 0.69, 0.40, 1); gfx_circle(kx + (n - lo + 0.5) * bw, y + 50 * s + d, max(1.5, 2 * s), 1); ); );
     gb_ready && n == gb_last_note ? ( gbf_scr(1, 0.48, 0.24, 1); gfx_rect(kx + (n - lo) * bw, y + 56 * s + d, max(1, bw - 1), 6 * s); );
     n += 1;
   );
@@ -536,25 +652,71 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
   );
 );
 
-// recorded-notes cache (rebuilt once per load)
+// recorded-notes dots and each key's fixed state, from the playing instrument's regions (rebuilt when it changes):
+// recorded = an attack region has its root on the key; playable = some attack region spans it; keyswitch = inside a
+// keyswitch range
 function gbf_rec_build() local(n, i, r) (
-  gb_ready && gbf_rec_gen != gb_load_gen ? (
-    n = 0; loop(128, GBF_REC[n] = gbf_recorded(n); n += 1; );
-    // each key's fixed state: playable (some attack region spans it), keyswitch (inside a keyswitch range)
-    memset(GBF_KST, 0, 128);
+  gb_ready && gbf_rec_gen != gbf_pgk ? (
+    memset(GBF_REC, 0, 128); memset(GBF_KST, 0, 128);
     i = 0;
     loop(gb_nreg,
       r = GB_REG + i * GB_RS;
-      r[GBR_TRIG] == GB_TR_ATTACK && r[GBR_SMP] != GB_SILENCE ? (
-        n = max(0, r[GBR_LOKEY] | 0); loop(max(0, min(127, r[GBR_HIKEY] | 0) - n + 1), GBF_KST[n] |= RKP_RANGE; n += 1; );
-      );
-      r[GBR_SWLO] >= 0 && r[GBR_SWHI] >= r[GBR_SWLO] ? (
-        n = r[GBR_SWLO] | 0; loop(min(127, r[GBR_SWHI] | 0) - n + 1, GBF_KST[n] = RKP_KS; n += 1; );
+      gbf_in_prog(r) ? (
+        r[GBR_TRIG] == GB_TR_ATTACK && r[GBR_SMP] != GB_SILENCE ? (
+          n = max(0, min(127, r[GBR_KEYC] | 0)); r[GBR_SMP] >= 0 ? GBF_REC[n] = 1;
+          n = max(0, r[GBR_LOKEY] | 0); loop(max(0, min(127, r[GBR_HIKEY] | 0) - n + 1), GBF_KST[n] |= RKP_RANGE; n += 1; );
+        );
+        r[GBR_SWLO] >= 0 && r[GBR_SWHI] >= r[GBR_SWLO] ? (
+          n = r[GBR_SWLO] | 0; loop(min(127, r[GBR_SWHI] | 0) - n + 1, GBF_KST[n] = RKP_KS; n += 1; );
+        );
       );
       i += 1;
     );
-    gbf_rec_gen = gb_load_gen;
+    gbf_rec_gen = gbf_pgk;
   );
+);
+// the playing instrument's key names: a bank's kit from its own "// key_name" entries (GB_KN); else the file's
+// "// label_key" names -- all of them for an ordinary kit, only the keys this program plays for an older bank file.
+// GBF_KNM[n * 2] = the name's offset in GB_LCH, [n * 2 + 1] its length (0 = none); gbf_nkn = how many keys are named
+GBF_KNM = 1754300;                   // 128 x 2 -> 1754556 (the gap before GBF_IDX_BASE)
+gbf_nkn = 0; gbf_knm_gen = -1;
+function gbf_names_build() local(n, i, e) (
+  gb_ready && gbf_knm_gen != gbf_pgk ? (
+    gbf_knm_gen = gbf_pgk; memset(GBF_KNM, 0, 256); gbf_nkn = 0;
+    gb_nprg > 0 && gbf_pg_kit ? (
+      i = 0;
+      loop(gb_nkn,
+        e = GB_KN + i * 5;
+        e[0] == gbf_pg_sec && e[1] == gbf_pg_p && GBF_KNM[e[2] * 2 + 1] == 0 ? (
+          GBF_KNM[e[2] * 2] = e[3]; GBF_KNM[e[2] * 2 + 1] = e[4]; gbf_nkn += 1;
+        );
+        i += 1;
+      );
+    );
+    gbf_nkn == 0 && gb_nkey > 0 && (gb_nprg == 0 || gbf_pg_kit) ? (
+      n = 0;
+      loop(128,
+        GB_KLB[n * 2 + 1] > 0 && (gb_nprg == 0 || (GBF_KST[n] & RKP_RANGE)) ? (
+          GBF_KNM[n * 2] = GB_KLB[n * 2]; GBF_KNM[n * 2 + 1] = GB_KLB[n * 2 + 1]; gbf_nkn += 1;
+        );
+        n += 1;
+      );
+    );
+  );
+);
+// key n's name (the playing instrument's) into #gb_ls; returns its length
+function gbf_key_name(n) local(p, k) (
+  #gb_ls = "";
+  n >= 0 && n <= 127 && GBF_KNM[n * 2 + 1] > 0 ? (
+    p = GB_LCH + GBF_KNM[n * 2];
+    k = 0; loop(GBF_KNM[n * 2 + 1], sprintf(#gb_lsc, "%c", p[k]); strcat(#gb_ls, #gb_lsc); k += 1; );
+  );
+  strlen(#gb_ls);
+);
+// once a frame, before anything that draws the instrument: which program plays, and the tables built from it
+function gbf_prog_sync() (
+  gb_ready ? ( gbf_prog_cur(); gbf_pgk = gb_load_gen * 65536 + gbf_pg_sec * 128 + gbf_pg_p; ) : gbf_pgk = -1;
+  gbf_rec_build(); gbf_names_build(); gbf_range();
 );
 // the keyboard's colours and this frame's key states: the family colour tints the playable keys (the owner's
 // choice, 2026-10-30), keyswitches pink with the active one bright, held keys lit whole in the accent
@@ -564,7 +726,7 @@ function gbf_keys_prep(lo, hi) local(n, e) (
          : rk_piano_colours(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.91, 0.28, 0.60);
   n = lo;
   loop(hi - lo + 1,
-    GBF_KSF[n] = (gb_ready && gbf_rec_gen == gb_load_gen ? GBF_KST[n] : 0) | (GB_NTA[n] ? RKP_HELD : 0)
+    GBF_KSF[n] = (gb_ready && gbf_rec_gen == gbf_pgk ? GBF_KST[n] : 0) | (GB_NTA[n] ? RKP_HELD : 0)
                  | (gb_ready && n == gb_sw_cur && (GBF_KST[n] & RKP_KS) ? RKP_KSON : 0);
     n += 1;
   );
@@ -590,6 +752,184 @@ function gbf_star(cx, cy, r, filled) local(i, a, x0, y0, x1, y1, xi, yi) (
 );
 // the search, as a pattern for matchi (the typed text, wildcards and format marks taken out) -> GBF_MATCH per entry:
 // its name or its family's name holds the text, any case
+// ── a drum pad's family and icon from its name (the owner, 2026-11-05: "can we allow the pads to add icons the way
+// swing does. maybe even colors?" -> "Family colors. And yes change the icon and color"). Seven families, each a
+// colour: 0 kicks, 1 snares (rims, claps, sticks), 2 hats, 3 toms, 4 cymbals, 5 hand percussion, 6 the rest (clicks,
+// scratches, effects). The words are looked for in the pad's name in this order, the first found wins ("hat open"
+// before "hat", "ride" before "bell", "metronome" before "bell"); no word = family 6, the percussion icon. The icons
+// are the free EON track icons, Gumbo's own copies (gumbo_icons; the release script ships every name
+// gbf_pad_icon_name lists, so keep that list and the icon files together).
+GBF_PAD_NICON = 22;
+GBF_PICON_SLOT = 54;                 // gfx image slots 54..75 (52, 53 are the key-name images)
+gbf_picons_loaded = 0;
+function gbf_pad_icon_name(i) (
+  i == 0 ? "kick" : i == 1 ? "snare" : i == 2 ? "rimshot" : i == 3 ? "clap" : i == 4 ? "hihat" : i == 5 ? "open_hat"
+  : i == 6 ? "closed_hat" : i == 7 ? "tom" : i == 8 ? "floor_tom" : i == 9 ? "rack_tom" : i == 10 ? "crash" : i == 11 ? "ride"
+  : i == 12 ? "cymbal" : i == 13 ? "conga" : i == 14 ? "bongo" : i == 15 ? "shaker" : i == 16 ? "tambourine" : i == 17 ? "clave"
+  : i == 18 ? "woodblock" : i == 19 ? "triangle" : i == 20 ? "cowbell" : "percussion";
+);
+function gbf_pad_icons_load() local(i) (
+  i = 0;
+  loop(GBF_PAD_NICON,
+    sprintf(#gbf_tmp, "EON_Gumbo/gumbo_icons/%s.png", gbf_pad_icon_name(i));
+    gfx_loadimg(GBF_PICON_SLOT + i, #gbf_tmp) < 0 ? (
+      sprintf(#gbf_tmp, "track_icons/EON/%s.png", gbf_pad_icon_name(i)); gfx_loadimg(GBF_PICON_SLOT + i, #gbf_tmp); );
+    i += 1;
+  );
+  gbf_picons_loaded = 1;
+);
+GBF_PAD_NWORD = 54;
+function gbf_pad_word(k) (
+  k == 0 ? "kick" : k == 1 ? "bass drum" : k == 2 ? "snr" : k == 3 ? "snare" : k == 4 ? "rim" : k == 5 ? "clap" : k == 6 ? "stick"
+  : k == 7 ? "hat open" : k == 8 ? "hat closed" : k == 9 ? "hat foot" : k == 10 ? "hat half" : k == 11 ? "open hat" : k == 12 ? "closed hat"
+  : k == 13 ? "hihat" : k == 14 ? "hi hat" : k == 15 ? "hat" : k == 16 ? "flr" : k == 17 ? "floor" : k == 18 ? "rack" : k == 19 ? "tom"
+  : k == 20 ? "studio" : k == 21 ? "crsh" : k == 22 ? "crash" : k == 23 ? "ride" : k == 24 ? "china" : k == 25 ? "splash" : k == 26 ? "cym"
+  : k == 27 ? "reverse" : k == 28 ? "conga" : k == 29 ? "tumba" : k == 30 ? "quinto" : k == 31 ? "bongo" : k == 32 ? "cabasa"
+  : k == 33 ? "maracas" : k == 34 ? "shake" : k == 35 ? "sleigh" : k == 36 ? "tamb" : k == 37 ? "clave" : k == 38 ? "wood" : k == 39 ? "block"
+  : k == 40 ? "triangle" : k == 41 ? "cow" : k == 42 ? "agogo" : k == 43 ? "metronome" : k == 44 ? "bell" : k == 45 ? "guiro"
+  : k == 46 ? "quica" : k == 47 ? "cuica" : k == 48 ? "whistle" : k == 49 ? "castanet" : k == 50 ? "taiko" : k == 51 ? "timbale"
+  : k == 52 ? "scratch" : "perc";
+);
+function gbf_pad_wfam(k) ( k <= 1 ? 0 : k <= 6 ? 1 : k <= 15 ? 2 : k <= 20 ? 3 : k <= 27 ? 4 : k <= 42 ? 5 : k == 43 ? 6 : k <= 51 ? 5 : k == 52 ? 6 : 5; );
+function gbf_pad_wicon(k) (
+  k <= 1 ? 0 : k <= 3 ? 1 : k == 4 ? 2 : k == 5 ? 3 : k == 6 ? 2
+  : k == 7 || k == 10 || k == 11 ? 5 : k == 8 || k == 9 || k == 12 ? 6 : k <= 15 ? 4
+  : k == 16 || k == 17 ? 8 : k == 18 ? 9 : k <= 20 ? 7
+  : k <= 22 ? 10 : k == 23 ? 11 : k <= 27 ? 12
+  : k <= 30 ? 13 : k == 31 ? 14 : k <= 35 ? 15 : k == 36 ? 16 : k == 37 ? 17 : k <= 39 ? 18 : k == 40 ? 19 : k <= 42 ? 20
+  : k == 43 ? 21 : k == 44 ? 20 : 21;
+);
+// a family's colour -> gbf_pc_r/g/b (its own outputs: gbf_fc_* belong to the instrument families)
+function gbf_pad_fcol(f) (
+  f == 0 ? ( gbf_pc_r = 0.90; gbf_pc_g = 0.20; gbf_pc_b = 0.18; )      // kicks: red (the owner, 2026-11-05: "make the red color for the drum pads red")
+  : f == 1 ? ( gbf_pc_r = 0.96; gbf_pc_g = 0.80; gbf_pc_b = 0.24; )    // snares, rims, claps: yellow
+  : f == 2 ? ( gbf_pc_r = 0.25; gbf_pc_g = 0.80; gbf_pc_b = 0.88; )    // hats: cyan
+  : f == 3 ? ( gbf_pc_r = 0.38; gbf_pc_g = 0.56; gbf_pc_b = 0.95; )    // toms: blue
+  : f == 4 ? ( gbf_pc_r = 0.88; gbf_pc_g = 0.78; gbf_pc_b = 0.50; )    // cymbals: pale gold
+  : f == 5 ? ( gbf_pc_r = 0.38; gbf_pc_g = 0.80; gbf_pc_b = 0.44; )    // hand percussion: green
+  : ( gbf_pc_r = 0.68; gbf_pc_g = 0.56; gbf_pc_b = 0.88; );            // the rest: violet
+);
+GBF_PFAM = 1761000;                  // 128: a pad note's family (the playing kit's; rebuilt with the pads)
+GBF_PICON = 1761200;                 // 128: its icon (an index into gbf_pad_icon_name)
+GBF_PLOOK = 1761400;                 // 128 x 3: its hand-picked icon (-1 = automatic), family (-1 = automatic), own colour (r * 65536 + g * 256 + b, -1 = none) -> 1761784
+GBF_KCOL = 1762200;                  // 128 x 3: the keys' colours for rk_piano_key_colours (r < 0 = none) -> 1762584
+GBF_PCOL = 1762600;                  // 128 x 3: each pad's colour as drawn (its own, else its family's) -> 1762984
+gbf_pick_note = -1;                  // the pad whose look picker is open, or -1
+gbf_pick_for = -1; gbf_pick_h = 0; gbf_pick_s = 0; gbf_pick_v = 1; gbf_pick_drag = 0;   // the picker's wheel: the pad it holds, hue / saturation / brightness, a drag (1 ring, 2 square)
+// colours: h 0..360, s and v 0..1 -> gbf_cw_r/g/b; and back -> gbf_cw_h/s/v (the picker's wheel, the owner 2026-11-05)
+function gbf_hsv_rgb(h, s, v) local(i, f, p, q, t) (
+  h = h - floor(h / 360) * 360; i = floor(h / 60); f = h / 60 - i;
+  p = v * (1 - s); q = v * (1 - s * f); t = v * (1 - s * (1 - f));
+  i == 0 ? ( gbf_cw_r = v; gbf_cw_g = t; gbf_cw_b = p; ) : i == 1 ? ( gbf_cw_r = q; gbf_cw_g = v; gbf_cw_b = p; )
+  : i == 2 ? ( gbf_cw_r = p; gbf_cw_g = v; gbf_cw_b = t; ) : i == 3 ? ( gbf_cw_r = p; gbf_cw_g = q; gbf_cw_b = v; )
+  : i == 4 ? ( gbf_cw_r = t; gbf_cw_g = p; gbf_cw_b = v; ) : ( gbf_cw_r = v; gbf_cw_g = p; gbf_cw_b = q; );
+);
+function gbf_rgb_hsv(r, g, b) local(mx, mn, d) (
+  mx = max(r, max(g, b)); mn = min(r, min(g, b)); d = mx - mn;
+  gbf_cw_v = mx; gbf_cw_s = mx > 0 ? d / mx : 0;
+  gbf_cw_h = d <= 0 ? 0 : mx == r ? 60 * ((g - b) / d) : mx == g ? 60 * (2 + (b - r) / d) : 60 * (4 + (r - g) / d);
+  gbf_cw_h < 0 ? gbf_cw_h += 360;
+);
+function gbf_rgb_pack(r, g, b) ( (max(0, min(255, r * 255 + 0.5)) | 0) * 65536 + (max(0, min(255, g * 255 + 0.5)) | 0) * 256 + (max(0, min(255, b * 255 + 0.5)) | 0); );
+function gbf_rgb_unpack(c) ( gbf_cw_r = floor(c / 65536) / 255; gbf_cw_g = (floor(c / 256) % 256) / 255; gbf_cw_b = (c % 256) / 255; );
+// "rrggbb" in #gbf_fld -> a packed colour, or -1
+function gbf_hex_col() local(i, c, v, k) (
+  v = 0; k = 1; i = 0;
+  strlen(#gbf_fld) == 6 ? (
+    loop(6,
+      c = str_getchar(#gbf_fld, i);
+      c >= '0' && c <= '9' ? c -= '0' : c >= 'a' && c <= 'f' ? c = c - 'a' + 10 : c >= 'A' && c <= 'F' ? c = c - 'A' + 10 : k = 0;
+      v = v * 16 + c; i += 1;
+    );
+  ) : k = 0;
+  k ? v : -1;
+);
+// pad note n's family and icon from its name (gbf_key_name -> #gb_ls)
+function gbf_pad_class(n) local(k, f, ic) (
+  gbf_key_name(n); f = 6; ic = GBF_PAD_NICON - 1; k = 0;
+  while (k < GBF_PAD_NWORD) (
+    sprintf(#gbf_tmp, "*%s*", gbf_pad_word(k));
+    matchi(#gbf_tmp, #gb_ls) ? ( f = gbf_pad_wfam(k); ic = gbf_pad_wicon(k); k = GBF_PAD_NWORD; ) : k += 1;
+  );
+  GBF_PFAM[n] = f; GBF_PICON[n] = ic;
+);
+// the line's path (its first p0 characters) is index entry e's, any case
+function gbf_look_same(e, p0) local(p, k, a, b, ok) (
+  ok = e[5] == p0; p = GBF_ICH_BASE + e[4]; k = 0;
+  while (ok && k < p0) (
+    a = p[k]; b = str_getchar(#gbf_ln, k, 'cu');
+    a >= 65 && a <= 90 ? a += 32; b >= 65 && b <= 90 ? b += 32;
+    a != b ? ok = 0; k += 1;
+  );
+  ok;
+);
+// EON_Gumbo/pad_looks.txt (the Gumbo helper keeps it): "path|section|program|note|icon|family" a line -- the path as
+// the browser lists write it, icon a name from gbf_pad_icon_name ("" = automatic), family 0..6 (-1 = automatic). The
+// playing kit's lines -> GBF_PLOOK; an instrument that is not in the library list has none.
+function gbf_looks_load() local(h, k, n, cur, e, i, c, cuts, p0, p1, p2, p3, p4, p5, sec, prog, note, fam, ic, col) (
+  n = 0; loop(128, GBF_PLOOK[n * 3] = -1; GBF_PLOOK[n * 3 + 1] = -1; GBF_PLOOK[n * 3 + 2] = -1; n += 1; );
+  cur = gbf_idx_current_cached();
+  cur >= 0 ? (
+    e = GBF_IDX_BASE + cur * GBF_IS;
+    h = file_open("EON_Gumbo/pad_looks.txt");
+    h >= 0 ? (
+      file_text(h) ? (
+        k = 0;
+        while (file_avail(h) > 0 && k < 4096) (
+          file_string(h, #gbf_ln); n = strlen(#gbf_ln);
+          while (n > 0 && (str_getchar(#gbf_ln, n - 1) == 10 || str_getchar(#gbf_ln, n - 1) == 13)) ( n -= 1; str_setlen(#gbf_ln, n); );
+          cuts = 0; i = 0; p5 = -1;    // six fields, a seventh (an own colour, "rrggbb") since the wheel
+          while (i < n && cuts < 6) ( str_getchar(#gbf_ln, i) == '|' ? ( cuts == 0 ? p0 = i : cuts == 1 ? p1 = i : cuts == 2 ? p2 = i : cuts == 3 ? p3 = i : cuts == 4 ? p4 = i : p5 = i; cuts += 1; ); i += 1; );
+          cuts >= 5 && gbf_look_same(e, p0) ? (
+            gbf_idx_field(p0 + 1, p1); sec = 0; match("%d", #gbf_fld, sec);
+            gbf_idx_field(p1 + 1, p2); prog = 0; match("%d", #gbf_fld, prog);
+            gbf_idx_field(p2 + 1, p3); note = -1; match("%d", #gbf_fld, note);
+            sec == gbf_pg_sec && prog == gbf_pg_p && note >= 0 && note <= 127 ? (
+              gbf_idx_field(p3 + 1, p4); ic = -1; c = 0;
+              strlen(#gbf_fld) > 0 ? loop(GBF_PAD_NICON, ic < 0 && stricmp(#gbf_fld, gbf_pad_icon_name(c)) == 0 ? ic = c; c += 1; );
+              gbf_idx_field(p4 + 1, p5 >= 0 ? p5 : n); fam = -1; match("%d", #gbf_fld, fam);
+              col = -1; p5 >= 0 ? ( gbf_idx_field(p5 + 1, n); col = gbf_hex_col(); );
+              GBF_PLOOK[note * 3] = ic; GBF_PLOOK[note * 3 + 1] = fam >= 0 && fam <= 6 ? fam : -1; GBF_PLOOK[note * 3 + 2] = col;
+            );
+          );
+          k += 1;
+        );
+      );
+      file_close(h);
+    );
+  );
+);
+// the pad's look to the helper, for pad_looks.txt (4 = not in the library list: nowhere to keep it)
+function gbf_look_send(n) local(cur, e, c) (
+  cur = gbf_idx_current_cached();
+  cur >= 0 ? (
+    e = GBF_IDX_BASE + cur * GBF_IS; gbf_idx_str(e, 1);
+    c = GBF_PLOOK[n * 3 + 2];
+    c >= 0 ? sprintf(#gbf_tmp, "%s|%d|%d|%d|%s|%d|%02x%02x%02x", #gbf_es, gbf_pg_sec, gbf_pg_p, n,
+                     GBF_PLOOK[n * 3] >= 0 ? gbf_pad_icon_name(GBF_PLOOK[n * 3]) : "", GBF_PLOOK[n * 3 + 1],
+                     floor(c / 65536), floor(c / 256) % 256, c % 256)
+           : sprintf(#gbf_tmp, "%s|%d|%d|%d|%s|%d", #gbf_es, gbf_pg_sec, gbf_pg_p, n,
+                     GBF_PLOOK[n * 3] >= 0 ? gbf_pad_icon_name(GBF_PLOOK[n * 3]) : "", GBF_PLOOK[n * 3 + 1]);
+    gbh_request_look(#gbf_tmp);
+  ) : gbh_err = 4;
+);
+// the pad's colour as drawn (GBF_PCOL, and the key's GBF_KCOL): its own colour when it has one, else its family's
+function gbf_pad_colour(n) (
+  GBF_PLOOK[n * 3 + 2] >= 0 ? ( gbf_rgb_unpack(GBF_PLOOK[n * 3 + 2]); gbf_pc_r = gbf_cw_r; gbf_pc_g = gbf_cw_g; gbf_pc_b = gbf_cw_b; )
+                            : gbf_pad_fcol(GBF_PFAM[n]);
+  GBF_PCOL[n * 3] = gbf_pc_r; GBF_PCOL[n * 3 + 1] = gbf_pc_g; GBF_PCOL[n * 3 + 2] = gbf_pc_b;
+  GBF_KCOL[n * 3] = gbf_pc_r; GBF_KCOL[n * 3 + 1] = gbf_pc_g; GBF_KCOL[n * 3 + 2] = gbf_pc_b;
+);
+// a pick in the pad's look picker: icon ic (-1 = automatic), family f (-1 = automatic), an own colour col (packed,
+// -1 = none); applied now, sent to the helper when `send` (a drag on the wheel sends once, on release)
+function gbf_look_set(n, ic, f, col, send) (
+  GBF_PLOOK[n * 3] = ic; GBF_PLOOK[n * 3 + 1] = f; GBF_PLOOK[n * 3 + 2] = col;
+  gbf_pad_class(n);
+  ic >= 0 ? GBF_PICON[n] = ic; f >= 0 ? GBF_PFAM[n] = f;
+  gbf_pad_colour(n);
+  send ? gbf_look_send(n);
+);
+
 function gbf_match_build() local(i, k, c, e) (
   gbf_q_built != gbf_q_gen ? (
     gbf_q_built = gbf_q_gen;
@@ -627,9 +967,32 @@ function gbf_prog_row(j, x, cy, w, rh) local(s, q, on, hot, kit, nx) (
   gbf_font(max(8, floor(10 * s)), on ? 'b' : 0); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, on ? 1 : 0.85);
   gfx_measurestr(#gb_ls, gbf_tw, gbf_th_);
   gfx_x = nx; gfx_y = cy + (rh - 2 * s - gbf_th_) * 0.5; gfx_drawstr(#gb_ls, 0, x + w - 10 * s, cy + rh);
+  // (a variation's bank number used to follow its name, small and dim; dropped on the owner's word, 2026-11-05: "does
+  // it help anything?" -- the display's box still says PROGRAM n  BANK b for the one playing)
   lmb_down && hot ? ( lmb_down = 0; gbf_prog_pick(j); );
 );
-function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, row, n, ry, rh, vis, cur, f, ic, iw, ih, yb, sh, sx, sw, pg) (
+// a GM group's header between a bank's programs in the side list (the owner, 2026-11-05: the categories in the side
+// panel; "i thought the categories would be collapsible"): a chevron, the name, how many programs the tile or search
+// keeps; a click folds or unfolds it (gbf_pg_open, a bit a group; the playing program's group opens by itself)
+GBF_GCNT = 1762100;                  // 17: programs listed under each group now
+gbf_pg_og = -1; gbf_hdr_at = -1;     // the one open group (one at a time, so the headers fit the panel), its header's row
+function gbf_group_row(g, x, cy, w, rh, open, cnt) local(s, hot, cx, cy2) (
+  s = gbf_s;
+  hot = !gbf_menu_block && gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s);
+  hot ? ( gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 0.06); gfx_rect(x + 6 * s, cy, w - 12 * s, rh - 2 * s); );
+  gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 0.45); gfx_rect(x + 13 * s, cy, max(1, s), rh);
+  // the chevron: down when open, right when closed
+  cx = x + 22 * s; cy2 = cy + (rh - 2 * s) * 0.5;
+  gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, hot ? 1 : 0.8);
+  open ? gfx_triangle(cx - 3 * s, cy2 - 2 * s, cx + 3 * s, cy2 - 2 * s, cx, cy2 + 2 * s)
+       : gfx_triangle(cx - 2 * s, cy2 - 3 * s, cx + 2 * s, cy2, cx - 2 * s, cy2 + 3 * s);
+  sprintf(#gbf_tmp, "%s  (%d)", gbf_gm_fam(g), cnt);
+  gbf_font(max(7, floor(8 * s)), 'b'); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, hot ? 1 : 0.9);
+  gfx_measurestr(#gbf_tmp, gbf_tw, gbf_th_);
+  gfx_x = x + 30 * s; gfx_y = cy + (rh - 2 * s - gbf_th_) * 0.5; gfx_drawstr(#gbf_tmp, 0, x + w - 10 * s, cy + rh);
+  lmb_down && hot ? ( lmb_down = 0; gbf_pg_og = open ? -1 : g; );
+);
+function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, n, ry, rh, hrh, vis, cur, f, ic, iw, ih, yb, sh, sx, sw, pg, pgn, pgr, k, g, lg, qall, hdrs) (
   s = gbf_s;
   gfx_set(gbf_pn_r * 0.92, gbf_pn_g * 0.92, gbf_pn_b * 0.92, 1); gfx_rect(x, y, w, h);
   gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gfx_rect(x + w - 1, y, 1, h);
@@ -677,18 +1040,31 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, row, n, ry, r
   gfx_drawstr(strlen(#gbf_q) > 0 ? "SEARCH" : gbf_favonly && gbf_cat < 0 ? "FAVOURITES" : gbf_cat >= 0 ? gbf_fam_name(gbf_cat) : "ALL INSTRUMENTS");
   ry += 6 * s + 10 * s * gbf_tk; rh = max(24 * s, 11 * s * gbf_tk + 10 * s); vis = max(1, ((y + h - ry - 22 * s) / rh) | 0);
   cur = gbf_idx_current_cached();
-  // a loaded bank's programs list under its row (gbf_prog_row), one list row each
-  pg = cur >= 0 && gb_ready && gb_nprg > 1 && gbf_listed(cur) ? gb_nprg : 0;
-  pg > 0 ? gbf_prog_cur();
-  n = pg; i = 0; loop(gbf_idx_n, gbf_listed(i) ? n += 1; i += 1; );
+  // a loaded bank's programs list under its row (gbf_prog_row): those the picked tile files (GBF_PGFAM) or the search
+  // matches, every one with no tile; a GM group's label where the group changes (not while searching). The bank's own
+  // row shows whenever one of them does (the owner, 2026-11-05: the categories for the GM library)
+  pg = cur >= 0 && gb_ready && gb_nprg > 1 && (!gbf_favonly || GBF_FAV[cur]) ? gb_nprg : 0;
+  pgn = 0; pgr = 0;                  // programs the filter keeps; the rows they take (group headers; only the open group's programs)
+  hrh = floor(rh * 0.72);            // a group header's row, shorter than an instrument's: the 17 headers fit a window
+  // a search that hits the bank's own name ("gm" -> Gumbo GM) lists it whole, groups and all, as with no search (the
+  // owner, 2026-11-05: "what happened to all the categories?"); one that does not lists the programs it hits, flat
+  qall = pg > 0 && strlen(#gbf_q) > 0 && GBF_MATCH[cur];
+  hdrs = strlen(#gbf_q) == 0 || qall;
+  pg > 0 ? (
+    gbf_prog_cur(); gbf_pg_order(); gbf_pg_match_build();
+    g = 0; loop(17, GBF_GCNT[g] = 0; g += 1; );
+    j = 0; loop(pg, k = GBF_PGORD[j]; qall || gbf_pg_shown(k) ? ( pgn += 1; GBF_GCNT[gbf_pg_group(k)] += 1; ); j += 1; );
+    !hdrs ? pgr = pgn                // a search of program names: every match, no headers
+    : ( g = 0; loop(17, GBF_GCNT[g] > 0 ? ( pgr += 1; g == gbf_pg_og ? pgr += GBF_GCNT[g]; ); g += 1; ); );
+  );
+  n = pgr; i = 0; loop(gbf_idx_n, gbf_listed(i) || (i == cur && pgn > 0) ? n += 1; i += 1; );
   gbf_hit(x, ry, w, h - (ry - y)) && frame_wheel != 0 ? gbf_scroll -= frame_wheel;
-  gbf_scroll = max(0, min(gbf_scroll, n - vis));   // the wheel stops at the end of the list
-  n = 0; row = 0; i = 0;
+  gbf_scroll = max(0, min(gbf_scroll, n - vis));   // the wheel stops at the end of the list (vis counts full rows)
+  n = 0; i = 0; gbf_pg_at = -1; gbf_hdr_at = -1; cy = ry; yb = y + h - 22 * s;   // rows stack from ry down to yb
   loop(gbf_idx_n,
     e = GBF_IDX_BASE + i * GBF_IS;
-    gbf_listed(i) ? (
-      n >= gbf_scroll && row < vis ? (
-        cy = ry + row * rh;
+    gbf_listed(i) || (i == cur && pgn > 0) ? (
+      n >= gbf_scroll && cy + rh <= yb ? (
         i == cur ? ( gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.22); gfx_rect(x + 6 * s, cy, w - 12 * s, rh - 2 * s);
                      gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_rect(x + 6 * s, cy, 3 * s, rh - 2 * s); )
         : gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s) ? ( gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 0.06); gfx_rect(x + 6 * s, cy, w - 12 * s, rh - 2 * s); );
@@ -708,18 +1084,43 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, row, n, ry, r
         );
         // a click on the instrument already loaded (or loading) does nothing; after a failed load it tries again
         lmb_down && !gbf_menu_block && gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s) && (i != cur || gb_job == GB_J_FAILED) ? gbf_load_entry(i);
-        row += 1;
+        cy += rh;
       );
       n += 1;
-      i == cur && pg > 0 ? (
-        j = 0;
+      i == cur && pgn > 0 ? (
+        j = 0; lg = -1;                // in menu order: each variation beside its main program
         loop(pg,
-          n >= gbf_scroll && row < vis ? ( gbf_prog_row(j, x, ry + row * rh, w, rh); row += 1; );
-          n += 1; j += 1;
+          k = GBF_PGORD[j];
+          qall || gbf_pg_shown(k) ? (
+            g = gbf_pg_group(k);
+            hdrs && g != lg ? (
+              g == gbf_pg_og ? gbf_hdr_at = n;   // the open group's header row (a pick scrolls to it)
+              n >= gbf_scroll && cy + hrh <= yb ? ( gbf_group_row(g, x, cy, w, hrh, g == gbf_pg_og, GBF_GCNT[g]); cy += hrh; );
+              n += 1; lg = g;
+            );
+            !hdrs || g == gbf_pg_og ? (   // one group open at a time; the others keep their programs folded
+              k == gbf_pg_i ? gbf_pg_at = n;   // where the playing program sits (the list follows a pick, below)
+              n >= gbf_scroll && cy + rh <= yb ? ( gbf_prog_row(k, x, cy, w, rh); cy += rh; );
+              n += 1;
+            );
+          );
+          j += 1;
         );
       );
     );
     i += 1;
+  );
+  // the list follows a program picked elsewhere (the menu, the < > steps, MIDI): once per pick, its group opened
+  // (next pass: its rows are placed), then, when the program is out of view, scrolled so its group's header leads
+  // and the program shows (the owner, 2026-11-05: "it doesn't go to the actual instrument I select")
+  gbf_pg_i != gbf_pg_followed && gbf_pg_i >= 0 && pg > 0 ? (
+    g = gbf_pg_group(gbf_pg_i);
+    gbf_pg_og != g && hdrs ? gbf_pg_og = g
+    : (
+      gbf_pg_followed = gbf_pg_i;
+      gbf_pg_at >= 0 && (gbf_pg_at < gbf_scroll || gbf_pg_at >= gbf_scroll + vis) ?
+        gbf_scroll = max(0, max(gbf_hdr_at >= 0 ? gbf_hdr_at : 0, gbf_pg_at - vis + 2));
+    );
   );
   // no list at all = no sound package installed (ReaPack has no dependencies, so Gumbo says where the sounds are)
   gbf_idx_n == 0 ? ( gbf_font(max(8, floor(10 * s)), 0); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);

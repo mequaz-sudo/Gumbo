@@ -87,6 +87,33 @@ function gbh_request_fav(path) (
   );
 );
 
+// a pad's hand-picked icon / colour (2026-11-05): the helper keeps Data/EON_Gumbo/pad_looks.txt (8 = no helper to keep
+// it; the look holds for this session). The text: "path|section|program|note|icon|family" (gb_face gbf_look_send).
+GBH_KIND_LOOK = 3;
+// the face look saved as the default for new Gumbos (OPTIONS > USE AS DEFAULT, 2026-11-05): the helper keeps it and
+// publishes it in these cells (DEF_GEN last; 0 = none saved); a fresh Gumbo takes it once (gb_face_p2
+// gbf_defaults_take). The text: "typeface|size|screen|icons|colours". 15 = no helper to keep it; 16 = not kept.
+GBH_KIND_DEFAULTS = 4;
+GBH_DEF_GEN = 8; GBH_DEF_TYPE = 9; GBH_DEF_SIZE = 10; GBH_DEF_SCREEN = 11; GBH_DEF_ICONS = 12; GBH_DEF_COLS = 13;
+function gbh_request_defaults(text) (
+  gbh_state != GBH_ST_IDLE ? 0 : (
+    gbh_err = 0;
+    !gbh_running ? gbh_err = 15 : (
+      strcpy(#gbh_path, text); gbh_kind = GBH_KIND_DEFAULTS; gbh_state = GBH_ST_WAITLOCK; gbh_t = time_precise(); gbh_lock_seen_t = 0;
+    );
+    1;
+  );
+);
+function gbh_request_look(text) (
+  gbh_state != GBH_ST_IDLE ? 0 : (
+    gbh_err = 0;
+    !gbh_running ? gbh_err = 8 : (
+      strcpy(#gbh_path, text); gbh_kind = GBH_KIND_LOOK; gbh_state = GBH_ST_WAITLOCK; gbh_t = time_precise(); gbh_lock_seen_t = 0;
+    );
+    1;
+  );
+);
+
 function gbh_release() ( atomic_setifequal(gmem[GBH_BAND + GBH_LOCK], gbh_token, 0); );
 
 function gbh_tick() local(now, n, i, cur, st) (
@@ -119,6 +146,10 @@ function gbh_tick() local(now, n, i, cur, st) (
       gbh_release(); gbh_state = GBH_ST_IDLE;
       gbh_kind == GBH_KIND_FAV ? (
         st != 1 ? gbh_err = 6;                             // the file could not be written (the helper bumps LIBGEN on success)
+      ) : gbh_kind == GBH_KIND_LOOK ? (
+        st != 1 ? gbh_err = 9;                             // the pad look could not be written
+      ) : gbh_kind == GBH_KIND_DEFAULTS ? (
+        st != 1 ? gbh_err = 16 : gbh_def_t = time_precise();   // kept: OPTIONS says so for a moment
       ) : (
         // done -> load it; -4 = converted but the browser list could not be written: load it too, and say so
         (st == 1 || st == -4) && n > 0 ? gbh_loadpend = 1;

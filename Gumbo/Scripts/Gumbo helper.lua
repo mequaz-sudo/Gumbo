@@ -36,6 +36,7 @@ local res = r.GetResourcePath():gsub("\\", "/")
 local LIST = res .. "/Data/EON_Gumbo/library.txt"
 local IMPORTS = res .. "/Data/EON_Gumbo/Imported"
 local FAVS = res .. "/Data/EON_Gumbo/favourites.txt"
+local LOOKS = res .. "/Data/EON_Gumbo/pad_looks.txt"       -- the pads' hand-picked icons / colours (C.look_update)
 local B = C.BAND
 local function gr(i) return r.gmem_read(B + i) end
 local function gw(i, v) r.gmem_write(B + i, v) end
@@ -64,9 +65,32 @@ local function find_imports(root)
   walk(root)
   return out
 end
-local ENV = { mkdir = function(d) r.RecursiveCreateDirectory(d, 0) end, find_imports = find_imports, sf2 = SF2 }
+local ENV = { mkdir = function(d) r.RecursiveCreateDirectory(d, 0) end, find_imports = find_imports, sf2 = SF2,
+              probe = C.reaper_probe(r) }   -- (the length of an .ogg sample / an SF3's streams, through REAPER)
 -- (find_imports lists *.gumbo.txt; a conversion in progress is ".converting-*.gumbo.txt" in the imports ROOT, which
 -- holds no instruments -- walk skips it below)
+
+-- Gumbo opens embedded in the mixer strip (the owner, 2026-11-05: "gumbo should always open its embedd mcp view"):
+-- once per install path REAPER lists for Gumbo_ReaKit.jsfx (reaper-jsfx.ini), its reaper-fxoptions.ini [defcfg]
+-- line gets the mixer bit (C.embed_defaults_text; REAPER reads the file at every insert). A path done once is left
+-- as the user later sets it (the paths done: the EON_Gumbo "embed_paths" state, "|"-separated).
+local function embed_defaults()
+  local fh = io.open(res .. "/reaper-jsfx.ini", "rb"); local ini = fh and fh:read("a"); if fh then fh:close() end
+  if not ini then return end
+  local done = "|" .. (r.GetExtState("EON_Gumbo", "embed_paths") or "") .. "|"
+  local paths, seen = {}, {}
+  for p in ini:gmatch('NAME%s+"?([^"\r\n]-Gumbo_ReaKit%.jsfx)"?%s') do
+    if not seen[p] and not done:find("|" .. p .. "|", 1, true) then seen[p] = true; paths[#paths + 1] = p end
+  end
+  if #paths == 0 then return end
+  local opt = res .. "/reaper-fxoptions.ini"
+  fh = io.open(opt, "rb"); local txt = fh and fh:read("a"); if fh then fh:close() end
+  if txt == nil and r.file_exists(opt) then return end     -- locked for a moment: next start
+  local new, changed = C.embed_defaults_text(txt or "", paths)
+  if changed > 0 and not C.write_safely(opt, new) then return end
+  r.SetExtState("EON_Gumbo", "embed_paths", (done .. table.concat(paths, "|") .. "|"):gsub("^|+", ""):gsub("|+$", ""), true)
+end
+embed_defaults()
 
 local function answer(seq, token, status, regions, path, why)
   local cells = C.text_to_cells(path or "")
@@ -75,6 +99,16 @@ local function answer(seq, token, status, regions, path, why)
   gw(C.REP_REASON, why or C.WHY_NONE)
   for i = 1, #cells do gw(C.REP_PATH + i - 1, cells[i]) end
   gw(C.REP_SEQ, seq)                                     -- LAST: the reply is complete
+end
+
+-- The face look saved as the default for new Gumbos (OPTIONS > USE AS DEFAULT, 2026-11-05): kept in the EON_Gumbo
+-- "face_defaults" ext state, published in the band (DEF_* cells, DEF_GEN last) at each start and each save; a fresh
+-- Gumbo (no saved state, no look of its own yet) takes it once (gb_face_p2 gbf_defaults_take).
+local function publish_defaults(t)
+  local d = C.defaults_parse(t)
+  if not d then return end
+  gw(C.DEF_TYPE, d[1]); gw(C.DEF_SIZE, d[2]); gw(C.DEF_SCREEN, d[3]); gw(C.DEF_ICONS, d[4]); gw(C.DEF_COLS, d[5])
+  gw(C.DEF_GEN, gr(C.DEF_GEN) + 1)                       -- LAST: the set is complete
 end
 
 -- A request already answered (by an earlier run) is not answered again; one that came while no helper ran is.
@@ -100,9 +134,27 @@ local function poll()
     gw(C.LIBGEN, gr(C.LIBGEN) + 1)
     return answer(seq, token, C.ST_DONE)
   end
+  if kind == C.KIND_DEFAULTS then                         -- OPTIONS > USE AS DEFAULT: the face look for new Gumbos
+    local t = (len > 0 and len <= C.PATH_MAX) and C.cells_to_text(cells) or nil
+    if not (t and C.defaults_parse(t)) then return answer(seq, token, C.ERR_PATH) end
+    r.SetExtState("EON_Gumbo", "face_defaults", t, true)
+    publish_defaults(t)
+    return answer(seq, token, C.ST_DONE)
+  end
+  if kind == C.KIND_LOOK then                             -- a pad's hand-picked icon / colour: pad_looks.txt (no list change)
+    local line = (len > 0 and len <= C.PATH_MAX) and C.cells_to_text(cells) or nil
+    if not line then return answer(seq, token, C.ERR_PATH) end
+    local f = io.open(LOOKS, "rb"); local old = f and f:read("a"); if f then f:close() end
+    if old == nil and r.file_exists(LOOKS) then return answer(seq, token, C.ERR_LIST) end
+    local new = C.look_update(old or "", line)
+    if not new then return answer(seq, token, C.ERR_PATH) end
+    r.RecursiveCreateDirectory(res .. "/Data/EON_Gumbo", 0)
+    if not C.write_safely(LOOKS, new) then return answer(seq, token, C.ERR_LIST) end
+    return answer(seq, token, C.ST_DONE)
+  end
   if kind ~= C.KIND_IMPORT then return answer(seq, token, C.ERR_KIND) end
   local sfz = (len > 0 and len <= C.PATH_MAX) and C.cells_to_text(cells) or nil
-  if not sfz or not (sfz:lower():match("%.sfz$") or sfz:lower():match("%.sf2$")) then return answer(seq, token, C.ERR_PATH) end
+  if not sfz or not (sfz:lower():match("%.sfz$") or sfz:lower():match("%.sf[23]$")) then return answer(seq, token, C.ERR_PATH) end
   -- a converter error must not end the helper (Gumbo would wait for a reply that never comes): it is a failed import
   local okc, st, regions, out, _, why = pcall(C.import_one, G, X, ENV, sfz, IMPORTS, LIST)
   if not okc then st, regions, out, why = C.ERR_CONVERT, 0, nil, C.WHY_NOTHING end
@@ -199,6 +251,7 @@ local function dock_tick()
 end
 
 gw(C.PROTO, C.PROTO_VERSION)                             -- Gumbo: a helper of this protocol is here
+publish_defaults(r.GetExtState("EON_Gumbo", "face_defaults"))   -- the saved default look, for fresh Gumbos
 local function loop()
   local now = r.time_precise()
   if (tonumber(r.GetExtState(EXT, "stop")) or 0) > now0 then return end   -- asked to stop: atexit cleans up

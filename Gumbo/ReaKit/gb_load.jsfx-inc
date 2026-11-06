@@ -21,7 +21,7 @@
 // these globals; the host never runs both at once on purpose (a @serialize load first stops a @gfx job).
 
 @init
-GB_AUD = 4200000;                    // above the region table and its mods (gb_sfz: GB_REG .. 4112144)
+GB_AUD = 7250000;                    // above the region table and its mods (gb_sfz: GB_REG .. 7248576; was 6250000 before 2026-11-05)
 GB_AUD_END = 134000000;              // under maxmem = 134217728, proven backed (Research R3)
 GB_CHUNK = 524288;                   // cells per file_mem call (half the loop cap; file_mem itself has no cap)
 GB_PK_SCR = GB_AUD_END - GB_CHUNK;   // packed loads: each piece is read here as floats, then packed below it
@@ -130,6 +130,7 @@ function gb_job_step(cells, lines) local(k, p, nch, sr, items, n, left) (
         gb_nreg == 0 ? ( gb_err = GB_E_EMPTY; gb_job = GB_J_FAILED; )
         : gb_fmt_ver != 1 && gb_fmt_ver != 2 && gb_fmt_ver != 3 ? ( gb_err = GB_E_FORMAT; gb_job = GB_J_FAILED; )   // 2 = live controllers, 3 = a bank
         : ( gb_js = 0; gb_jpos = 0; gb_job = GB_J_SAMPLES;
+            gb_prog_index();             // each program's regions, so a note searches only those (gb_sfz)
             // too big for one cell a point (the header's MB = cells x 8 / 2^20, rounded to 0.1: a 1 % margin): pack it
             gb_pack = gb_hdr_mb * 131072 > (GB_AUD_END - GB_AUD) * 0.99 ? 1 : 0; );
       );

@@ -1,5 +1,5 @@
 -- Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
--- Gumbo - Add a library: pick any .sfz inside an SFZ library (or a SoundFont .sf2: that one file is added, unpacked
+-- Gumbo - Add a library: pick any .sfz inside an SFZ library (or a SoundFont .sf2 / .sf3: that one file is added, unpacked
 -- into the import folder as one instrument or one bank). Every instrument in that file's folder and the folders
 -- below it is converted into Gumbo's import folder (REAPER's Data/EON_Gumbo/Imported; the samples stay where they
 -- are) and added to Gumbo's browser, which open Gumbos pick up by themselves. A file another one pulls in with
@@ -14,7 +14,7 @@ local SF2 = dofile(dir .. "/gumbo_sf2.lua")
 local X = dofile(dir .. "/gumbo_index.lua")
 local C = dofile(dir .. "/gumbo_helper_core.lua")
 
-local ok, pick = r.GetUserFileNameForRead("", "Gumbo: pick any .sfz inside the library (or a .sf2 SoundFont) to add", "")
+local ok, pick = r.GetUserFileNameForRead("", "Gumbo: pick any .sfz inside the library (or a .sf2 / .sf3 SoundFont) to add", "")
 if not ok or not pick or pick == "" then return end
 pick = pick:gsub("\\", "/")
 local lib = pick:match("^(.*)/[^/]+$") or "."
@@ -48,7 +48,7 @@ end
 
 -- the library's .sfz / .inc / .sfzh files, read for their #include lines; the converter decides which are instruments
 local files = {}
-local is_sf2 = pick:lower():match("%.sf2$") ~= nil      -- a SoundFont is one file: no folder walk
+local is_sf2 = pick:lower():match("%.sf[23]$") ~= nil   -- a SoundFont (.sf2, or MuseScore's compressed .sf3) is one file: no folder walk
 if not is_sf2 then each_file(lib, function(p)
   local low = p:lower()
   if low:match("%.sfz$") or low:match("%.inc$") or low:match("%.sfzh$") then
@@ -70,6 +70,7 @@ end
 local ENV = {
   mkdir = function(d) r.RecursiveCreateDirectory(d, 0) end,
   sf2 = SF2,
+  probe = C.reaper_probe(r),           -- an .ogg sample's / an SF3 stream's length, through REAPER's reader
   find_imports = function(root)
     local out = {}
     each_file(root, function(p) if p:lower():sub(-10) == ".gumbo.txt" and not p:match("/%.[^/]*$") then out[#out + 1] = p end end)

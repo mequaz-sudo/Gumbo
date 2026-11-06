@@ -36,3 +36,25 @@ local(cx, cy, d, k, sx)
   gfx_line(cx + 2 * d, cy - 5 * s, cx - 2 * d, cy, 1); gfx_line(cx - 2 * d, cy, cx + 2 * d, cy + 5 * s, 1);
   gfx_line(cx + 3 * d, cy - 5 * s, cx - d, cy, 1);     gfx_line(cx - d, cy, cx + 3 * d, cy + 5 * s, 1);
 );
+
+// the same handle along the window's top or bottom edge (Gumbo's keyboard; the owner, 2026-11-05: "can we make the
+// keyboard collapsable"): side 1 = on the bottom edge (the panel opens upward), -1 = on the top edge (it opens
+// downward). The seam on the panel's side, grips left and right of the chevron, which points where a click sends
+// the panel (open -> toward the edge, closed -> away from it).
+//   rk_gutter_paint_h(gx, y, w, h, side, hot, open, s, br, bg, bb, lr, lg, lb, tc, ar, ag, ab, light)
+function rk_gutter_paint_h(gx, y, w, h, side, hot, open, s, br, bg, bb, lr, lg, lb, tc, ar, ag, ab, light)
+local(cx, cy, e, k, sy)
+(
+  k = light ? 0.06 : 0.22;
+  gfx_set(br * (1 - k), bg * (1 - k), bb * (1 - k), 1); gfx_rect(gx, y, w, h);
+  sy = side > 0 ? y : y + h - 1;                         // the seam on the panel's side
+  gfx_set(lr, lg, lb, 1); gfx_rect(gx, sy, w, 1);
+  hot ? ( gfx_set(tc, tc, tc, 0.10); gfx_rect(gx, side > 0 ? y + 1 : y, w, h - 1); );
+  cx = gx + w * 0.5; cy = y + h * 0.5;
+  gfx_set(tc, tc, tc, hot ? 0.42 : 0.20);
+  gfx_rect(cx - 34 * s, cy - s, 18 * s, 2 * s); gfx_rect(cx + 16 * s, cy - s, 18 * s, 2 * s);
+  hot ? gfx_set(ar, ag, ab, 1) : gfx_set(tc, tc, tc, 0.62);
+  e = (open ? side : -side) * s;                         // e > 0: the chevron points down
+  gfx_line(cx - 5 * s, cy - 2 * e, cx, cy + 2 * e, 1); gfx_line(cx, cy + 2 * e, cx + 5 * s, cy - 2 * e, 1);
+  gfx_line(cx - 5 * s, cy - 3 * e, cx, cy + e, 1);     gfx_line(cx, cy + e, cx + 5 * s, cy - 3 * e, 1);
+);

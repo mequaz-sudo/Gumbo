@@ -1,7 +1,8 @@
 -- Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
 -- gumbo_sf2.lua -- a SoundFont 2 file into an SFZ bank Gumbo's converter (gumbo_sfz.lua) then reads like any other:
 -- each sample written out as a mono WAV, one SFZ with a <global> per bank section (bank 0 melodic, bank 128 the drum
--- kits), a <master loprog hiprog master_label> per preset, a <region> per preset zone x instrument zone. A file with
+-- kits, then every variation bank; gumbo_bank= names the MIDI bank number), a <master loprog hiprog master_label> per
+-- preset, a <region> per preset zone x instrument zone. A file with
 -- one preset is written as an ordinary instrument (no programs). Pure Lua 5.4, no reaper.* calls; the Gumbo helper
 -- and the offline tests load it.
 --
@@ -27,13 +28,21 @@
 -- controller 0); on anything else it is fixed at the controller's starting value. Breath (CC2) starts at 127 with the
 -- name Breath (FluidSynth starts it at 0, which would mute a breath-shaped sound for a keyboard player). In the GM sets
 -- every breath-shaped preset sits in a variation bank (MuseScore General's "Expr." banks 17-51, GeneralUser's wah
--- guitar on CC21 in bank 11), which this importer leaves out: nothing in bank 0 uses a controller.
+-- guitar on CC21 in bank 11), kept since 2026-11-05 with every other variation bank.
 -- Not carried (counted in the report): pressure and the wheel as sources, two live sources on one modulator,
--- modulators to the LFOs / pitch / sends, the mod envelope / mod LFO on the pitch (when the vibrato LFO takes the
--- pitch), key scaling of envelope times, chorus / reverb sends, sm24 (24-bit) data, ROM samples, SF3 (compressed).
+-- modulators to the LFOs / pitch / sends, the mod LFO on the pitch (when the vibrato LFO takes the pitch), chorus /
+-- reverb sends, sm24 (24-bit) data, ROM samples. Carried since 2026-11-05: the mod envelope on the pitch (generator 7,
+-- pitcheg_*), the key scaling of the hold / decay times (39, 40, 31, 32: Gumbo's own ampeg_hold_keytrack /
+-- ampeg_decay_keytrack / fileg_hold_keytrack / fileg_decay_keytrack, timecents a key), and SF3 -- MuseScore's
+-- compressed SoundFont (sfSampleType & 0x10: a complete mono Ogg Vorbis stream at BYTES dwStart .. dwEnd - 1 of smpl,
+-- the end exclusive as sf3convert writes it; dwStartloop / dwEndloop frames of the decoded sample; ifil major 3): the
+-- stream is written out as it is, "<n> <name>.ogg", and Gumbo's loader plays it through REAPER's own reader (measured
+-- 2026-11-05). Its length in frames comes from an optional `probe(path) -> frames, channels, rate` (the helper's,
+-- through REAPER; the offline tests' through python) for the loop check, the end= generator and the RAM estimate;
+-- with none the loops are trusted and end= is left out (counted).
 --
 -- API:  local S = dofile(".../gumbo_sf2.lua")
---       local res = S.extract(sf2_path, out_dir [, sub])   -- writes out_dir/<name>.sfz and out_dir/<sub>/*.wav
+--       local res = S.extract(sf2_path, out_dir [, sub [, probe]])   -- writes out_dir/<name>.sfz and out_dir/<sub>/*.wav (.ogg from an SF3)
 --         (sub defaults to "samples"; the caller makes out_dir/<sub> first: folders need REAPER's own call)
 --         res = { ok, sfz = path, presets = n, regions = n, written = { wav names },
 --                 report = { errors = {}, skipped = {}, ignored = {} } }
@@ -62,12 +71,14 @@ local CARRIED = { [0] = true, [1] = true, [2] = true, [3] = true, [4] = true, [1
   [48] = true, [50] = true, [51] = true, [52] = true, [53] = true, [54] = true, [56] = true, [57] = true, [58] = true,
   -- the filter, the mod envelope (to the cutoff), the LFOs (2026-11-03)
   [5] = true, [8] = true, [9] = true, [10] = true, [11] = true, [13] = true, [6] = true, [21] = true, [22] = true, [23] = true,
-  [24] = true, [25] = true, [26] = true, [27] = true, [28] = true, [29] = true, [30] = true }
+  [24] = true, [25] = true, [26] = true, [27] = true, [28] = true, [29] = true, [30] = true,
+  [7] = true,                          -- the mod envelope on the pitch (2026-11-05): pitcheg_*
+  [39] = true, [40] = true, [31] = true, [32] = true }   -- key-scaled hold / decay (2026-11-05): Gumbo's *_keytrack opcodes
 local G_FC, G_Q, G_LFO2FC, G_ENV2FC, G_LFO2VOL, G_VIB2PITCH, G_LFO2PITCH = 8, 9, 10, 11, 13, 6, 5
 local G_MLFO_DLY, G_MLFO_FRQ, G_VLFO_DLY, G_VLFO_FRQ = 21, 22, 23, 24
 local G_MDLY, G_MATT, G_MHOLD, G_MDEC, G_MSUS, G_MREL = 25, 26, 27, 28, 29, 30
 local GEN_NAME = { [8] = "filter", [9] = "filter", [5] = "lfo", [6] = "lfo", [10] = "lfo", [13] = "lfo", [21] = "lfo",
-  [22] = "lfo", [23] = "lfo", [24] = "lfo", [7] = "mod_env", [11] = "mod_env", [25] = "mod_env", [26] = "mod_env",
+  [22] = "lfo", [23] = "lfo", [24] = "lfo", [11] = "mod_env", [25] = "mod_env", [26] = "mod_env",
   [27] = "mod_env", [28] = "mod_env", [29] = "mod_env", [30] = "mod_env", [15] = "chorus", [16] = "reverb" }
 -- instrument defaults (spec 8.1.3)
 local function defaults()
@@ -227,7 +238,7 @@ local function fmt(v)
   return (string.format("%.4f", v):gsub("0+$", ""):gsub("%.$", ""))
 end
 
-local function extract(sf2_path, out_dir, sub, track)
+local function extract(sf2_path, out_dir, sub, track, probe)
   local report = { errors = {}, skipped = {}, ignored = {} }
   local res = { ok = false, report = report, presets = 0, regions = 0 }
   local f = io.open(sf2_path, "rb")
@@ -241,6 +252,7 @@ local function extract(sf2_path, out_dir, sub, track)
   local imod = c.imod and records(s, c.imod, 10) or nil
   local pmod = c.pmod and records(s, c.pmod, 10) or nil
   local smpl0, smpln = c.smpl[1], c.smpl[2] // 2          -- 16-bit sample points
+  local smplb = c.smpl[2]                                 -- ... and bytes (an SF3 stream's offsets)
   local function skip(why) report.skipped[why] = (report.skipped[why] or 0) + 1 end
   local function ignore(op)
     local n = type(op) == "string" and op or (GEN_NAME[op] or ("gen" .. op))
@@ -254,26 +266,78 @@ local function extract(sf2_path, out_dir, sub, track)
     presets[#presets + 1] = { name = clean(cstr(s, p, 20)), prog = u16(s, p + 20), bank = u16(s, p + 22),
                               bag = u16(s, p + 24), bag_end = u16(s, phdr[i + 1] + 24) }
   end
+  -- every bank (2026-11-05, the owner: all variation banks). A variation preset that is an exact copy of the main
+  -- bank's same program is left out: bank select falls back to that program anyway (gb_voice). A variation bank whose
+  -- every preset copies bank 128's same kit is left out too, and its number plays the kits ("// bank" lines:
+  -- GeneralUser's bank 120). "Exact copy" = the same zones, generator for generator and modulator for modulator.
+  local function sig_of(p)
+    local b0, b1 = pbag[p.bag + 1], pbag[p.bag_end + 1]
+    if not b0 or not b1 then return nil end
+    local g0, g1, m0, m1 = u16(s, b0), u16(s, b1), u16(s, b0 + 2), u16(s, b1 + 2)
+    return s:sub(c.pgen[1] + g0 * 4, c.pgen[1] + g1 * 4 - 1) .. "|" ..
+           (c.pmod and s:sub(c.pmod[1] + m0 * 10, c.pmod[1] + m1 * 10 - 1) or "")
+  end
+  local main_sig, kit_copies, bank_size = {}, {}, {}
+  for _, p in ipairs(presets) do
+    if p.bank == 0 or p.bank == 128 then main_sig[p.bank .. ":" .. p.prog] = sig_of(p) end
+  end
+  for _, p in ipairs(presets) do
+    if p.bank ~= 0 and p.bank ~= 128 then
+      p.sig = sig_of(p)
+      bank_size[p.bank] = (bank_size[p.bank] or 0) + 1
+      if p.sig and p.sig == main_sig["128:" .. p.prog] then kit_copies[p.bank] = (kit_copies[p.bank] or 0) + 1 end
+    end
+  end
+  local kit_alias = {}               -- variation banks that are copies of the kits: their numbers play bank 128
+  for b, n in pairs(bank_size) do if kit_copies[b] == n then kit_alias[#kit_alias + 1] = b end end
+  table.sort(kit_alias)
   local keep = {}
   for _, p in ipairs(presets) do
-    if p.bank == 0 or p.bank == 128 then keep[#keep + 1] = p else skip("variation_bank") end
+    if p.bank == 0 or p.bank == 128 then keep[#keep + 1] = p
+    elseif kit_copies[p.bank] == bank_size[p.bank] then skip("variation_kit_copy")
+    elseif p.sig and p.sig == main_sig["0:" .. p.prog] then skip("variation_same_as_main")
+    else keep[#keep + 1] = p end
   end
-  table.sort(keep, function(a, b) if a.bank ~= b.bank then return a.bank < b.bank end; return a.prog < b.prog end)
+  -- bank 0, then the kits, then the variation banks (an older Gumbo, whose table fills first, keeps the kits)
+  local function rank(b) return b == 0 and 0 or (b == 128 and 1 or 2) end
+  table.sort(keep, function(a, b)
+    if a.bank ~= b.bank then
+      if rank(a.bank) ~= rank(b.bank) then return rank(a.bank) < rank(b.bank) end
+      return a.bank < b.bank
+    end
+    return a.prog < b.prog
+  end)
   local banked = #keep > 1
 
   local samples_dir = out_dir:gsub("[/\\]+$", "") .. "/" .. sub
   local written, failed_dir = {}, false
+  local sf3f = {}                      -- a compressed sample's frames (-1 = unknown): its offsets are bytes, its loops frames
   local function wav_of(si)
     if written[si] ~= nil then return written[si] end
     local h = si and shdr[si + 1]
     if not h or si >= #shdr - 1 then skip("bad_sample_index"); written[si or -1] = false; return false end
     local stype = u16(s, h + 44)
     if stype & 0x8000 ~= 0 then skip("rom_sample"); written[si] = false; return false end
-    if stype & 0x10 ~= 0 then skip("sf3_compressed"); written[si] = false; return false end
     local a, b = u32(s, h + 20), u32(s, h + 24)
+    local base = string.format("%04d %s", si, clean(cstr(s, h, 20)):gsub("[/\\:%*%?]", " "))
+    if stype & 0x10 ~= 0 then
+      -- SF3 (2026-11-05): one complete Ogg Vorbis stream at bytes a .. b - 1 of smpl, written out as it is
+      if b <= a or b > smplb then skip("bad_sample_bounds"); written[si] = false; return false end
+      local data = s:sub(smpl0 + a, smpl0 + b - 1)
+      if data:sub(1, 4) ~= "OggS" then skip("sf3_not_ogg"); written[si] = false; return false end   -- the flag means compressed, not Vorbis
+      local name = base .. ".ogg"
+      local wf = io.open(samples_dir .. "/" .. name, "wb")
+      if not wf then failed_dir = true; written[si] = false; return false end
+      wf:write(data); wf:close()
+      written[si] = name; track[#track + 1] = name
+      local frames = probe and probe(samples_dir .. "/" .. name) or nil
+      sf3f[si] = (type(frames) == "number" and frames > 0) and math.floor(frames) or -1
+      if sf3f[si] < 0 then report.sf3_unprobed = (report.sf3_unprobed or 0) + 1 end
+      return name
+    end
     if b <= a or b > smpln then skip("bad_sample_bounds"); written[si] = false; return false end
     local rate = u32(s, h + 36)
-    local name = string.format("%04d %s.wav", si, clean(cstr(s, h, 20)):gsub("[/\\:%*%?]", " "))
+    local name = base .. ".wav"
     local data = s:sub(smpl0 + a * 2, smpl0 + b * 2 - 1)
     local wf = io.open(samples_dir .. "/" .. name, "wb")
     if not wf then failed_dir = true; written[si] = false; return false end
@@ -285,7 +349,7 @@ local function extract(sf2_path, out_dir, sub, track)
   end
 
   local L = {}
-  local base = clean((sf2_path:match("([^/\\]+)$") or "bank"):gsub("%.[Ss][Ff]2$", ""))
+  local base = clean((sf2_path:match("([^/\\]+)$") or "bank"):gsub("%.[Ss][Ff][23]$", ""))
   L[#L + 1] = "// made by Gumbo from " .. (sf2_path:gsub("\\", "/"))
   L[#L + 1] = "<control> default_path=" .. sub .. "/"
   local curve_of, ncurve, curve_lines, used_cc = {}, 0, {}, {}   -- the live controllers' curves (one per shape), the CCs used
@@ -293,7 +357,11 @@ local function extract(sf2_path, out_dir, sub, track)
   for _, p in ipairs(keep) do
     if banked and section ~= p.bank then
       section = p.bank
-      L[#L + 1] = "<global> global_label=" .. (p.bank == 128 and "Drums" or "Melodic")
+      -- gumbo_bank = the MIDI bank number(s) the section answers to (the converter's "// bank" lines)
+      local nums = tostring(p.bank)
+      if p.bank == 128 then for _, b in ipairs(kit_alias) do nums = nums .. "," .. b end end
+      L[#L + 1] = "<global> gumbo_bank=" .. nums .. " global_label=" ..
+                  (p.bank == 128 and "Drums" or p.bank == 0 and "Melodic" or ("Bank " .. p.bank))
     end
     L[#L + 1] = banked and string.format("<master> loprog=%d hiprog=%d master_label=%s", p.prog, p.prog, p.name ~= "" and p.name or ("Program " .. (p.prog + 1)))
                        or ("<master> master_label=" .. p.name)
@@ -329,6 +397,9 @@ local function extract(sf2_path, out_dir, sub, track)
               local h = shdr[si + 1]
               local a, b = u32(s, h + 20), u32(s, h + 24)
               local la, lb = u32(s, h + 28), u32(s, h + 32)
+              -- an SF3 stream: its offsets are bytes (meaningless here); the loops are frames of the decoded sample,
+              -- so the sample starts at 0 and ends at the probed length (unknown: no end, every loop trusted)
+              if sf3f[si] then a = 0; b = sf3f[si] >= 0 and sf3f[si] or math.huge end
               local opitch, pcorr = u8(s, h + 40), u8(s, h + 41)
               if pcorr >= 128 then pcorr = pcorr - 256 end
               local root = (g[G_ROOT] and g[G_ROOT] >= 0) and g[G_ROOT] or (opitch <= 127 and opitch or 60)
@@ -549,6 +620,11 @@ local function extract(sf2_path, out_dir, sub, track)
                 if attv ~= 0 then r[#r + 1] = "ampeg_vel2attack=" .. fmt(attv) end
                 if decv ~= 0 then r[#r + 1] = "ampeg_vel2decay=" .. fmt(decv) end
                 if relv ~= 0 then r[#r + 1] = "ampeg_vel2release=" .. fmt(relv) end
+                -- key-scaled hold and decay (generators 39 / 40; 2026-11-05): Gumbo's own opcodes, timecents a key as
+                -- the SoundFont has them (FluidSynth: the time x 2^(k x (60 - key) / 1200))
+                local kah, kad = add(39), add(40)
+                if kah ~= 0 then r[#r + 1] = "ampeg_hold_keytrack=" .. fmt(kah) end
+                if kad ~= 0 then r[#r + 1] = "ampeg_decay_keytrack=" .. fmt(kad) end
                 if P.vpow then
                   if P.vpow == 0 then r[#r + 1] = "amp_veltrack=0"
                   elseif P.vpow ~= 2 then r[#r + 1] = "amp_velpow=" .. fmt(P.vpow) end
@@ -557,7 +633,8 @@ local function extract(sf2_path, out_dir, sub, track)
                 end
                 if lm ~= "no_loop" then r[#r + 1] = "loop_start=" .. ls; r[#r + 1] = "loop_end=" .. le end
                 if so > 0 and so < len then r[#r + 1] = "offset=" .. so end
-                if eo < 0 and len + eo > so then r[#r + 1] = "end=" .. (len + eo - 1) end
+                if eo < 0 and len ~= math.huge and len + eo > so then r[#r + 1] = "end=" .. (len + eo - 1) end
+                if eo < 0 and len == math.huge then ignore("sf3_end_unprobed") end
                 if filtered then
                   r[#r + 1] = "fil_type=lpf_2p"
                   r[#r + 1] = "cutoff=" .. fmt(hz(P.fc0 - P.fvt * P.va)); r[#r + 1] = "resonance=" .. fmt(fres)
@@ -575,6 +652,26 @@ local function extract(sf2_path, out_dir, sub, track)
                     if mdv ~= 0 then r[#r + 1] = "fileg_vel2decay=" .. fmt(mdv) end
                     if mrv ~= 0 then r[#r + 1] = "fileg_vel2release=" .. fmt(mrv) end
                   end
+                end
+                -- the mod envelope on the pitch (generator 7, cents at its peak; 2026-11-05): the same envelope as the
+                -- filter's, written as SFZ's pitcheg_* -- with or without a filter
+                local penv = add(7)
+                if penv ~= 0 then
+                  local ma0, mav = tm(26); local md0, mdv = tm(28); local mr0, mrv = tm(30)
+                  r[#r + 1] = "pitcheg_depth=" .. fmt(penv)
+                  r[#r + 1] = "pitcheg_delay=" .. fmt(P.t[25][1]); r[#r + 1] = "pitcheg_attack=" .. fmt(ma0)
+                  r[#r + 1] = "pitcheg_hold=" .. fmt(P.t[27][1]); r[#r + 1] = "pitcheg_decay=" .. fmt(md0)
+                  r[#r + 1] = "pitcheg_sustain=" .. fmt(math.max(0, math.min(100, 100 - add(G_MSUS) / 10)))
+                  r[#r + 1] = "pitcheg_release=" .. fmt(mrv == 0 and math.max(0.001, mr0) or mr0)
+                  if mav ~= 0 then r[#r + 1] = "pitcheg_vel2attack=" .. fmt(mav) end
+                  if mdv ~= 0 then r[#r + 1] = "pitcheg_vel2decay=" .. fmt(mdv) end
+                  if mrv ~= 0 then r[#r + 1] = "pitcheg_vel2release=" .. fmt(mrv) end
+                end
+                -- the mod envelope's key scaling (generators 31 / 32), when that envelope drives the cutoff or the pitch
+                if (filtered and (depth ~= 0 or vdepth ~= 0)) or penv ~= 0 then
+                  local kfh, kfd = add(31), add(32)
+                  if kfh ~= 0 then r[#r + 1] = "fileg_hold_keytrack=" .. fmt(kfh) end
+                  if kfd ~= 0 then r[#r + 1] = "fileg_decay_keytrack=" .. fmt(kfd) end
                 end
                 -- the LFOs: frequency in absolute cents (0 = 8.176 Hz), delay in timecents; both triangles (lfoN_wave 0)
                 local vib, mpitch = add(G_VIB2PITCH), add(G_LFO2PITCH)
@@ -625,14 +722,14 @@ local function extract(sf2_path, out_dir, sub, track)
   return res
 end
 
-function S.extract(sf2_path, out_dir, sub)
+function S.extract(sf2_path, out_dir, sub, probe)
   local track = {}
-  local ok, res = pcall(extract, sf2_path, out_dir, sub or "samples", track)
+  local ok, res = pcall(extract, sf2_path, out_dir, sub or "samples", track, probe)
   if not ok then
     res = { ok = false, presets = 0, regions = 0,
             report = { errors = { "damaged SoundFont: " .. tostring(res) }, skipped = {}, ignored = {} } }
   end
-  res.written = track                  -- every WAV written, whatever happened
+  res.written = track                  -- every sample file written, whatever happened
   return res
 end
 

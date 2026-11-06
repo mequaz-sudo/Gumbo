@@ -66,14 +66,18 @@ function gb_eq_display_apply(tone) (
 // ── each instrument's own EQ (the owner, 2026-11-02: "each instrument own eq") ──
 // A Gumbo remembers the EQ page (the four bands and TONE) per instrument it has played: changing instruments stores
 // the EQ under the old one and brings back the new one's (flat, the sliders' defaults, the first time). The memory is
-// saved with the project (@serialize, gate 3). An instrument is known by its path (case and slash direction ignored).
-// Nothing loaded yet (key 0): the first instrument keeps the EQ already set. Called from @gfx when a load finishes
-// (outside the loader's lock: slider_automate can make REAPER run @serialize in the same thread) and from the tests.
-GB_EQM = 1745000; GB_EQM_N = 32;     // 32 instruments x GB_EQM_W cells -> 1746024 (clear of GBF_MATCH .. GBF_IDX_BASE)
+// saved with the project (@serialize, gate 3). An instrument is known by its path (case and slash direction ignored)
+// and, in a bank, by the program channel 1 plays (2026-11-05, the owner: "the EQ going flat per instrument": a GM
+// set's piano, its strings and its kit each keep their own; gb_eqm_key_of). An EQ left at its defaults is not kept,
+// so stepping through a set never pushes a kept one out. HOLD (gb_eqm_hold, the EQ page's switch, slider 95) keeps
+// the EQ as it is through a change: only the key moves, and the EQ then belongs to the new program.
+// Nothing loaded yet (key 0): the first instrument keeps the EQ already set. Called from @gfx every pass (gb_eqm_follow,
+// outside the loader's lock: slider_automate can make REAPER run @serialize in the same thread) and from the tests.
+GB_EQM = 1745000; GB_EQM_N = 128;    // 128 programs x GB_EQM_W cells -> 1749096 (was 32 while the key was the file alone)
 GB_EQM_W = 32;                       // +0 key (0 = empty), +1 age (for reuse), +2.. the values in GB_EQM_SL order
 GB_EQM_NV = 29;                      // 4 bands x 7 (mode, place, shape, freq, gain, Q, slope) + TONE (slider 7)
-GB_EQM_DEF = GB_EQM + GB_EQM_N * GB_EQM_W;   // 29 defaults (the slider lines' own): 1746024 -> 1746053
-GB_EQM_SL = GB_EQM_DEF + 32;                 // 29 slider numbers: 1746056 -> 1746085
+GB_EQM_DEF = GB_EQM + GB_EQM_N * GB_EQM_W;   // 29 defaults (the slider lines' own): 1749096 -> 1749125
+GB_EQM_SL = GB_EQM_DEF + 32;                 // 29 slider numbers: 1749128 -> 1749157 (under gb_sfz's GB_PRG 1750000)
 gb_eqm_i = 0;
 loop(4,
   gb_eqm_j = 0;
@@ -87,8 +91,10 @@ GB_EQM_DEF[7] = 2; GB_EQM_DEF[8] = 0; GB_EQM_DEF[9] = 0; GB_EQM_DEF[10] = 400;  
 GB_EQM_DEF[14] = 2; GB_EQM_DEF[15] = 0; GB_EQM_DEF[16] = 0; GB_EQM_DEF[17] = 2500; GB_EQM_DEF[18] = 0; GB_EQM_DEF[19] = 0.8; GB_EQM_DEF[20] = 1;
 GB_EQM_DEF[21] = 2; GB_EQM_DEF[22] = 0; GB_EQM_DEF[23] = 4; GB_EQM_DEF[24] = 10000; GB_EQM_DEF[25] = 0; GB_EQM_DEF[26] = 0.7071; GB_EQM_DEF[27] = 1;
 GB_EQM_DEF[28] = 0;
-gb_eqm_key = 0;                      // the instrument whose EQ the sliders hold (0 = none yet); @serialize sets it too
+gb_eqm_key = 0;                      // the program whose EQ the sliders hold (0 = none yet); @serialize sets it too
 gb_eqm_age = 0;
+gb_eqm_hold = 0;                     // HOLD (@gfx copies slider 95 here each pass; the tests set it)
+gb_eqm_f_ch0 = -1; gb_eqm_f_gen = -1;   // gb_eqm_follow's last program and load (the key is hashed only on a change)
 
 // a path's key: never 0 for a path; "" -> 0
 function gb_eqm_hash(s) local(i, n, c, h) (
@@ -102,27 +108,43 @@ function gb_eqm_hash(s) local(i, n, c, h) (
   );
   n > 0 ? h + 1 : 0;
 );
+// an EQ's key: the file, and in a bank (gb_nprg > 0) the program channel 1 plays -- ch0 = section * 128 + program, as
+// gb_voice's gb_resolve_pack packs it (GB_CHSC[0] * 128 + GB_CHPG[0] once the load is adopted, gb_pick_ch0 before).
+// An ordinary instrument ignores ch0 (its program number means nothing). Never 0 for a path; "" -> 0
+function gb_eqm_key_of(path, ch0) local(h) (
+  h = gb_eqm_hash(path);
+  h != 0 && gb_nprg > 0 ? ( h = h * 131 + ch0; h -= floor(h / 2147483629) * 2147483629; h + 1; ) : h;
+);
+// is the EQ page at its defaults (flat, never set): such an EQ is not kept
+function gb_eqm_flat() local(i, f) (
+  f = 1; i = 0;
+  loop(GB_EQM_NV, slider(GB_EQM_SL[i]) !== GB_EQM_DEF[i] ? f = 0; i += 1; );
+  f;
+);
 // the entry holding key, or -1
 function gb_eqm_find(key) local(i, e, r) (
   r = -1; i = 0;
   loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; r < 0 && e[0] == key ? r = e; i += 1; );
   r;
 );
-// the sliders -> key's entry (a free one, else the one used longest ago)
+// the sliders -> key's entry (a free one, else the one used longest ago); a flat EQ keeps no entry (one it had is
+// freed: a missing entry brings the defaults back, gb_eqm_apply)
 function gb_eqm_stash(key) local(e, i, o, oa) (
   e = gb_eqm_find(key);
-  e < 0 ? (
-    i = 0; oa = -1;
-    loop(GB_EQM_N, o = GB_EQM + i * GB_EQM_W; e < 0 && o[0] == 0 ? e = o; i += 1; );
+  gb_eqm_flat() ? ( e >= 0 ? e[0] = 0; ) : (
     e < 0 ? (
-      i = 0;
-      loop(GB_EQM_N, o = GB_EQM + i * GB_EQM_W; oa < 0 || o[1] < oa ? ( oa = o[1]; e = o; ); i += 1; );
+      i = 0; oa = -1;
+      loop(GB_EQM_N, o = GB_EQM + i * GB_EQM_W; e < 0 && o[0] == 0 ? e = o; i += 1; );
+      e < 0 ? (
+        i = 0;
+        loop(GB_EQM_N, o = GB_EQM + i * GB_EQM_W; oa < 0 || o[1] < oa ? ( oa = o[1]; e = o; ); i += 1; );
+      );
     );
+    i = 0;
+    loop(GB_EQM_NV, e[2 + i] = slider(GB_EQM_SL[i]); i += 1; );
+    gb_eqm_age += 1; e[1] = gb_eqm_age;
+    e[0] = key;                      // last: @serialize (another thread) skips an entry with no key
   );
-  i = 0;
-  loop(GB_EQM_NV, e[2 + i] = slider(GB_EQM_SL[i]); i += 1; );
-  gb_eqm_age += 1; e[1] = gb_eqm_age;
-  e[0] = key;                        // last: @serialize (another thread) skips an entry with no key
 );
 // key's entry (or the defaults) -> the sliders; only changed ones, each automated (undo, the host's own view).
 // Gumbo's face never changes a band's mode, so the order of the writes does not matter here (Quezy's qzg_restore).
@@ -136,15 +158,25 @@ function gb_eqm_apply(key) local(e, i, n, v) (
   );
   e >= 0 ? ( gb_eqm_age += 1; e[1] = gb_eqm_age; );
 );
-// the instrument changed to new key nk
+// the program (or the file) changed to new key nk: the EQ stored under the old one, the new one's brought back -- or,
+// with HOLD on, kept as it is (nothing stored, nothing applied: the EQ travels with the user and belongs to the new
+// program from here)
 function gb_eqm_switch(nk) (
   nk != gb_eqm_key ? (
-    gb_eqm_key != 0 && nk != 0 ? ( gb_eqm_stash(gb_eqm_key); gb_eqm_apply(nk); );
+    gb_eqm_key != 0 && nk != 0 && !gb_eqm_hold ? ( gb_eqm_stash(gb_eqm_key); gb_eqm_apply(nk); );
     gb_eqm_key = nk;
   );
 );
+// every @gfx pass, once the audio thread has adopted the load: follow what channel 1 plays (ch0 as gb_eqm_key_of
+// takes it); the key is hashed only when the program or the load changed
+function gb_eqm_follow(path, ch0) (
+  ch0 != gb_eqm_f_ch0 || gb_load_gen != gb_eqm_f_gen ? (
+    gb_eqm_f_ch0 = ch0; gb_eqm_f_gen = gb_load_gen;
+    gb_eqm_switch(gb_eqm_key_of(path, ch0));
+  );
+);
 // @serialize gate 3 (rd = reading): the used entries; on a read the caller sets the key of the instrument restored
-function gb_eqm_ser(rd) local(n, i, e) (
+function gb_eqm_ser(rd) local(n, i, e, z) (
   rd ? (
     memset(GB_EQM, 0, GB_EQM_N * GB_EQM_W);
     n = 0; file_var(0, n); n = max(0, min(GB_EQM_N, n | 0));
@@ -158,5 +190,7 @@ function gb_eqm_ser(rd) local(n, i, e) (
     file_var(0, n);
     i = 0;
     loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; e[0] != 0 && n > 0 ? ( file_mem(0, e, GB_EQM_W); n -= 1; ); i += 1; );
+    // exactly n written: an entry freed between the count and the writes (gb_eqm_stash) leaves empty ones (key 0)
+    loop(n, loop(GB_EQM_W, z = 0; file_var(0, z); ); );
   );
 );

@@ -20,6 +20,17 @@ C.PATH_MAX = 1000
 C.PROTO_VERSION = 1
 C.KIND_IMPORT = 1
 C.KIND_FAV = 2                                         -- toggle this path in Data/EON_Gumbo/favourites.txt
+C.KIND_LOOK = 3                                        -- keep a pad's hand-picked icon / colour in Data/EON_Gumbo/pad_looks.txt
+C.KIND_DEFAULTS = 4                                    -- keep the face look for new Gumbos (OPTIONS > USE AS DEFAULT): "typeface|size|screen|icons|colours"
+-- the saved look, published in the band for fresh Gumbos (DEF_GEN written LAST; 0 = none saved yet)
+C.DEF_GEN, C.DEF_TYPE, C.DEF_SIZE, C.DEF_SCREEN, C.DEF_ICONS, C.DEF_COLS = 8, 9, 10, 11, 12, 13
+-- "typeface|size|screen|icons|colours" -> { typeface 0..4, size -3..6, screen 0..2, icons 0..1, colours 0..2 }, or nil
+function C.defaults_parse(t)
+  local a, b, c, d, e = tostring(t or ""):match("^(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)$")
+  if not a then return nil end
+  local function clamp(v, lo, hi) v = tonumber(v); return math.max(lo, math.min(hi, v)) end
+  return { clamp(a, 0, 4), clamp(b, -3, 6), clamp(c, 0, 2), clamp(d, 0, 1), clamp(e, 0, 2) }
+end
 C.ST_DONE, C.ST_WORKING = 1, 2
 C.ERR_KIND, C.ERR_PATH, C.ERR_CONVERT, C.ERR_LIST = -1, -2, -3, -4
 -- why a conversion failed: the sound files it points to are missing; the .sfz (or a file it #includes) could not be
@@ -100,7 +111,7 @@ function C.import_target(sfz_path, imports_root)
   if not dir then dir, file = ".", p end
   local lib = dir:match("([^/]+)$") or "library"
   if GENERIC[lib:lower()] then lib = dir:match("([^/]+)/[^/]+$") or lib end
-  local base = file:gsub("%.[Ss][Ff][Zz2]$", "")   -- .sfz or .sf2
+  local base = file:gsub("%.[Ss][Ff][Zz23]$", "")   -- .sfz, .sf2 or .sf3
   local root = tostring(imports_root):gsub("\\", "/"):gsub("/+$", "")
   return root .. "/" .. C.slug(lib) .. "_" .. C.hash6(dir:lower()) .. "/" .. C.slug(base) .. ".gumbo.txt", root .. "/"
     .. C.slug(lib) .. "_" .. C.hash6(dir:lower())
@@ -194,6 +205,19 @@ function C.sample_paths(text)
   for p in tostring(text or ""):gmatch("<region> sample=(.-) lokey=") do t[p] = true end
   return t
 end
+-- a sound's length through REAPER's own reader (env.probe for the converters: an .ogg sample, an SF3's streams --
+-- the pure-Lua readers open WAV / FLAC only). r = the reaper table; nil when REAPER cannot open the file
+function C.reaper_probe(r)
+  return function(path)
+    local src = r.PCM_Source_CreateFromFile(path)
+    if not src then return nil end
+    local len = r.GetMediaSourceLength(src)
+    local sr, ch = r.GetMediaSourceSampleRate(src), r.GetMediaSourceNumChannels(src)
+    r.PCM_Source_Destroy(src)
+    if not len or len <= 0 or not sr or sr <= 0 then return nil end
+    return math.floor(len * sr + 0.5), ch or 1, sr
+  end
+end
 function C.convert_into(G, env, sfz_path, imports_root)
   local out, out_dir = C.import_target(sfz_path, imports_root)
   local root = tostring(imports_root):gsub("\\", "/"):gsub("/+$", "")
@@ -204,20 +228,21 @@ function C.convert_into(G, env, sfz_path, imports_root)
     for _, nm in ipairs(new_wavs or {}) do os.remove(out_dir .. "/" .. sub .. "/" .. nm) end
     if sub then os.remove(out_dir .. "/" .. sub .. "/.gumbo") end
   end
-  if tostring(sfz_path):lower():match("%.sf2$") then
+  if tostring(sfz_path):lower():match("%.sf[23]$") then   -- (.sf3 = MuseScore's compressed SoundFont, 2026-11-05)
     if not env.sf2 then return false, 0, nil, nil, C.WHY_UNREADABLE end
-    local base = (tostring(sfz_path):gsub("\\", "/"):match("([^/]+)$") or "bank"):gsub("%.[Ss][Ff]2$", "")
+    local base = (tostring(sfz_path):gsub("\\", "/"):match("([^/]+)$") or "bank"):gsub("%.[Ss][Ff][23]$", "")
     sub = C.sf2_sub(out_dir, base)
     env.mkdir(out_dir .. "/" .. sub)
     local mk = io.open(out_dir .. "/" .. sub .. "/.gumbo", "wb")   -- marks the name as taken (C.sf2_sub)
     if mk then mk:write("Gumbo's samples of ", base, ".sf2\n"); mk:close() end
-    local xr = env.sf2.extract(sfz_path, out_dir, sub)
+    local xr = env.sf2.extract(sfz_path, out_dir, sub, env.probe)   -- (env.probe: REAPER's reader, for an SF3's .ogg lengths)
     new_wavs = xr.written
     if not xr.ok then
       drop_new()
-      -- why: compressed (SF3) or ROM samples only -> not playable audio; no zones -> nothing to play; else unreadable
+      -- why: compressed streams that are not Ogg, or ROM samples only -> not playable audio; no zones -> nothing to
+      -- play; else unreadable
       local sk = xr.report and xr.report.skipped or {}
-      local why = ((sk.sf3_compressed or 0) + (sk.rom_sample or 0) > 0) and C.WHY_BADAUDIO
+      local why = ((sk.sf3_not_ogg or 0) + (sk.rom_sample or 0) > 0) and C.WHY_BADAUDIO
         or (xr.regions == 0 and #(xr.report and xr.report.errors or {}) > 0
             and tostring(xr.report.errors[1]):find("no playable", 1, true)) and C.WHY_NOTHING or C.WHY_UNREADABLE
       return false, 0, nil, xr.report, why
@@ -226,7 +251,7 @@ function C.convert_into(G, env, sfz_path, imports_root)
   end
   local tmp = tmp_dir .. "/.converting-" .. C.hash6(out:lower()) .. ".gumbo.txt"
   os.remove(tmp)
-  local res = G.convert(sfz_path, tmp)
+  local res = G.convert(sfz_path, tmp, { probe = env.probe })   -- (the probe: an .ogg sample's length for the RAM estimate)
   if not res.ok then os.remove(tmp); drop_new(); return false, 0, nil, res.report, C.failure_reason(res.report) end
   local text = C.head(tmp, 1 << 30)
   os.remove(tmp)
@@ -278,6 +303,67 @@ function C.fav_toggle(text, path)
   end
   if not found then out[#out + 1] = path end
   return #out > 0 and (table.concat(out, "\n") .. "\n") or ""
+end
+
+-- pad looks (2026-11-05, the owner: "change the icon and color"): one pad a line, "path|section|program|note|icon|family"
+-- (the path as the browser lists write it; icon an icon name or "" = automatic; family 0..6 or -1 = automatic). A new
+-- line replaces the one with the same path (any case), section, program and note; both automatic = that line goes.
+-- The new text, from the old file's text (nil = the line is malformed); the caller writes it with C.write_safely.
+function C.look_update(text, line)
+  -- a seventh field since the colour wheel: the pad's own colour "rrggbb" (hex), "" or absent = none
+  local p, sec, prog, note, icon, fam, rest = line:match("^(.-)|(%-?%d+)|(%-?%d+)|(%-?%d+)|([^|]*)|(%-?%d+)(.*)$")
+  if not p or p == "" then return nil end
+  local col = rest == "" and "" or rest:match("^|(%x%x%x%x%x%x)$")
+  if col == nil and rest ~= "|" then return nil end
+  col = col or ""
+  local key = p:lower() .. "|" .. sec .. "|" .. prog .. "|" .. note
+  local out = {}
+  for l in (tostring(text or "") .. "\n"):gmatch("([^\r\n]*)\r?\n") do
+    if l ~= "" then
+      local lp, ls, lg, ln = l:match("^(.-)|(%-?%d+)|(%-?%d+)|(%-?%d+)|")
+      if not (lp and (lp:lower() .. "|" .. ls .. "|" .. lg .. "|" .. ln) == key) then out[#out + 1] = l end
+    end
+  end
+  if icon ~= "" or tonumber(fam) >= 0 or col ~= "" then out[#out + 1] = line end
+  return #out > 0 and (table.concat(out, "\n") .. "\n") or ""
+end
+
+-- OPEN EMBEDDED IN THE MIXER (2026-11-05, the owner: "gumbo should always open its embedd mcp view"). REAPER's
+-- "Default settings for new instances > Show embedded UI in MCP" is bit 4 of the plugin's line in
+-- reaper-fxoptions.ini [defcfg] (read at every insert; the first [defcfg] section only; measured 2026-10-01). The
+-- file's text with every path in `paths` given bit 4 -- bit 2 (the track panel) taken off, since with both REAPER
+-- uses the track panel -- the other bits and every other line kept, a missing line added; returns the new text and
+-- how many lines changed. (ReaKit FX's start action does the same for its eight effects.)
+function C.embed_defaults_text(txt, paths)
+  txt = tostring(txt or "")
+  local bom = txt:sub(1, 3) == "\239\187\191" and "\239\187\191" or ""
+  txt = txt:sub(#bom + 1)
+  local nl = txt:find("\r\n", 1, true) and "\r\n" or (txt == "" and "\r\n" or "\n")
+  local lines, sec_at, sec_end, first = {}, nil, nil, false
+  for line in ((txt == "" and "" or txt .. (txt:sub(-1) == "\n" and "" or "\n"))):gmatch("(.-)\r?\n") do
+    lines[#lines + 1] = line
+    local s = line:match("^%[(.-)%]%s*$")
+    if s then first = (s == "defcfg" and not sec_at); if first then sec_at = #lines end
+    elseif first and line:match("%S") then sec_end = #lines end
+  end
+  if not sec_at then lines[#lines + 1] = "[defcfg]"; sec_at = #lines end
+  sec_end = sec_end or sec_at
+  local changed = 0
+  for _, p in ipairs(paths) do
+    local found = false
+    for i = sec_at + 1, #lines do
+      if lines[i]:match("^%[") then break end
+      local k, v = lines[i]:match("^(.-)=(%-?%d+)%s*$")
+      if k == p then
+        found = true
+        local n = tonumber(v) or 0
+        local n2 = n - (math.floor(n / 2) % 2) * 2 + (math.floor(n / 4) % 2 == 0 and 4 or 0)
+        if n2 ~= n then lines[i] = p .. "=" .. n2; changed = changed + 1 end
+      end
+    end
+    if not found then table.insert(lines, sec_end + 1, p .. "=4"); sec_end = sec_end + 1; changed = changed + 1 end
+  end
+  return bom .. table.concat(lines, nl) .. nl, changed
 end
 
 return C

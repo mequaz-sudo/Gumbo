@@ -14,7 +14,7 @@
 // gb_voice applies it as a controller once per change).
 
 @init
-GBF_K_CTL = 9; GBF_K_SET = 17; GBF_K_EQ = 22; GBF_NK2 = 17;   // knob memory after gb_face's nine: 8 CONTROLS, 5 SETTINGS, 4 EQ
+GBF_K_CTL = 9; GBF_K_SET = 17; GBF_K_EQ = 22; GBF_K_EQQ = 26; GBF_NK2 = 21;   // knob memory after gb_face's nine: 8 CONTROLS, 5 SETTINGS, 4 EQ, 4 EQ Q
 memset(gbf_km + GBF_KS * GBF_NK, 0, GBF_KS * GBF_NK2);
 GBF_BM = 1721000;                    // widget memory for the tabs and the toggles, 8 cells each
 memset(GBF_BM, 0, 64);
@@ -53,7 +53,7 @@ function gbf_tabs(x, y, tw, h, n) local(i, sel, tx) (
     sel ? ( gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gfx_rect(tx, y, tw, 2 * gbf_s); );
     gbf_font(max(7, floor(9 * gbf_s)), 'b');
     sel ? gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
-    i == 2 && gb_ready && gb_nlbl > 0 ? sprintf(#gbf_tl, "CONTROLS  %d", gb_nlbl) : strcpy(#gbf_tl, gbf_tab_label(i));
+    i == 2 && gbf_nctl > 0 ? sprintf(#gbf_tl, "CONTROLS  %d", gbf_nctl) : strcpy(#gbf_tl, gbf_tab_label(i));
     gfx_measurestr(#gbf_tl, gbf_tw, gbf_th_); gfx_x = tx + (tw - gbf_tw) * 0.5; gfx_y = y + (h - gbf_th_) * 0.5 + gbf_s;
     gfx_drawstr(#gbf_tl);
     i += 1;
@@ -114,6 +114,23 @@ function gbf_menu(items, x, y, what) (
   gbf_mwhat = what;
 );
 
+// ── a lit button and a row label (the OPTIONS sheet's, Swing's pad-editor sheet; the EQ page's HOLD too) ──
+// the button returns 1 on a click
+function gbf_opt_btn(bx, by, bw, bh, lbl, on) local(hot, tw, th) (
+  hot = !gbf_menu_block && gbf_hit(bx, by, bw, bh);
+  on ? gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1) : gfx_set(gbf_pn_r * 1.35, gbf_pn_g * 1.35, gbf_pn_b * 1.35, 1);
+  gfx_rect(bx, by, bw, bh);
+  hot ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(bx, by, bw, bh); );
+  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, bh);
+  gbf_font(10 * gbf_s, 'b'); on ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+  gfx_measurestr(lbl, tw, th); gfx_x = bx + (bw - tw) * 0.5; gfx_y = by + (bh - th) * 0.5; gfx_drawstr(lbl);
+  hot && lmb_down ? ( lmb_down = 0; 1 ) : 0;
+);
+function gbf_opt_label(x, y, bh, lbl) (
+  gbf_font(10 * gbf_s, 'b'); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_measurestr(lbl, gbf_tw, gbf_th_); gfx_x = x; gfx_y = y + (bh - gbf_th_) * 0.5; gfx_drawstr(lbl);
+);
+
 // ── EQ: four bands on Quezy's engine (gb_eq), drawn with the one EQ painter (rk_curve) ──
 // band k's sliders: shape 23 + 13k, freq 24 + 13k, gain 25 + 13k, Q 26 + 13k (Quezy's layout); written here with their
 // names so each change is automated (slider_automate needs the slider itself). Every band can be a bell, a shelf or a
@@ -142,9 +159,18 @@ function gbf_eq_sh_name(sh) (
   sh == 0 ? "BELL" : sh == 3 ? "LOW SHELF" : sh == 4 ? "HIGH SHELF" : sh == 1 ? "LOW CUT" : sh == 5 ? "HIGH CUT" : "BAND";
 );
 // one band's knob: gain for a bell or a shelf, frequency for a cut (a cut has no gain); its label is the shape and a
-// click on the label opens the shape menu
-function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly) (
+// click on the label opens the shape menu. Under it a smaller Q knob (the owner, 2026-11-05: "the Q knobs for the eq
+// we talked about"): the band's width, 0.3 .. 12 on a bell, 0.3 .. 4 on a shelf or a cut -- the same range the
+// wheel over the band's node moves -- on a log scale, 0.71 at rest.
+function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly, q, qmax, r2, y2) (
   sh = gbf_eq_sh(k) | 0; cut = gbf_eq_cut(k); f = gbf_eq_fr(k); g = gbf_eq_gn(k);
+  q = gbf_eq_qv(k); qmax = sh == 0 ? 12 : 4;
+  r2 = r * 0.5; y2 = y + r * 1.45 + gbf_lf + gbf_vf + 10 * gbf_s + r2;
+  nv = gbf_knob_c(GBF_K_EQQ + k, x, y2, r2, log(max(0.3, min(qmax, q)) / 0.3) / log(qmax / 0.3), 0, 1,
+                  log(0.71 / 0.3) / log(qmax / 0.3), 0, "Q", sprintf(#gbf_v, "%.2f", q), 0,
+                  gbf_eq_c[k * 3], gbf_eq_c[k * 3 + 1], gbf_eq_c[k * 3 + 2]);
+  abs(nv - log(max(0.3, min(qmax, q)) / 0.3) / log(qmax / 0.3)) > 0.0005 ?
+    gbf_eq_q(k, floor(0.3 * (qmax / 0.3) ^ max(0, min(1, nv)) * 100 + 0.5) / 100);
   sprintf(#gbf_eql, "%s ▾", gbf_eq_sh_name(sh));
   cut ? (
     nv = gbf_knob_c(GBF_K_EQ + k, x, y, r, log(f / 20) / log(1000), 0, 1, k == 0 ? 0.26 : 0.9, 0, #gbf_eql,
@@ -169,15 +195,9 @@ function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly) (
 // kits -- and a group opens its programs, with a row back to the groups. GBF_PGMAP: each item's entry (or group;
 // -1 = back to the groups).
 GBF_PG_FLAT = 48;                    // up to this many programs: one list
-function gbf_gm_fam(g) (
-  g == 0 ? "Piano" : g == 1 ? "Chromatic Percussion" : g == 2 ? "Organ" : g == 3 ? "Guitar" : g == 4 ? "Bass"
-  : g == 5 ? "Strings" : g == 6 ? "Ensemble" : g == 7 ? "Brass" : g == 8 ? "Reed" : g == 9 ? "Pipe"
-  : g == 10 ? "Synth Lead" : g == 11 ? "Synth Pad" : g == 12 ? "Synth Effects" : g == 13 ? "Ethnic"
-  : g == 14 ? "Percussive" : g == 15 ? "Sound Effects" : "Drum kits";
-);
-function gbf_pg_drum(i) ( gb_drum_sec > 0 && (GB_PRG + i * 5)[0] == gb_drum_sec; );
-function gbf_pg_group(i) ( gbf_pg_drum(i) ? 16 : ((GB_PRG + i * 5)[1] / 8) | 0; );
-// one program row: its number, its name, ticked when it plays; mapped to entry i
+// gbf_gm_fam(g), gbf_pg_drum(i), gbf_pg_group(i): in gb_face (the side list files programs by them too)
+// one program row: its number and its name, ticked when it plays; mapped to entry i. (A variation's "(bank N)" went
+// with the list's tag, the owner 2026-11-05; the display's box still names the playing one's bank.)
 function gbf_pg_item(i, k, sep) local(q) (
   q = GB_PRG + i * 5; gb_prog_name(i);
   sprintf(#gbf_pgi, "%s%s%s%d  %s", k > 0 ? "|" : "", sep ? "|" : "", i == gbf_pg_i ? "!" : "", q[1] + 1, #gb_ls);
@@ -198,10 +218,10 @@ function gbf_prog_groups() local(g, i, c, k, on) (
   gbf_menu(#gbf_pgm, gbf_pg_x, gbf_pg_y + gbf_pg_h + 2 * gbf_s, 11);
 );
 // group g's programs (what 10), after a row back to the groups
-function gbf_prog_list(g) local(i, k) (
+function gbf_prog_list(g) local(i, j, k) (
   strcpy(#gbf_pgm, "◂  All groups");   // (not '<': rk_menu reads a leading '<' as a submenu's end)
-  GBF_PGMAP[0] = -1; k = 1; i = 0;
-  while (i < gb_nprg && k < RKM_ROWS - 2) ( gbf_pg_group(i) == g ? ( gbf_pg_item(i, k, k == 1); k += 1; ); i += 1; );
+  GBF_PGMAP[0] = -1; k = 1; j = 0; gbf_pg_order();
+  while (j < gb_nprg && k < RKM_ROWS - 2) ( i = GBF_PGORD[j]; gbf_pg_group(i) == g ? ( gbf_pg_item(i, k, k == 1); k += 1; ); j += 1; );
   gbf_menu(#gbf_pgm, gbf_pg_x, gbf_pg_y + gbf_pg_h + 2 * gbf_s, 10);
 );
 // the menu's answer, from rkm_run at the end of the pass (gb_face_frame): what = 1..4 a band's shape
@@ -226,16 +246,16 @@ function gbf_prog_click() local(i, k) (
   gb_ready && gb_nprg > 0 && gbf_pg_h > 0 && lmb_down && !gbf_menu_block && gbf_hit(gbf_pg_x, gbf_pg_y, gbf_pg_w, gbf_pg_h) ? (
     lmb_down = 0;
     gb_nprg > GBF_PG_FLAT ? gbf_prog_groups() : (
-      #gbf_pgm = ""; i = 0; k = 0;
-      loop(gb_nprg,                   // a new section (the kits) after a separator
-        gbf_pg_item(i, k, i > 0 && (GB_PRG + i * 5)[0] != (GB_PRG + i * 5 - 5)[0]);
+      #gbf_pgm = ""; i = 0; k = 0; gbf_pg_order();
+      loop(gb_nprg,                   // in menu order; the kits after a separator
+        gbf_pg_item(GBF_PGORD[i], k, i > 0 && gbf_pg_drum(GBF_PGORD[i]) != gbf_pg_drum(GBF_PGORD[i - 1]));
         k += 1; i += 1;
       );
       gbf_menu(#gbf_pgm, gbf_pg_x, gbf_pg_y + gbf_pg_h + 2 * gbf_s, 10);
     );
   );
 );
-function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, kx0, ky2, q, nv) (
+function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, kx0, ky2, q, nv, yq, bw, bh) (
   gx = cx; gw = cw * 0.55; gh = ph; dr = 15;
   // the curves, refilled when a band's setting or TONE (slider7) changed
   sig = slider24 + slider25 * 3 + slider37 * 7 + slider38 * 11 + slider50 * 13 + slider51 * 17 + slider63 * 19 + slider64 * 23
@@ -294,17 +314,64 @@ function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, k
                   slider7 == 0 ? "flat" : sprintf(#gbf_v, slider7 < 0 ? "dark %.0f" : "bright %.0f", abs(slider7)), 0,
                   gbf_eq_c[12], gbf_eq_c[13], gbf_eq_c[14]);
   nv = floor(nv + 0.5); nv != slider7 ? ( slider7 = nv; slider_automate(slider7); );
+  // HOLD under TONE, in the Q knobs' row (2026-11-05, the owner: "the EQ going flat per instrument with a hold
+  // switch"): off, each program brings its own EQ (flat until set; gb_eq's memory); on, the EQ stays as it is through
+  // a program or instrument change. Slider 95, which @gfx copies to gb_eqm_hold every pass
+  yq = ky2 + kr * 0.8 * 1.45 + gbf_lf + gbf_vf + 10 * gbf_s + kr * 0.4;   // the Q knobs' centre line (gbf_eq_band_knob)
+  bw = min(kx * 0.82, 60 * gbf_s); bh = max(16 * gbf_s, gbf_lf + 6 * gbf_s);
+  gbf_opt_btn(kx0 + kx * 4.5 - bw * 0.5, yq - bh * 0.5, bw, bh, "HOLD", slider95 >= 0.5) ? (
+    slider95 = slider95 >= 0.5 ? 0 : 1; slider_automate(slider95);
+  );
+  slider95 >= 0.5 ? (
+    gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1); gbf_font(max(8, floor(9 * gbf_s)), 0);
+    gfx_measurestr("EQ kept on change", gbf_tw, gbf_th_);
+    gfx_x = kx0 + kx * 4.5 - gbf_tw * 0.5; gfx_y = yq + bh * 0.5 + 3 * gbf_s; gfx_drawstr("EQ kept on change");
+  );
 );
 
 // ── CONTROLS: the library's own knobs (its label_ccN names), else the mod wheel and expression ──
 // A turned knob is sent to the audio thread as that controller (gb_ui_cc_*: the value and number first, the counter
 // last; gb_voice applies each change once), so it moves the sound exactly as the controller from MIDI would.
-function gbf_page_controls(cx, dy, cw, kr) local(n, i, kx, c, nv) (
-  n = gb_ready && gb_nlbl > 0 ? min(8, gb_nlbl) : 2;
+// A bank shows only the controls the playing program reads (2026-11-05: with its variation banks a GM set names
+// Breath for its Expr. programs, and a piano should not show it). GBF_CCUSE[c] = 1 when a region of the program (or
+// one that plays always) reads controller c: a live controller (mod types 1-6), a gate, the filter's controller.
+// Rebuilt when the program or the load changes; GBF_CTLI = the GB_LBL entries the page shows (gbf_nctl of them).
+GBF_CCUSE = 1754000;                 // 128 -> 1754128 (the gap before GBF_IDX_BASE)
+GBF_CTLI = 1754200;                  // 8
+gbf_ccu_gen = -1;
+function gbf_cc_used() local(i, r, k, m) (
+  gbf_ccu_i != gbf_pg_i || gbf_ccu_sec != gbf_pg_sec || gbf_ccu_p != gbf_pg_p || gbf_ccu_gen != gb_load_gen ? (
+    gbf_ccu_i = gbf_pg_i; gbf_ccu_sec = gbf_pg_sec; gbf_ccu_p = gbf_pg_p; gbf_ccu_gen = gb_load_gen;
+    memset(GBF_CCUSE, 0, 128);
+    i = 0;
+    loop(gb_nreg,
+      r = GB_REG + i * GB_RS;
+      r[GBR_PSEC] == 0 || (r[GBR_PSEC] == gbf_pg_sec && gbf_pg_p >= r[GBR_PLO] && gbf_pg_p <= r[GBR_PHI]) ? (
+        k = 0;
+        // (a live controller: types 1-6; the envelope's times, 11-16, since 2026-11-05 -- a library's ATTACK / RELEASE knobs)
+        loop(r[GBR_NMOD], m = GB_MOD + i * GB_MODS + k * 4; (m[0] % 100 <= 6 || (m[0] % 100 >= 11 && m[0] % 100 <= 16)) && m[1] >= 0 && m[1] < 128 ? GBF_CCUSE[m[1]] = 1; k += 1; );
+        k = 0; loop(r[GBR_GCNT], GBF_CCUSE[max(0, min(127, r[GBR_GATES + k * 3]))] = 1; k += 1; );
+        r[GBR_FCC] >= 0 && r[GBR_FCC] < 128 ? GBF_CCUSE[r[GBR_FCC]] = 1;
+      );
+      i += 1;
+    );
+  );
+);
+function gbf_ctl_list() local(i) (
+  gbf_nctl = 0;
+  gb_ready && gb_nlbl > 0 ? (
+    gb_nprg > 0 ? gbf_cc_used();
+    i = 0;
+    loop(gb_nlbl, gbf_nctl < 8 && (gb_nprg == 0 || GBF_CCUSE[GB_LBL[i * 3]]) ? ( GBF_CTLI[gbf_nctl] = i; gbf_nctl += 1; ); i += 1; );
+  );
+);
+function gbf_page_controls(cx, dy, cw, kr) local(n, i, kx, c, nv, e) (
+  gbf_ctl_list();
+  n = gbf_nctl > 0 ? gbf_nctl : 2;
   kx = cw / 8;
   i = 0;
   loop(n,
-    gb_ready && gb_nlbl > 0 ? ( c = GB_LBL[i * 3]; gb_name_str(GB_LBL, i); strcpy(#gbf_cl, #gb_ls); )
+    gbf_nctl > 0 ? ( e = GBF_CTLI[i]; c = GB_LBL[e * 3]; gb_name_str(GB_LBL, e); strcpy(#gbf_cl, #gb_ls); )
                             : ( c = i == 0 ? 1 : 11; strcpy(#gbf_cl, i == 0 ? "MOD WHEEL" : "EXPRESSION"); );
     nv = gbf_knob(GBF_K_CTL + i, cx + kx * (i + 0.5), dy, kr, gb_cc0[c], 0, 127, gb_cc_init[c], 128, #gbf_cl,
                   sprintf(#gbf_v, "CC%d  %d", c, gb_cc0[c]), 0);
@@ -314,7 +381,8 @@ function gbf_page_controls(cx, dy, cw, kr) local(n, i, kx, c, nv) (
   );
   gbf_font(max(7, floor(9 * gbf_s)), 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
   gfx_x = cx + kx * n + 6 * gbf_s; gfx_y = dy - kr;
-  gfx_drawstr(gb_ready && gb_nlbl > 0 ? "The library's own controls. Your MIDI controllers move them too."
+  gfx_drawstr(gbf_nctl > 0 ? "The library's own controls. Your MIDI controllers move them too."
+              : gb_ready && gb_nlbl > 0 ? "This program names no controls of its own: the mod wheel and expression pedal still play it."
               : "This library names no controls of its own: the mod wheel and expression pedal still play it.",
               0, cx + cw, dy + kr * 2);
 );
@@ -421,19 +489,21 @@ function gbf_wheels_draw(y, h, ctx) local(whl, sent) (
 );
 
 // ── the OPTIONS sheet (Swing's pad-editor sheet, swing_grid_opt_draw): over the page, a row a setting ──
-function gbf_opt_btn(bx, by, bw, bh, lbl, on) local(hot, tw, th) (
-  hot = !gbf_menu_block && gbf_hit(bx, by, bw, bh);
-  on ? gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1) : gfx_set(gbf_pn_r * 1.35, gbf_pn_g * 1.35, gbf_pn_b * 1.35, 1);
-  gfx_rect(bx, by, bw, bh);
-  hot ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(bx, by, bw, bh); );
-  gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, bh);
-  gbf_font(10 * gbf_s, 'b'); on ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
-  gfx_measurestr(lbl, tw, th); gfx_x = bx + (bw - tw) * 0.5; gfx_y = by + (bh - th) * 0.5; gfx_drawstr(lbl);
-  hot && lmb_down ? ( lmb_down = 0; 1 ) : 0;
-);
-function gbf_opt_label(x, y, bh, lbl) (
-  gbf_font(10 * gbf_s, 'b'); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
-  gfx_measurestr(lbl, gbf_tw, gbf_th_); gfx_x = x; gfx_y = y + (bh - gbf_th_) * 0.5; gfx_drawstr(lbl);
+// (gbf_opt_btn and gbf_opt_label, its button and its row label, sit above the EQ page, which borrows the button)
+// the look is this instance's own once the user sets any of it here (slider94): a fresh Gumbo stops taking the default
+function gbf_opt_mine() ( slider94 < 0.5 ? ( slider94 = 1; slider_automate(slider94); ); );
+// a fresh Gumbo (no saved state: gb_had_state is set by @serialize's read; no look of its own yet: slider94) takes
+// the look saved as the default (OPTIONS > USE AS DEFAULT; the helper keeps it and publishes it in its band, DEF_GEN
+// last) once, on its first pass; none published yet (no helper has run): the factory look, and it waits.
+function gbf_defaults_take() (
+  !gb_had_state && slider94 < 0.5 && gmem[GBH_BAND + GBH_DEF_GEN] > 0 ? (
+    slider86 = max(0, min(4, gmem[GBH_BAND + GBH_DEF_TYPE] | 0)); slider_automate(slider86);
+    slider87 = max(-3, min(6, gmem[GBH_BAND + GBH_DEF_SIZE] | 0)); slider_automate(slider87);
+    slider88 = max(0, min(2, gmem[GBH_BAND + GBH_DEF_SCREEN] | 0)); slider_automate(slider88);
+    slider91 = max(0, min(1, gmem[GBH_BAND + GBH_DEF_ICONS] | 0)); slider_automate(slider91);
+    slider92 = max(0, min(2, gmem[GBH_BAND + GBH_DEF_COLS] | 0)); slider_automate(slider92);
+    slider94 = 1; slider_automate(slider94);
+  );
 );
 function gbf_options(x, y, w, h) local(s, bh, bw, rx, ry, lx, vx, nv) (
   s = gbf_s; bh = 22 * s; bw = 30 * s;
@@ -448,7 +518,7 @@ function gbf_options(x, y, w, h) local(s, bh, bw, rx, ry, lx, vx, nv) (
   nv = slider86;
   gbf_opt_btn(rx - 2 * bw - 6 * s, ry, bw, bh, "<", 0) ? nv = ((slider86 | 0) + 4) % 5;
   gbf_opt_btn(rx - bw, ry, bw, bh, ">", 0) ? nv = ((slider86 | 0) + 1) % 5;
-  nv != slider86 ? ( slider86 = nv; slider_automate(slider86); );
+  nv != slider86 ? ( slider86 = nv; slider_automate(slider86); gbf_opt_mine(); );
   // TEXT SIZE: the step and - / +
   ry += bh + 12 * s;
   gbf_opt_label(lx, ry, bh, "TEXT SIZE");
@@ -457,7 +527,7 @@ function gbf_options(x, y, w, h) local(s, bh, bw, rx, ry, lx, vx, nv) (
   nv = slider87;
   gbf_opt_btn(rx - 2 * bw - 6 * s, ry, bw, bh, "-", 0) ? nv = max(-3, slider87 - 1);
   gbf_opt_btn(rx - bw, ry, bw, bh, "+", 0) ? nv = min(6, slider87 + 1);
-  nv != slider87 ? ( slider87 = nv; slider_automate(slider87); );
+  nv != slider87 ? ( slider87 = nv; slider_automate(slider87); gbf_opt_mine(); );
   // SCREEN: EMBER (Gumbo's own) / LCD (Swing's teal) / THEME
   ry += bh + 12 * s;
   gbf_opt_label(lx, ry, bh, "SCREEN");
@@ -465,16 +535,35 @@ function gbf_options(x, y, w, h) local(s, bh, bw, rx, ry, lx, vx, nv) (
   gbf_opt_btn(rx - 3 * 70 * s - 12 * s, ry, 70 * s, bh, "EMBER", slider88 == 0) ? nv = 0;
   gbf_opt_btn(rx - 2 * 70 * s - 6 * s, ry, 70 * s, bh, "LCD", slider88 == 1) ? nv = 1;
   gbf_opt_btn(rx - 70 * s, ry, 70 * s, bh, "THEME", slider88 == 2) ? nv = 2;
-  nv != slider88 ? ( slider88 = nv; slider_automate(slider88); );
-  // DONE
+  nv != slider88 ? ( slider88 = nv; slider_automate(slider88); gbf_opt_mine(); );
+  // PADS: the drum pads' icons from their names, and the drum families' colours (on the keys too)
+  ry += bh + 12 * s;
+  gbf_opt_label(lx, ry, bh, "PADS");
+  nv = slider91;
+  gbf_opt_btn(rx - 3 * 70 * s - 12 * s, ry, 70 * s, bh, "ICONS", slider91 >= 0.5) ? nv = slider91 >= 0.5 ? 0 : 1;
+  nv != slider91 ? ( slider91 = nv; slider_automate(slider91); gbf_opt_mine(); );
+  // the colours' strength: SOFT (a breath of colour) or BOLD (the owner's choice, 2026-11-05); the lit one off again = none
+  nv = slider92;
+  gbf_opt_btn(rx - 2 * 70 * s - 6 * s, ry, 70 * s, bh, "SOFT", slider92 >= 0.5 && slider92 < 1.5) ? nv = slider92 >= 0.5 && slider92 < 1.5 ? 0 : 1;
+  gbf_opt_btn(rx - 70 * s, ry, 70 * s, bh, "BOLD", slider92 >= 1.5) ? nv = slider92 >= 1.5 ? 0 : 2;
+  nv != slider92 ? ( slider92 = nv; slider_automate(slider92); gbf_opt_mine(); );
+  // USE AS DEFAULT: this look for every new Gumbo (the helper keeps it); DONE
   ry += bh + 16 * s;
-  gbf_opt_btn(lx, ry, rx - lx, bh, "DONE", 0) ? gbf_opt = 0;
+  gbf_opt_btn(lx, ry, 150 * s, bh, "USE AS DEFAULT", 0) ? (
+    sprintf(#gbf_tmp, "%d|%d|%d|%d|%d", slider86 | 0, slider87 | 0, slider88 | 0, slider91 | 0, slider92 | 0);
+    gbh_request_defaults(#gbf_tmp); gbf_opt_mine();
+  );
+  time_precise() - gbh_def_t < 3 ? (
+    gbf_font(max(8, floor(10 * s)), 0); gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1);
+    gfx_x = lx + 160 * s; gfx_y = ry + (bh - 10 * s) * 0.5; gfx_drawstr("Kept: every new Gumbo opens with this look", 0, rx - 80 * s, ry + bh);
+  );
+  gbf_opt_btn(rx - 70 * s, ry, 70 * s, bh, "DONE", 0) ? gbf_opt = 0;
 );
 
 // A bank (a GM SoundFont: melodic programs + kits) has key names from its kits only, so the kit's pads and key names
 // show only while channel 1 plays a kit (the owner, 2026-11-04: the MuseScore bank opened on drum pads with a piano
 // playing). gbf_kit_now: an ordinary instrument, or a bank whose channel 1 plays a kit (GB_CHPG, the audio side's).
-function gbf_kit_now() local(e) ( e = GB_CHPG[0]; gb_nprg == 0 || (e >= 128 && gb_drum_sec > 0); );
+function gbf_kit_now() ( gb_nprg == 0 || (GB_CHSC[0] == gb_drum_sec && gb_drum_sec > 0); );
 function gbf_pads_on() ( gbf_npad > 0 && gbf_kit_now(); );
 
 // ── drum kits: each key's sound named up the key (the owner, 2026-10-31: "On drum kits can we put the name of the sound
@@ -495,7 +584,7 @@ function gbf_kn_build(fh, wl, bl, ctx) local(n, k, rh, tw, th, img, kw) (
   n = 0;
   loop(128,
     kw[n] = 0;
-    gb_key_name(n) > 0 ? (
+    gbf_key_name(n) > 0 ? (
       k = rk_piano_is_black(n) ? bl : wl;
       gfx_measurestr(#gb_ls, tw, th);
       while (tw > k && strlen(#gb_ls) > 1) ( str_setlen(#gb_ls, strlen(#gb_ls) - 1); gfx_measurestr(#gb_ls, tw, th); );
@@ -508,15 +597,15 @@ function gbf_kn_build(fh, wl, bl, ctx) local(n, k, rh, tw, th, img, kw) (
   gfx_dest = -1;
 );
 function gbf_key_names(x, y, w, h, ctx) local(wsz, fh, rh, bb, wl, bl, n, wi, cx, yb, tw, m, c, kw) (
-  gb_ready && gb_nkey > 0 && gbf_kit_now() ? (     // (a bank's kit names: only while a kit plays)
+  gb_ready && gbf_nkn > 0 ? (        // (the playing instrument's names: a bank's kit has them, its pianos do not)
     wsz = w / rk_piano_white_count(gbf_lo, gbf_hi);
     fh = floor(min(9 * gbf_s * gbf_tk, wsz * 0.38));   // a white key's middle is clear of black keys for 0.38 of its width
     bb = h * 0.60;
     wl = floor(h - 8 * gbf_s); bl = floor(bb - 6 * gbf_s);
     fh >= 7 && bl > 4 * fh ? (
       c = GBF_KN_C + ctx * 4; kw = GBF_KN_W + ctx * 128;
-      fh != c[0] || wl != c[1] || gb_load_gen != c[2] || slider86 != c[3] ? (
-        c[0] = fh; c[1] = wl; c[2] = gb_load_gen; c[3] = slider86;
+      fh != c[0] || wl != c[1] || gbf_pgk != c[2] || slider86 != c[3] ? (
+        c[0] = fh; c[1] = wl; c[2] = gbf_pgk; c[3] = slider86;
         gbf_kn_build(fh, wl, bl, ctx);
       );
       m = gfx_mode; gfx_mode = 0; gfx_a = 1;
@@ -540,7 +629,7 @@ function gbf_key_names(x, y, w, h, ctx) local(wsz, fh, rh, bb, wl, bl, n, wi, cx
 // the pointed-at key's name in a tag above the keyboard (any width)
 function gbf_key_tag(x, w, ky, n) local(cx, tw, th, bx, s) (
   s = gbf_s;
-  gb_ready && gb_nkey > 0 && gbf_kit_now() && gb_key_name(n) > 0 ? (
+  gb_ready && gbf_nkn > 0 && gbf_key_name(n) > 0 ? (
     gbf_font(9 * s, 'b'); gfx_measurestr(#gb_ls, tw, th);
     cx = gbf_key_x(x, w, gbf_lo, gbf_hi, n);
     bx = max(x, min(x + w - tw - 10 * s, cx - tw * 0.5 - 5 * s));
@@ -555,10 +644,26 @@ function gbf_key_tag(x, w, ky, n) local(cx, tw, th, bx, s) (
 // converter's "// label_key" lines), so a 52-sound kit has banks A-D. A pad plays through the mouse-note channel
 // (gb_kb_note), harder the higher it is struck (gb_kb_vel 30..127); it lights on every hit of its note (MIDI, the
 // keyboard or the pad) and fades.
+// The pads are the playing kit's named keys (gbf_names_build: a bank's kit names its own; rebuilt when the program changes).
+// Each pad's family and icon come from its name (gbf_pad_class), a hand-picked look winning (GBF_PLOOK, from the
+// helper's pad_looks.txt); the keys take the families' colours (GBF_KCOL -> rk_piano_key_colours).
 function gbf_pads_build() local(n, k) (
-  gb_ready && gbf_pad_gen != gb_load_gen ? (
-    gbf_pad_gen = gb_load_gen; gbf_npad = 0; gbf_pbank = 0; gbf_pad_kit = -1;
-    n = 0; loop(128, GBF_PGL[n] = 0; GB_KLB[n * 2 + 1] > 0 ? ( GBF_PAD[gbf_npad] = n; gbf_npad += 1; ); n += 1; );
+  gb_ready && gbf_pad_gen != gbf_pgk ? (
+    gbf_pad_gen = gbf_pgk; gbf_npad = 0; gbf_pbank = 0; gbf_pad_kit = -1;
+    gbf_pick_note >= 0 && GBF_KNM[gbf_pick_note * 2 + 1] == 0 ? gbf_pick_note = -1;   // the picker stays while its pad exists in the new kit
+    gbf_looks_load();
+    n = 0;
+    loop(128,
+      GBF_PGL[n] = 0; GBF_KCOL[n * 3] = -1;
+      GBF_KNM[n * 2 + 1] > 0 ? (
+        GBF_PAD[gbf_npad] = n; gbf_npad += 1;
+        gbf_pad_class(n);
+        GBF_PLOOK[n * 3] >= 0 ? GBF_PICON[n] = GBF_PLOOK[n * 3];
+        GBF_PLOOK[n * 3 + 1] >= 0 ? GBF_PFAM[n] = GBF_PLOOK[n * 3 + 1];
+        gbf_pad_colour(n);               // its own colour, else its family's -> GBF_PCOL and the key's GBF_KCOL
+      );
+      n += 1;
+    );
   );
   // a kit coming in opens its pads, leaving one closes them; between those the tab stays where the user put it
   k = gb_ready && gbf_pads_on();
@@ -569,7 +674,94 @@ function gbf_note_name(n) local(pc) (
   sprintf(#gbf_nn, "%s%d", pc == 0 ? "C" : pc == 1 ? "C#" : pc == 2 ? "D" : pc == 3 ? "D#" : pc == 4 ? "E" : pc == 5 ? "F"
                  : pc == 6 ? "F#" : pc == 7 ? "G" : pc == 8 ? "G#" : pc == 9 ? "A" : pc == 10 ? "A#" : "B", floor(n / 12) - 1);
 );
-function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k, n, gl, hot, sp, l, cut, tw2, th2, ly, e) (
+// the pad's look picker (the owner, 2026-11-05: "And yes change the icon and color"): over the pads, the 22 drum icons,
+// the 7 family swatches, AUTO for each, DONE. A pick applies at once and goes to the helper for pad_looks.txt
+// (gbf_look_set). A press outside the panel closes it.
+// With a colour wheel (the owner, later the same day: "can we get a color whell picker in that overlay menu"): the
+// hue round a ring, saturation across and brightness down the square inside; a drag follows the mouse and the helper
+// gets the colour once, on release. Drawn from gbf_window over the page AND the keyboard, so it has the room.
+function gbf_pad_picker(x, y, w, h) local(s, n, px, py, pw, ph, cs, i, cx, cy, iw, ih, ic, f, hot, bh, bw, ry, cur_i, cur_f, cur_c, wd, wx, wy, rr, ri, qx, qy, qs, dx, dy, dd, a, in_ring, in_sq, col) (
+  s = gbf_s; n = gbf_pick_note;
+  // the pad's colour into the wheel when the picker opens on it (or a swatch resets it)
+  gbf_pick_for != n ? (
+    gbf_pick_for = n; gbf_rgb_hsv(GBF_PCOL[n * 3], GBF_PCOL[n * 3 + 1], GBF_PCOL[n * 3 + 2]);
+    gbf_pick_h = gbf_cw_h; gbf_pick_s = gbf_cw_s; gbf_pick_v = gbf_cw_v; gbf_pick_drag = 0;
+  );
+  // three rows of eight icons at the left, the wheel (as tall as they are) at the right, sized to the room
+  ph = min(h - 8 * s, 90 * s + 3 * 38 * s);
+  cs = max(16 * s, min(38 * s, (ph - 90 * s) / 3));
+  wd = 3 * cs;
+  pw = min(w - 8 * s, 8 * cs + wd + 36 * s);
+  px = x + (w - pw) * 0.5; py = y + (h - ph) * 0.5;
+  lmb_down && !gbf_menu_block && !gbf_hit(px, py, pw, ph) ? ( lmb_down = 0; gbf_pick_note = -1; );
+  gfx_set(gbf_pn_r, gbf_pn_g, gbf_pn_b, 1); gfx_rect(px, py, pw, ph);
+  gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1); gbf_box(px, py, pw, ph);
+  gbf_key_name(n); gbf_font(10 * s, 'b'); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+  gfx_x = px + 12 * s; gfx_y = py + 9 * s; gfx_drawstr("PAD LOOK   ");
+  gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1); gfx_drawstr(#gb_ls, 0, px + pw - 12 * s, py + 30 * s);
+  cur_i = GBF_PLOOK[n * 3]; cur_f = GBF_PLOOK[n * 3 + 1]; cur_c = GBF_PLOOK[n * 3 + 2];
+  // the icons; the one the pad wears is marked (strong when hand-picked, faint when automatic)
+  ry = py + 30 * s; i = 0;
+  loop(GBF_PAD_NICON,
+    cx = px + 12 * s + (i % 8) * cs; cy = ry + floor(i / 8) * cs;
+    hot = !gbf_menu_block && gbf_hit(cx, cy, cs - 4 * s, cs - 4 * s);
+    i == GBF_PICON[n] ? ( gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, cur_i >= 0 ? 0.40 : 0.18); gfx_rect(cx, cy, cs - 4 * s, cs - 4 * s); );
+    hot ? ( gfx_set(1, 1, 1, 0.10); gfx_rect(cx, cy, cs - 4 * s, cs - 4 * s); );
+    gfx_getimgdim(GBF_PICON_SLOT + i, iw, ih);
+    iw > 0 ? ( ic = cs - 12 * s; gfx_x = cx + 4 * s; gfx_y = cy + 4 * s; gfx_a = 0.9; gfx_blit(GBF_PICON_SLOT + i, ic / iw, 0); gfx_a = 1; );
+    lmb_down && hot ? ( lmb_down = 0; gbf_look_set(n, i, cur_f, cur_c, 1); );
+    i += 1;
+  );
+  // the wheel: a hue ring of 120 pieces, the saturation / brightness square inside, marks at the colour in hand
+  wx = px + 12 * s + 8 * cs + 12 * s + wd * 0.5; wy = ry + wd * 0.5; rr = wd * 0.5 - 2 * s; ri = rr * 0.74;
+  a = 0;
+  loop(120,
+    gbf_hsv_rgb(a * 3, 1, 1); gfx_set(gbf_cw_r, gbf_cw_g, gbf_cw_b, 1);
+    gfx_triangle(wx + rr * cos((a * 3 - 1) * $pi / 180), wy + rr * sin((a * 3 - 1) * $pi / 180),
+                 wx + rr * cos((a * 3 + 3.5) * $pi / 180), wy + rr * sin((a * 3 + 3.5) * $pi / 180),
+                 wx + ri * cos((a * 3 + 3.5) * $pi / 180), wy + ri * sin((a * 3 + 3.5) * $pi / 180),
+                 wx + ri * cos((a * 3 - 1) * $pi / 180), wy + ri * sin((a * 3 - 1) * $pi / 180));
+    a += 1;
+  );
+  qs = ri * 1.3; qx = wx - qs * 0.5; qy = wy - qs * 0.5;
+  gbf_hsv_rgb(gbf_pick_h, 1, 1);
+  gfx_gradrect(qx, qy, qs, qs, 1, 1, 1, 1, (gbf_cw_r - 1) / qs, (gbf_cw_g - 1) / qs, (gbf_cw_b - 1) / qs, 0, 0, 0, 0, 0);
+  gfx_gradrect(qx, qy, qs, qs, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 / qs);
+  gfx_set(1, 1, 1, 1);
+  gfx_circle(wx + (rr + ri) * 0.5 * cos(gbf_pick_h * $pi / 180), wy + (rr + ri) * 0.5 * sin(gbf_pick_h * $pi / 180), 4 * s, 0, 1);
+  gfx_circle(qx + gbf_pick_s * qs, qy + (1 - gbf_pick_v) * qs, 4 * s, 0, 1);
+  gfx_set(0, 0, 0, 1);
+  gfx_circle(qx + gbf_pick_s * qs, qy + (1 - gbf_pick_v) * qs, 5 * s, 0, 1);
+  // a press on the ring or the square starts a drag; the colour follows the mouse until the release
+  dx = mx - wx; dy = my - wy; dd = sqrt(dx * dx + dy * dy);
+  in_ring = dd >= ri * 0.96 && dd <= rr * 1.04; in_sq = mx >= qx && mx < qx + qs && my >= qy && my < qy + qs;
+  !gbf_menu_block && lmb_down ? ( in_sq ? ( lmb_down = 0; gbf_pick_drag = 2; ) : in_ring ? ( lmb_down = 0; gbf_pick_drag = 1; ); );
+  gbf_pick_drag > 0 ? (
+    gbf_pick_drag == 1 ? ( gbf_pick_h = atan2(dy, dx) * 180 / $pi; gbf_pick_h < 0 ? gbf_pick_h += 360; )
+                       : ( gbf_pick_s = max(0, min(1, (mx - qx) / qs)); gbf_pick_v = max(0, min(1, 1 - (my - qy) / qs)); );
+    gbf_hsv_rgb(gbf_pick_h, gbf_pick_s, gbf_pick_v); col = gbf_rgb_pack(gbf_cw_r, gbf_cw_g, gbf_cw_b);
+    gbf_look_set(n, cur_i, cur_f, col, !LMB);            // to the helper once, on the release
+    !LMB ? gbf_pick_drag = 0;
+  );
+  // the family colours, then AUTO (the family's colour, no own one); the pad's own boxed when it wears a family's
+  ry += 3 * cs + 6 * s; bh = 22 * s; bw = (pw - 24 * s - 7 * 4 * s) / 8;
+  f = 0;
+  loop(7,
+    cx = px + 12 * s + f * (bw + 4 * s);
+    gbf_pad_fcol(f); gfx_set(gbf_pc_r, gbf_pc_g, gbf_pc_b, f == GBF_PFAM[n] && cur_c < 0 ? 1 : 0.55); gfx_rect(cx, ry, bw, bh);
+    f == GBF_PFAM[n] && cur_c < 0 ? ( gfx_set(1, 1, 1, 1); gbf_box(cx, ry, bw, bh); );
+    hot = !gbf_menu_block && gbf_hit(cx, ry, bw, bh);
+    lmb_down && hot ? ( lmb_down = 0; gbf_look_set(n, cur_i, f, -1, 1); gbf_pick_for = -1; );
+    f += 1;
+  );
+  gbf_opt_btn(px + 12 * s + 7 * (bw + 4 * s), ry, bw, bh, "AUTO", cur_f < 0 && cur_c < 0) ? ( gbf_look_set(n, cur_i, -1, -1, 1); gbf_pick_for = -1; );
+  ry += bh + 8 * s;
+  gbf_opt_btn(px + 12 * s, ry, 90 * s, bh, "AUTO ICON", cur_i < 0) ? gbf_look_set(n, -1, cur_f, cur_c, 1);
+  gbf_opt_btn(px + pw - 12 * s - 70 * s, ry, 70 * s, bh, "DONE", 0) ? gbf_pick_note = -1;
+  gbf_font(8 * s, 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1); gfx_x = px + 110 * s; gfx_y = ry + (bh - 8 * s) * 0.5;
+  gfx_drawstr(gbh_running ? "Kept with the kit by the Gumbo helper" : "For now only: start the Gumbo helper to keep it", 0, px + pw - 90 * s, ry + bh);
+);
+function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k, n, gl, hot, sp, l, cut, tw2, th2, ly, e, ic, iw, ih, fr, fg, fb, cr, cg, cb, bd, lum) (
   s = gbf_s; g = 6 * s;
   nb = min(8, ceil(gbf_npad / 16));
   gbf_pbank = min(gbf_pbank, max(0, nb - 1));
@@ -598,19 +790,39 @@ function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k,
       n = GBF_PAD[i];
       GB_NTA[n] || gbf_pad_note == n ? GBF_PGL[n] = 1 : GBF_PGL[n] *= 0.86;
       gl = GBF_PGL[n];
-      hot = !gbf_menu_block && gbf_hit(px, py, pw, ph);
+      // its colour: its own or its drum family's (PAD COLOURS on), else the instrument family's as before
+      slider92 >= 0.5 ? ( cr = GBF_PCOL[n * 3]; cg = GBF_PCOL[n * 3 + 1]; cb = GBF_PCOL[n * 3 + 2]; ) : ( cr = gbf_fc_r; cg = gbf_fc_g; cb = gbf_fc_b; );
+      hot = !gbf_menu_block && gbf_pick_note < 0 && gbf_hit(px, py, pw, ph);
       hot ? ( gbf_pad_hit = n; gbf_pad_vel = 30 + 97 * max(0, min(1, (py + ph - my) / max(1, ph))); );
-      // the pad: dark rubber, lit in the family colour by a hit, a lip on top
-      gfx_set(gbf_pn_r * 1.2 + (gbf_fc_r - gbf_pn_r * 1.2) * gl * 0.85, gbf_pn_g * 1.2 + (gbf_fc_g - gbf_pn_g * 1.2) * gl * 0.85,
-              gbf_pn_b * 1.2 + (gbf_fc_b - gbf_pn_b * 1.2) * gl * 0.85, 1);
+      // the pad: rubber in its colour -- a breath of it (SOFT) or most of it (BOLD; the owner, 2026-11-05: "they are
+      // too faint, i want them bold"), lit whole by a hit, a lip on top in it
+      // BOLD stands on a dark rubber of its own, whatever the theme (a light theme's panel made it pastel and its
+      // light text unreadable -- the owner's three-theme pictures, 2026-11-05); SOFT is a breath over the theme's panel
+      slider92 >= 1.5 ? ( fr = 0.18 + (cr - 0.18) * 0.62; fg = 0.16 + (cg - 0.16) * 0.62; fb = 0.15 + (cb - 0.15) * 0.62; )
+      : ( fr = gbf_pn_r * 1.2; fg = gbf_pn_g * 1.2; fb = gbf_pn_b * 1.2;
+          slider92 >= 0.5 ? ( fr += (cr - fr) * 0.14; fg += (cg - fg) * 0.14; fb += (cb - fb) * 0.14; ); );
+      gfx_set(fr + (cr - fr) * gl * 0.85, fg + (cg - fg) * gl * 0.85, fb + (cb - fb) * gl * 0.85, 1);
       gfx_rect(px, py, pw, ph);
+      // the face's brightness decides the ink: near-black on a light face, near-white on a dark one (not the theme's
+      // text colours, which go the wrong way on a light theme)
+      lum = (fr + (cr - fr) * gl * 0.85) * 0.2126 + (fg + (cg - fg) * gl * 0.85) * 0.7152 + (fb + (cb - fb) * gl * 0.85) * 0.0722;
       hot ? ( gfx_set(1, 1, 1, 0.07); gfx_rect(px, py, pw, ph); );
-      gfx_set(gbf_fc_r, gbf_fc_g, gbf_fc_b, 0.55 + 0.45 * gl); gfx_rect(px, py, pw, max(2, 2 * s));
+      gfx_set(cr, cg, cb, 0.55 + 0.45 * gl); gfx_rect(px, py, pw, max(2, 2 * s));
       gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(px, py, pw, ph);
+      // its icon, top left (PAD ICONS on, a pad tall enough); a click on it opens the pad's look picker, not the sound
+      slider91 >= 0.5 && ph >= 34 * s ? (
+        gfx_getimgdim(GBF_PICON_SLOT + GBF_PICON[n], iw, ih);
+        ic = min(ph * 0.40, 24 * s);
+        bd = !gbf_menu_block && gbf_pick_note < 0 && gbf_hit(px + 3 * s, py + 3 * s, ic + 4 * s, ic + 4 * s);
+        bd ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(px + 3 * s, py + 3 * s, ic + 4 * s, ic + 4 * s); );
+        lum > 0.42 ? ( gfx_set(0, 0, 0, 0.32); gfx_rect(px + 3 * s, py + 3 * s, ic + 4 * s, ic + 4 * s); );   // the light icon on a dark chip when the face is light
+        iw > 0 ? ( gfx_x = px + 5 * s; gfx_y = py + 5 * s; gfx_a = gl > 0.5 ? 0.95 : 0.80; gfx_blit(GBF_PICON_SLOT + GBF_PICON[n], ic / iw, 0); gfx_a = 1; );
+        lmb_down && bd ? ( lmb_down = 0; gbf_pick_note = n; gbf_pad_hit = -1; );
+      );
       // its sound's name, two lines when one will not fit even shrunk
-      gb_key_name(n); strcpy(#gbf_pn, #gb_ls);
+      gbf_key_name(n); strcpy(#gbf_pn, #gb_ls);
       gbf_fit(#gbf_pn, pw - 12 * s, 11 * s, 'b');
-      gl > 0.5 ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 1) : gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
+      lum > 0.42 ? gfx_set(0.08, 0.07, 0.06, 1) : gfx_set(0.96, 0.95, 0.94, 1);
       gbf_tw > pw - 12 * s ? (
         l = strlen(#gbf_pn); cut = -1; sp = 0;
         while (sp < l) ( str_getchar(#gbf_pn, sp) == ' ' && (cut < 0 || abs(sp - l * 0.5) < abs(cut - l * 0.5)) ? cut = sp; sp += 1; );
@@ -622,11 +834,12 @@ function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k,
           gfx_x = px + (pw - tw2) * 0.5; gfx_y = ly + gbf_th_; gfx_drawstr(#gbf_pn2, 0, px + pw - 4 * s, py + ph);
         ) : ( gfx_x = px + 6 * s; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn, 0, px + pw - 4 * s, py + ph); );
       ) : ( gfx_x = px + (pw - gbf_tw) * 0.5; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn); );
-      // its key, small in the corner
+      // its key in the corner, bold and bright enough to read (the owner, 2026-11-05: "the notes on the drum pads are
+      // hard to see")
       ph >= 34 * s ? (
-        gbf_note_name(n); gbf_font(8 * s, 0);
-        gl > 0.5 ? gfx_set(gbf_bg_r, gbf_bg_g, gbf_bg_b, 0.8) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
-        gfx_measurestr(#gbf_nn, gbf_tw, gbf_th_); gfx_x = px + 5 * s; gfx_y = py + ph - gbf_th_ - 4 * s; gfx_drawstr(#gbf_nn);
+        gbf_note_name(n); gbf_font(max(9, floor(10 * s)), 'b');
+        lum > 0.42 ? gfx_set(0.08, 0.07, 0.06, 0.9) : gfx_set(0.96, 0.95, 0.94, 0.85);
+        gfx_measurestr(#gbf_nn, gbf_tw, gbf_th_); gfx_x = px + 6 * s; gfx_y = py + ph - gbf_th_ - 4 * s; gfx_drawstr(#gbf_nn);
       );
     ) : (
       gfx_set(gbf_pn_r * 0.75, gbf_pn_g * 0.75, gbf_pn_b * 0.75, 1); gfx_rect(px, py, pw, ph);
@@ -638,16 +851,18 @@ function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k,
   !LMB ? gbf_pad_note = -1;
 );
 
-function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, ky, kr, ka, hit, cur, compact, thx, thy, x0, tby, tbh, nyy, gw, bwt, bh, hot, pon)
+function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, dht, kh, ky, kr, ka, hit, cur, compact, thx, thy, x0, tby, tbh, nyy, gw, bwt, bh, hot, pon, gh, kht, kon)
 (
   s = gbf_s; tb = 46 * s; pad = 10 * s;
   // the window (re)opened (no window pass for half a second): read the lists again, so sound packages installed or
   // removed while Gumbo was closed show (ReaPack tells Gumbo nothing; the helper's own imports move LIBGEN)
-  time_precise() - gbf_win_t > 0.5 ? ( gbf_idx_loaded = 0; gbf_cur_for = -1; gbf_bw_snap = 1; gbf_kbn_w = -1; );
+  time_precise() - gbf_win_t > 0.5 ? ( gbf_idx_loaded = 0; gbf_cur_for = -1; gbf_bw_snap = 1; gbf_kh_snap = 1; gbf_dh_snap = 1; gbf_kbn_w = -1; );
   gbf_win_t = time_precise();
+  gbf_defaults_take();               // a fresh Gumbo: the look saved as the default, once
   !gbf_idx_loaded ? gbf_idx_load();
   !gbf_icons_loaded ? gbf_icons_load();
-  gbf_range(); gbf_rec_build();
+  !gbf_picons_loaded ? gbf_pad_icons_load();
+  gbf_prog_sync();                   // the playing program: its range, lit keys, dots, key names (the pads follow)
   gbf_menu_block = rkth_cl_open || rkm_on;   // an open THEME panel or menu takes the clicks under it
   // ── top bar ──
   gfx_set(gbf_pn_r, gbf_pn_g, gbf_pn_b, 1); gfx_rect(0, 0, gfx_w, tb);
@@ -692,7 +907,16 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, 
 
   // ── body: browser | display + tabs + page; keyboard along the bottom ──
   compact = gfx_w < 760 * s;          // a narrow window drops the browser and its handle; the arrows still step
-  kh = max(44 * s, min(90 * s, gfx_h * 0.16)); ky = gfx_h - kh - 6 * s;
+  // the keyboard folds away behind a handle along the bottom edge (the owner, 2026-11-05: "can we make the keyboard
+  // collapsable"; the browser's drawer, turned). Its height slides; the body above takes the room (the display, the
+  // knobs, the page); while it moves the row draws as plain ground, the keys only once it has landed.
+  gh = 14 * s;
+  kh = max(44 * s, min(90 * s, gfx_h * 0.16));
+  kht = slider20 >= 0.5 ? kh : 0;
+  gbf_kh_snap ? ( gbf_kh_a = kht; gbf_kh_snap = 0; ) : gbf_kh_a += (kht - gbf_kh_a) * min(1, dt * 16);
+  abs(kht - gbf_kh_a) < 0.5 * s ? gbf_kh_a = kht;
+  kon = gbf_kh_a == kh;               // the keyboard is out: not away, not sliding
+  ky = gfx_h - gh - 2 * s - gbf_kh_a;
   // the browser folds away behind a handle pinned to the left edge (Swing's drawer: rk_side_gutter; the owner,
   // 2026-10-31). Its width slides; while it moves the panel draws as plain ground, the list only once it has landed.
   gw = compact ? 0 : 18 * s;
@@ -717,19 +941,29 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, 
   kr = max(12 * s, min(min(cw / 8 * 0.30, 30 * s), (ky - tb - 2 * pad - 120 * s - tbh - 16 * s) / (1.4 + 1.45 + 0.95)));
   gbf_lf = max(8, floor(kr * 0.36)); gbf_vf = max(8, floor(kr * 0.32));
   ka = kr * (1.4 + 1.45) + gbf_lf + gbf_vf + 10 * s;              // the knob row's height
-  dh = max(120 * s, min(230 * s, ky - tb - 2 * pad - ka - tbh - 14 * s));
-  gbf_display(cx, tb + pad, cw, dh);
+  // the display, or its bar when folded (the owner, 2026-11-05: "can we make the lcd collapsable?"); the height
+  // slides as the keyboard's does, plain ground while it moves
+  dht = slider93 >= 0.5 ? max(120 * s, min(230 * s, ky - tb - 2 * pad - ka - tbh - 14 * s)) : max(34 * s, 13 * s * gbf_tk + 20 * s);
+  gbf_dh_snap ? ( gbf_dh_a = dht; gbf_dh_snap = 0; ) : gbf_dh_a += (dht - gbf_dh_a) * min(1, dt * 16);
+  abs(dht - gbf_dh_a) < 0.5 * s ? gbf_dh_a = dht;
+  dh = gbf_dh_a;
+  gbf_dh_a == dht ? ( slider93 >= 0.5 ? gbf_display(cx, tb + pad, cw, dh) : gbf_display_bar(cx, tb + pad, cw, dh); )
+  : ( gbf_scr(0.08, 0.07, 0.06, 1); gfx_rect(cx, tb + pad, cw, dh); gbf_scr(0.23, 0.16, 0.12, 1); gbf_box(cx, tb + pad, cw, dh); gbf_pg_h = 0; gbf_chip_y = -1000; );
+  gbf_display_fold_btn(cx, tb + pad, cw);
   gbf_prog_click();
   // on the display: the playing-style chips under the name (under a bank's PROGRAM line), the controllers under the
-  // output meter
-  gbf_chips(cx + 16 * s, gbf_chip_y, cw * 0.47, 18 * gbf_tk * s);
-  nyy = tb + pad + 136 * s + 2 * (gbf_tk - 1) * 9 * s;   // under OUT, which moves down as its labels grow
-  dh >= 162 * s ? gbf_perf_row(cx + cw * 0.52, nyy, cw * 0.45);
+  // output meter (neither on the bar)
+  slider93 >= 0.5 && gbf_dh_a == dht ? (
+    gbf_chips(cx + 16 * s, gbf_chip_y, cw * 0.47, 18 * gbf_tk * s);
+    nyy = tb + pad + 136 * s + 2 * (gbf_tk - 1) * 9 * s;   // under OUT, which moves down as its labels grow
+    dh >= 162 * s ? gbf_perf_row(cx + cw * 0.52, nyy, cw * 0.45);
+  );
   // the tabs and the page
   tby = tb + pad + dh + 6 * s;
   gbf_pads_build();
   pon = gbf_pads_on();
   !pon && gbf_tab == 4 ? gbf_tab = 0;
+  gbf_ctl_list();                    // the CONTROLS tab counts the playing program's controls
   gbf_tabs(cx, tby, min(110 * s, (cw - (pon ? 16 : 12) * s) / (pon ? 5 : 4)), tbh, pon ? 5 : 4);
   gbf_tab != gbf_tab_was ? ( gbf_opt = 0; gbf_tab_was = gbf_tab; );   // a tab picked closes the OPTIONS sheet
   gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.35); gfx_rect(cx, tby + tbh, cw, 1);
@@ -741,26 +975,40 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, kh, 
   : gbf_tab == 4 ? gbf_page_pads(cx, tby + tbh + 8 * s, cw, ky - 14 * s - (tby + tbh + 8 * s)) : gbf_page_settings(cx, dy, cw, kr);
   gbf_tab != 4 || gbf_opt ? gbf_pad_note = -1;
 
-  // ── the keyboard: recorded keys dotted above, held keys lit, play it with the mouse ──
-  gbf_wheels(pad, ky, 48 * s, kh, 0); gbf_wheels_draw(ky, kh, 0);   // pitch bend and mod wheel at the keyboard's left end
+  // ── the keyboard: recorded keys dotted above, held keys lit, play it with the mouse; its handle along the bottom ──
+  hot = !gbf_menu_block && rk_gutter_hit(0, gfx_h - gh, gfx_w, gh);
+  rk_gutter_paint_h(0, gfx_h - gh, gfx_w, gh, 1, hot, slider20 >= 0.5, s, gbf_pn_r, gbf_pn_g, gbf_pn_b, gbf_bd_r, gbf_bd_g, gbf_bd_b,
+                    gbf_td_r, gbf_ac_r, gbf_ac_g, gbf_ac_b, gbf_bg_r * 0.2126 + gbf_bg_g * 0.7152 + gbf_bg_b * 0.0722 > 0.5);
+  hot && lmb_down ? ( slider20 = slider20 >= 0.5 ? 0 : 1; slider_automate(slider20); );
+  kon ? ( gbf_wheels(pad, ky, 48 * s, kh, 0); gbf_wheels_draw(ky, kh, 0); )   // pitch bend and mod wheel at the keyboard's left end
+  : gbf_kh_a >= 1 ? (                  // sliding: plain ground with the lit leading edge along its top
+    gfx_set(gbf_pn_r * 0.92, gbf_pn_g * 0.92, gbf_pn_b * 0.92, 1); gfx_rect(pad, ky, gfx_w - 2 * pad, gbf_kh_a);
+    gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 0.8); gfx_rect(pad, ky, gfx_w - 2 * pad, 2 * s);
+  );
   gbf_kx = pad + 56 * s; gbf_kw = gfx_w - pad - gbf_kx;
-  hit = gbf_menu_block || gbf_whl ? -1 : rk_piano_hit(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0);
+  hit = !kon || gbf_menu_block || gbf_whl || (gbf_tab == 4 && gbf_pick_note >= 0) ? -1 : rk_piano_hit(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0);   // (the pad picker lies over the keys)
   lmb_down && hit >= 0 ? gbf_kb_drag = 1;
-  !LMB ? gbf_kb_drag = 0;
+  !LMB || !kon ? gbf_kb_drag = 0;
   // the mouse note: a key held on the keyboard, else a playing-style chip held down (its keyswitch), else a drum pad
   gbf_kbn_w = gbf_kb_drag ? ( hit >= 0 ? hit : gbf_kbn_w ) : gbf_chip_note >= 0 ? gbf_chip_note : gbf_pad_note;
   // its velocity, set before the note it belongs to (the audio thread reads it when the note changes)
   gbf_kbn_s < 0 && !gbf_kb_drag && gbf_chip_note < 0 && gbf_pad_note >= 0 ? gb_kb_vel = gbf_pad_vv : gb_kb_vel = 100;
   gb_kb_note = gbf_kbn_s >= 0 ? gbf_kbn_s : gbf_kbn_w;
   gbf_keys_prep(gbf_lo, gbf_hi);
-  rk_piano_draw_ex(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0, gbf_kbn_w, gbf_kb_drag ? -1 : hit, gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
-  gbf_key_names(gbf_kx, ky, gbf_kw, kh, 0);
-  cur = gbf_kb_drag ? gbf_kbn_w : hit;
-  gb_ready && gbf_rec_gen == gb_load_gen ? (
-    gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1);
-    hit = gbf_lo; loop(gbf_hi - gbf_lo + 1, GBF_REC[hit] ? gfx_circle(gbf_key_x(gbf_kx, gbf_kw, gbf_lo, gbf_hi, hit), ky - 3 * s, max(1.5, 1.8 * s), 1); hit += 1; );
+  kon ? (
+    rk_piano_key_colours(gb_ready && slider92 >= 0.5 && gbf_pads_on() ? GBF_KCOL : -1);   // a kit's keys in their families' colours
+    rk_piano_kcol_mix = slider92 >= 1.5 ? 0.80 : 0.45;                                    // SOFT a breath, BOLD most of it
+    rk_piano_draw_ex(gbf_kx, ky, gbf_kw, kh, gbf_lo, gbf_hi, 0, gbf_kbn_w, gbf_kb_drag ? -1 : hit, gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
+    gbf_key_names(gbf_kx, ky, gbf_kw, kh, 0);
+    cur = gbf_kb_drag ? gbf_kbn_w : hit;
+    gb_ready && gbf_rec_gen == gbf_pgk ? (
+      gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1);
+      hit = gbf_lo; loop(gbf_hi - gbf_lo + 1, GBF_REC[hit] ? gfx_circle(gbf_key_x(gbf_kx, gbf_kw, gbf_lo, gbf_hi, hit), ky - 3 * s, max(1.5, 1.8 * s), 1); hit += 1; );
+    );
+    cur >= 0 ? gbf_key_tag(gbf_kx, gbf_kw, ky, cur);
   );
-  cur >= 0 ? gbf_key_tag(gbf_kx, gbf_kw, ky, cur);
+  // the pad's look picker, over the page and the keyboard (under the menu, which gb_face_frame runs last)
+  gbf_tab == 4 && !gbf_opt && gbf_pick_note >= 0 ? gbf_pad_picker(cx, tby, cw, gfx_h - gh - 2 * s - tby);
 );
 
 // ── the mixer-strip face: the instrument's name, its status, a small keyboard when there is room ──
@@ -787,6 +1035,7 @@ function gbf_strip_geom() local(s, fs, y, kh, ww) (
 );
 // on EVERY strip pass (outside the redraw skip, which would otherwise leave the 0x200 decision to a stale pass)
 function gbf_strip_input() local(hit, in) (
+  gbf_defaults_take();               // a fresh Gumbo seen first as a strip: the default look, once
   gbf_strip_geom();
   in = gbf_hit(0, 0, gfx_w, gfx_h) && !_srf_foreign;
   gbf_sw_w > 0 ? gbf_wheels(4 * gbf_s, gbf_sk_y, gbf_sw_w, gbf_sk_h, 1);
@@ -825,8 +1074,11 @@ function gbf_strip() local(s, fs, i, fill) (
   ) : 0;
   !gbf_s_short ? gfx_drawstr(#gbf_st, 0, gfx_w - 4 * s, gfx_h);   // a short strip: the keys have this line
   gbf_sk_h > 0 ? (
-    gbf_range(); gbf_rec_build(); gbf_keys_prep(gbf_lo, gbf_hi);
+    gbf_prog_sync(); gbf_keys_prep(gbf_lo, gbf_hi);
     // the key the mouse holds is lit at once (sel), not only when the audio thread's held-note table comes back
+    gbf_pads_build();                // the keys' family colours follow the kit here too (no window pass needed)
+    rk_piano_key_colours(gb_ready && slider92 >= 0.5 && gbf_pads_on() ? GBF_KCOL : -1);
+    rk_piano_kcol_mix = slider92 >= 1.5 ? 0.80 : 0.45;
     rk_piano_draw_ex(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, gbf_lo, gbf_hi, 0, gbf_kbn_s, gbf_skb_drag ? -1 : gbf_shit,
                      gbf_ac_r, gbf_ac_g, gbf_ac_b, GBF_KSF);
     gbf_key_names(gbf_sk_x, gbf_sk_y, gbf_sk_w, gbf_sk_h, 1);
@@ -910,7 +1162,10 @@ function gb_face_frame() (
   !is_embedded ? (
     gbf_mr = rkm_run(rkm_on ? gfx_getchar() : 0);   // last: the menu over everything; a pick acts now
     gbf_mr > 0 ? gbf_menu_pick(gbf_mwhat, gbf_mr);
-    gbf_mr != 0 || !rkm_on ? gbf_mwhat = 0;
+    // the kind of menu is forgotten only once none is open: a pick that opens the next menu (a GM group -> its
+    // programs, "All groups" -> the groups) sets the new kind, which used to be wiped right here, so a program picked
+    // from a group's list did nothing (the owner, 2026-11-05: "when i pick an instrument it does not load")
+    !rkm_on ? gbf_mwhat = 0;
   );
   !(gfx_ext_flags & 2) ? ( gb_name_bar ? ( gfx_ext_flags = (gfx_ext_flags | 0x100) - 0x100; ) : ( gfx_ext_flags |= 0x100; ); );
   rk_srf_store();
