@@ -761,7 +761,7 @@ function gbf_pad_picker(x, y, w, h) local(s, n, px, py, pw, ph, cs, i, cx, cy, i
   gbf_font(8 * s, 0); gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1); gfx_x = px + 110 * s; gfx_y = ry + (bh - 8 * s) * 0.5;
   gfx_drawstr(gbh_running ? "Kept with the kit by the Gumbo helper" : "For now only: start the Gumbo helper to keep it", 0, px + pw - 90 * s, ry + bh);
 );
-function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k, n, gl, hot, sp, l, cut, tw2, th2, ly, e, ic, iw, ih, fr, fg, fb, cr, cg, cb, bd, lum) (
+function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k, n, gl, hot, sp, l, cut, tw2, th2, ly, e, ic, iw, ih, fr, fg, fb, cr, cg, cb, bd, lum, ich, nnw, nnh, li, ax, aw, fw, cw, nln, nt) (
   s = gbf_s; g = 6 * s;
   nb = min(8, ceil(gbf_npad / 16));
   gbf_pbank = min(gbf_pbank, max(0, nb - 1));
@@ -809,31 +809,46 @@ function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k,
       hot ? ( gfx_set(1, 1, 1, 0.07); gfx_rect(px, py, pw, ph); );
       gfx_set(cr, cg, cb, 0.55 + 0.45 * gl); gfx_rect(px, py, pw, max(2, 2 * s));
       gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(px, py, pw, ph);
+      // its key's size first: the icon above it stays clear of it on a short pad (the owner's pictures, 2026-11-06)
+      nnw = nnh = 0;
+      ph >= 34 * s ? ( gbf_note_name(n); gbf_font(max(9, floor(10 * s)), 'b'); gfx_measurestr(#gbf_nn, nnw, nnh); );
+      ic = min(min(ph * 0.40, 24 * s), max(8 * s, ph - nnh - 12 * s));
       // its icon, top left (PAD ICONS on, a pad tall enough); a click on it opens the pad's look picker, not the sound
       slider91 >= 0.5 && ph >= 34 * s ? (
         gfx_getimgdim(GBF_PICON_SLOT + GBF_PICON[n], iw, ih);
-        ic = min(ph * 0.40, 24 * s);
         bd = !gbf_menu_block && gbf_pick_note < 0 && gbf_hit(px + 3 * s, py + 3 * s, ic + 4 * s, ic + 4 * s);
         bd ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(px + 3 * s, py + 3 * s, ic + 4 * s, ic + 4 * s); );
         lum > 0.42 ? ( gfx_set(0, 0, 0, 0.32); gfx_rect(px + 3 * s, py + 3 * s, ic + 4 * s, ic + 4 * s); );   // the light icon on a dark chip when the face is light
         iw > 0 ? ( gfx_x = px + 5 * s; gfx_y = py + 5 * s; gfx_a = gl > 0.5 ? 0.95 : 0.80; gfx_blit(GBF_PICON_SLOT + GBF_PICON[n], ic / iw, 0); gfx_a = 1; );
         lmb_down && bd ? ( lmb_down = 0; gbf_pick_note = n; gbf_pad_hit = -1; );
       );
-      // its sound's name, two lines when one will not fit even shrunk
+      // its sound's name, two lines when one will not fit even shrunk. A pad too short for the name between the icon
+      // (top left) and the key (bottom left) sets it right of them instead (the owner's pictures, 2026-11-06: "808
+      // Clap" printed over its "D#2")
       gbf_key_name(n); strcpy(#gbf_pn, #gb_ls);
-      gbf_fit(#gbf_pn, pw - 12 * s, 11 * s, 'b');
+      ich = slider91 >= 0.5 && ph >= 34 * s ? ic + 7 * s : 0;   // the icon's chip, from the pad's top
+      li = 0; fw = pw - 12 * s;
+      gbf_fit(#gbf_pn, fw, 11 * s, 'b');
+      // where the name would sit (as drawn below: 0.45 of the spare height) against the icon above and the key below,
+      // and whether it reaches their column at all (a short name in the middle of a wide pad clears them)
+      cw = max(ich, nnw > 0 ? 6 * s + nnw : 0); nln = gbf_tw > fw ? 2 : 1; nt = (ph - gbf_th_ * nln) * 0.45;
+      cw > 0 && (nt < ich || nt + gbf_th_ * nln > ph - nnh - 4 * s) && (nln == 2 || (pw - gbf_tw) * 0.5 < cw + 2 * s) ? (
+        li = cw + 4 * s; fw = pw - li - 8 * s;
+        gbf_fit(#gbf_pn, fw, 11 * s, 'b');
+      );
+      ax = px + li; aw = pw - li;
       lum > 0.42 ? gfx_set(0.08, 0.07, 0.06, 1) : gfx_set(0.96, 0.95, 0.94, 1);
-      gbf_tw > pw - 12 * s ? (
+      gbf_tw > fw ? (
         l = strlen(#gbf_pn); cut = -1; sp = 0;
         while (sp < l) ( str_getchar(#gbf_pn, sp) == ' ' && (cut < 0 || abs(sp - l * 0.5) < abs(cut - l * 0.5)) ? cut = sp; sp += 1; );
         cut > 0 ? (
           strcpy_substr(#gbf_pn2, #gbf_pn, cut + 1); str_setlen(#gbf_pn, cut);
           gfx_measurestr(#gbf_pn, gbf_tw, gbf_th_); gfx_measurestr(#gbf_pn2, tw2, th2);
           ly = py + (ph - gbf_th_ * 2) * 0.45;
-          gfx_x = px + (pw - gbf_tw) * 0.5; gfx_y = ly; gfx_drawstr(#gbf_pn, 0, px + pw - 4 * s, py + ph);
-          gfx_x = px + (pw - tw2) * 0.5; gfx_y = ly + gbf_th_; gfx_drawstr(#gbf_pn2, 0, px + pw - 4 * s, py + ph);
-        ) : ( gfx_x = px + 6 * s; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn, 0, px + pw - 4 * s, py + ph); );
-      ) : ( gfx_x = px + (pw - gbf_tw) * 0.5; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn); );
+          gfx_x = ax + max(0, (aw - gbf_tw) * 0.5); gfx_y = ly; gfx_drawstr(#gbf_pn, 0, px + pw - 4 * s, py + ph);
+          gfx_x = ax + max(0, (aw - tw2) * 0.5); gfx_y = ly + gbf_th_; gfx_drawstr(#gbf_pn2, 0, px + pw - 4 * s, py + ph);
+        ) : ( gfx_x = ax + 6 * s; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn, 0, px + pw - 4 * s, py + ph); );
+      ) : ( gfx_x = ax + (aw - gbf_tw) * 0.5; gfx_y = py + (ph - gbf_th_) * 0.45; gfx_drawstr(#gbf_pn); );
       // its key in the corner, bold and bright enough to read (the owner, 2026-11-05: "the notes on the drum pads are
       // hard to see")
       ph >= 34 * s ? (

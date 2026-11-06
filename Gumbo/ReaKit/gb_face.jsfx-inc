@@ -288,12 +288,12 @@ function gbf_name() local(i, n) (
   );
 );
 function gbf_status() (
-  gbf_warn = 0;
+  gbf_warn = 0; gbf_st_size = 0;
   // the Gumbo helper first: an import on its way, or why a dropped .sfz did not open
   gbh_state != GBH_ST_IDLE ? strcpy(#gbf_st, gbh_kind == GBH_KIND_FAV ? "Saving your favourites..." : "Importing... (the Gumbo helper converts it)")
   : gbh_err ? (
     gbf_warn = 1;
-    gbh_err == 1 ? strcpy(#gbf_st, "To open a .sfz or .sf2, start the Gumbo helper (Actions: Gumbo helper)")
+    gbh_err == 1 ? strcpy(#gbf_st, "To open a .sfz or a SoundFont, start the Gumbo helper (Actions: Gumbo helper)")
     : gbh_err == 2 ? strcpy(#gbf_st, "The Gumbo helper stopped before the import was done")
     : gbh_err == 3 ? strcpy(#gbf_st, "That file's path is too long to send to the helper")
     : gbh_err == 7 ? strcpy(#gbf_st, "To dock Gumbo with a double-click, start the Gumbo helper")
@@ -321,11 +321,26 @@ function gbf_status() (
     : gb_err == GB_E_FORMAT ? strcpy(#gbf_st, "Not a Gumbo instrument file")
     : strcpy(#gbf_st, "No playable sounds in that file");
   )
-  : gb_ready ? sprintf(#gbf_st, gb_pack ? "%d regions  -  %d sounds  -  %.0f MB (packed)" : "%d regions  -  %d sounds  -  %.0f MB",
-                       gb_nreg, gb_nsmp, gb_loaded_cells * 8 / 1048576)
+  : gb_ready ? ( gbf_st_size = 1;
+                 sprintf(#gbf_st, gb_pack ? "%d regions  -  %d sounds  -  %.0f MB (packed)" : "%d regions  -  %d sounds  -  %.0f MB",
+                         gb_nreg, gb_nsmp, gb_loaded_cells * 8 / 1048576); )
   : strlen(#gb_want) ? strcpy(#gbf_st, "Not loaded")
   : gbf_idx_loaded && gbf_idx_n == 0 ? strcpy(#gbf_st, "No sounds installed - get 'Gumbo GM sounds' in ReaPack")
   : strcpy(#gbf_st, "Pick an instrument, or drop a .gumbo.txt");
+);
+
+// the size line (gbf_st_size) made to fit mw in the font set now: tighter, then without the regions, then the size
+// alone (the owner's pictures, 2026-11-06: "821" cut, its "MB" lost, in a wide typeface)
+function gbf_st_fit(mw) local(mb) (
+  gbf_st_size ? (
+    mb = gb_loaded_cells * 8 / 1048576;
+    gfx_measurestr(#gbf_st, gbf_tw, gbf_th_);
+    gbf_tw > mw ? ( sprintf(#gbf_st, gb_pack ? "%d regions - %d sounds - %.0f MB packed" : "%d regions - %d sounds - %.0f MB",
+                            gb_nreg, gb_nsmp, mb); gfx_measurestr(#gbf_st, gbf_tw, gbf_th_); );
+    gbf_tw > mw ? ( sprintf(#gbf_st, gb_pack ? "%d sounds - %.0f MB packed" : "%d sounds - %.0f MB", gb_nsmp, mb);
+                    gfx_measurestr(#gbf_st, gbf_tw, gbf_th_); );
+    gbf_tw > mw ? sprintf(#gbf_st, gb_pack ? "%.0f MB packed" : "%.0f MB", mb);
+  );
 );
 
 // one knob in colour cr, cg, cb (the EQ's band knobs wear their node's colour); dim = drawn faded with "soon", no input
@@ -503,7 +518,7 @@ function gbf_display_bar(x, y, w, h) local(s, fs, bx, bh) (
     gbf_prog_box(bx, y + (h - bh) * 0.5, w * 0.42);
   ) : (
     gbf_font(max(9, floor(11 * s)), 0); gbf_warn ? gbf_scr(1, 0.55, 0.3, 1) : gbf_scr(0.79, 0.54, 0.35, 1);
-    gfx_x = bx; gfx_y = y + (h - 11 * s) * 0.5; gfx_drawstr(#gbf_st, 0, x + w - 40 * s, y + h);
+    gfx_x = bx; gfx_y = y + (h - 11 * s) * 0.5; gbf_st_fit(x + w - 40 * s - bx); gfx_drawstr(#gbf_st, 0, x + w - 40 * s, y + h);
   );
 );
 function gbf_display_fold_btn(x, y, w) local(s, bx, by, bs, hot, cx, cy) (
@@ -530,7 +545,7 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
   strlen(#gb_want) ? gfx_drawstr(#gbf_name, 0, x + w * 0.5, y + h) : gfx_drawstr("GUMBO");
   gbf_font(max(9, floor(11 * s)), 0);
   gbf_warn ? gbf_scr(1, 0.55, 0.3, 1) : gbf_scr(0.79, 0.54, 0.35, 1);
-  gfx_x = x + 16 * s; gfx_y = y + 12 * s + fs * gbf_tk + 4 * s; gfx_drawstr(#gbf_st, 0, x + w * 0.5, y + h);
+  gfx_x = x + 16 * s; gfx_y = y + 12 * s + fs * gbf_tk + 4 * s; gbf_st_fit(w * 0.5 - 16 * s); gfx_drawstr(#gbf_st, 0, x + w * 0.5, y + h);
   // a bank: the program playing, in a box of its own (the owner, 2026-11-03, of the old one-line caption: "i barley
   // noticed where to change it"): < > step through the bank, a click on the name opens the list (gb_face_p2,
   // gbf_prog_click). Its place and size stay in gbf_pg_x/y/w/h (gbf_pg_a = each arrow's width).
@@ -1131,9 +1146,9 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, n, ry, rh, hr
                      gbf_hint_line("Extensions > ReaPack >", 2.7, x, w, ry, yb);
                      gbf_hint_line("Browse packages >", 3.8, x, w, ry, yb);
                      gbf_hint_line("'Gumbo GM sounds'", 4.9, x, w, ry, yb); );
-  strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ, .SF2 OR .GUMBO.TXT HERE" : "OR DROP A .GUMBO.TXT  (.SFZ, .SF2: START THE GUMBO HELPER)");
+  strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ, .SF2, .SF3 OR .GUMBO.TXT HERE" : "OR DROP A .GUMBO.TXT  (.SFZ, .SF2, .SF3: START THE GUMBO HELPER)");
   gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b');
-  gbf_tw > w - 16 * s ? ( strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ OR .SF2 HERE" : "OR DROP A .GUMBO.TXT HERE"); gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b'); );
+  gbf_tw > w - 16 * s ? ( strcpy(#gbf_tmp, gbh_running ? "OR DROP AN .SFZ OR A SOUNDFONT HERE" : "OR DROP A .GUMBO.TXT HERE"); gbf_fit(#gbf_tmp, w - 16 * s, max(7, floor(9 * s)), 'b'); );
   gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
   gfx_x = x + 10 * s; gfx_y = y + h - 6 * s - gbf_th_;
   gfx_drawstr(#gbf_tmp, 0, x + w - 6 * s, y + h);
