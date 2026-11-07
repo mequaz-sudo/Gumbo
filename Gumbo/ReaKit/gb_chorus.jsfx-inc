@@ -1,0 +1,142 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// Contains a port of junologue-chorus (Copyright 2020 Peter Allwin, MIT licence; github.com/peterall/junologue-chorus):
+// a Juno-60 chorus emulation, credited in Gumbo_LICENSE.md. Its SoftLimit is from Emilie Gillet's stmlib (MIT).
+// gb_chorus.jsfx-inc -- Gumbo's CHORUS: one shared stereo chorus, fed by each MIDI part's chorus send (CC93 plus the
+// sound's own amount, gb_voice) and mixed in after DRIVE beside SPACE (Gumbo_ReaKit @sample). 2026-11-06, plan
+// .docs/specs/Plan_Gumbo_1.3_Space_Chorus_SoundFont_2026-11-06.md.
+//
+// The original runs at a fixed 48 kHz on Korg's logue units; here every time is in seconds and every corner in Hz, so
+// it sounds the same at any rate. Its behaviour, read from junologue-chorus.cpp and the logue-sdk helpers it uses
+// (simplelfo triangle_uni, delayline readFrac, biquad setFOLP / process_fo):
+//   input  = SoftLimit(L + R) (x (27 + x^2) / (27 + 9 x^2)) -> first-order low-pass (the "pre" filter) -> a delay line;
+//   two triangle LFOs, 0.513 and 0.863 Hz, 0..1; each reads two taps: left 1.54 .. 5.15 ms at p, right 1.51 .. 5.40 ms
+//   at 1 - p (the mirror is the stereo);
+//   the three modes = the two LFOs' tap gains: I (1, 0), I+II (0.707, 0.707), II (0, 1);
+//   output = each side through its own first-order low-pass (the "post" filter);
+//   tone: the knob's middle position (fr 0.5): pre 2 + 21.5 kHz x fr^2 = 7.375 kHz, post 6 + 17.5 kHz x fr^2 = 10.375 kHz
+//   (fr^2 on the normalised frequency, as setLpfCutoff does), corners held below 0.49 x the rate.
+// Types 3 FB Chorus and 4 Flanger (plan step 9, 2026-11-07): EON Studios' own code at General MIDI 2's numbers (the
+// MMA's "General MIDI 2" v1.2a, 4.5.1: the chorus type defaults; 4.5.2-4.5.4: rate = v x 0.122 Hz, depth = (v + 1) /
+// 3.2 ms "the peak-to-peak swing of the modulation", feedback = v x 0.763 %): FB Chorus 0.244 Hz, 7.81 ms, 48.8 %;
+// Flanger 0.122 Hz, 1.875 ms, 85.5 %. The standard leaves "the modulation waveform and stereo output" to the maker, and
+// says nothing of the delay the swing sits on, so ours: one line a side, fed by the same soft-limited, pre-filtered
+// input plus the feedback of its own tap through a 6 kHz one-pole (a bare loop at 86 % rings too bright); the tap
+// sweeps from a base (chorus 8 ms, flanger 1 ms) by the swing on the Juno's unipolar triangle, the right side at
+// 1 - p (the mirror again); feedback capped at 0.95. A type change glides (the Juno's tap gains, the two paths' mix,
+// the base / swing / feedback / level), so no click. GCH_MK3 / GCH_MK4 level each against type I under pink noise
+// (.dev_tests/gumbo_chorus_types.py; the numbers below are its).
+// The return is the chorus only (no dry: the dry sound is already in the mix). API: gch_init() @init; gch_block(mode,
+// amount) @block (mode 0 I, 1 I+II, 2 II, 3 FB Chorus, 4 Flanger; amount = a gain, GCH_RET or 0); gch_tick(inl, inr)
+// @sample -> gch_l, gch_r (already times the amount). gch_on = 0 while CHORUS is 0 and faded: the caller skips gch_tick
+// (no cost, no change).
+// Memory: GCH_BUF .. +3 x GCH_LEN (the Juno's line, then the left and right feedback lines), inside gb_space's band
+// above everything it lays out at any rate (its top is about 134037000 at 192 kHz) and under its GSP_END.
+
+@init
+GCH_BUF = 134200000; GCH_LEN = 4096;     // the Juno's 5.4 ms at 192 kHz = 1037 samples, the chorus's 15.8 ms = 3036; a power of two for the wrap
+GCH_FBL = GCH_BUF + GCH_LEN; GCH_FBR = GCH_BUF + 2 * GCH_LEN;
+// the return gain (2026-11-06, "follow the sound"; see gb_space GSP_RET): MEASURED against FluidSynth 2.6.2 (plan R7,
+// .dev_tests/gumbo_vs_fluidsynth.py, the same looped sine SoundFont, the wet in the steady window of a 3 s note).
+// FluidSynth's default chorus (level 0.6, three lines) returns 1.95 x the dry per unit of send; the Juno here returned
+// 1.00 at a gain of 1 (type I; I+II 0.99, II 1.00; gch_block clamped the amount to 1 until this evening, so the
+// provisional 5.0 never applied), so 1.95 puts it level: the GM tine piano's 7 % comes back at 0.14 x the dry
+GCH_RET = 1.95;
+// the FB Chorus and the Flanger levelled to type I under pink noise at an rms of 0.1 (gumbo_chorus_types.py)
+GCH_MK3 = 0.8226; GCH_MK4 = 0.3050;
+gch_on = 0; gch_amt = 0; gch_amt_s = 0; gch_sr = 0; gch_mode = 0; gch_ga = 1; gch_gb = 0; gch_ta = 1; gch_tb = 0;
+gch_fx = 0; gch_gx = 0; gch_fwas = 0; gch_fw = 0; gch_fph = 0; gch_finc = 0;
+gch_fb0 = 0; gch_fbs = 0; gch_ffb = 0; gch_mk = 1; gch_fb0s = 0; gch_fbss = 0; gch_ffbs = 0; gch_mks = 1;
+
+// a first-order low-pass (bilinear, the logue-sdk setFOLP / process_fo transposed form)
+function gch_lp(fc) instance(b, a, z) local(k) ( k = tan($pi * min(fc, 0.49 * srate) / srate); b = k / (k + 1); a = (k - 1) / (k + 1); z = 0; );
+function gch_lpt(x) instance(b, a, z) local(y) ( y = b * x + z; z = b * x - a * y; y; );
+
+// types 3 and 4: the standard's numbers and our base delays, in samples at this rate; the level for each
+function gch_fset() (
+  gch_finc = (gch_mode == 4 ? 0.122 : 0.244) / srate;
+  gch_fb0 = (gch_mode == 4 ? 0.001 : 0.008) * srate;
+  gch_fbs = (gch_mode == 4 ? 0.001875 : 0.00781) * srate;
+  gch_ffb = min(0.95, gch_mode == 4 ? 0.855 : 0.488);
+  gch_mk = gch_mode == 3 ? GCH_MK3 : gch_mode == 4 ? GCH_MK4 : 1;
+);
+function gch_fsnap() (
+  memset(GCH_FBL, 0, 2 * GCH_LEN); gch_fw = 0; gch_fph = 0;
+  gch_fll.gch_lp(6000); gch_flr.gch_lp(6000);
+  gch_fb0s = gch_fb0; gch_fbss = gch_fbs; gch_ffbs = gch_ffb; gch_mks = gch_mk;
+);
+function gch_setup() (
+  memset(GCH_BUF, 0, GCH_LEN); gch_w = 0;
+  gch_pre.gch_lp(2000 + 21500 * 0.25); gch_postl.gch_lp(6000 + 17500 * 0.25); gch_postr.gch_lp(6000 + 17500 * 0.25);
+  gch_ph1 = 0; gch_ph2 = 0;                // both LFOs start at 0 (triangle_uni of phase 0)
+  gch_inc1 = 0.513 / srate; gch_inc2 = 0.863 / srate;
+  // tap ranges in samples (left, right): min and span
+  gch_l0 = 0.00154 * srate; gch_ls = (0.00515 - 0.00154) * srate;
+  gch_r0 = 0.00151 * srate; gch_rs = (0.00540 - 0.00151) * srate;
+  gch_fset(); gch_fsnap();
+  gch_sr = srate;
+);
+function gch_init() ( gch_on = 0; gch_sr = 0; );
+// mode 0 I, 1 I+II, 2 II, 3 FB Chorus, 4 Flanger. The tap gains glide (gch_ga / gch_gb) and so does the mix of the
+// Juno and the feedback paths (gch_gx -> gch_fx), so a mode change does not click
+function gch_block(mode, amount) (
+  gch_mode = max(0, min(4, mode | 0));
+  gch_fx = gch_mode >= 3;
+  gch_mode <= 2 ? (                        // a feedback type keeps the Juno's last gains for its fade-out
+    gch_ta = gch_mode == 0 ? 1 : gch_mode == 1 ? sqrt(0.5) : 0;
+    gch_tb = gch_mode == 0 ? 0 : gch_mode == 1 ? sqrt(0.5) : 1;
+  );
+  gch_amt = max(0, amount);   // a gain (GCH_RET or 0), not the old 0..1 knob
+  gch_amt <= 0 && gch_amt_s < 0.00001 ? gch_on = 0;
+  gch_amt > 0 && !gch_on ? ( gch_setup(); gch_ga = gch_ta; gch_gb = gch_tb; gch_gx = gch_fx; gch_on = 1; );
+  gch_on && srate != gch_sr ? gch_setup();
+  gch_on ? (
+    gch_fset();
+    // entering a feedback type whose path has stopped (gch_gx down at 0): fresh lines, its last pass may be long gone.
+    // Back within the fade (gch_gx still up) the path never stopped, so nothing to clear -- a wipe then would click
+    gch_fx && !gch_fwas && gch_gx <= 0.001 ? gch_fsnap();
+  );
+  gch_fwas = gch_fx;
+);
+// a tap d samples back (d >= 1), linear between the two neighbours (readFrac)
+function gch_read(d) local(p, i, f, a, b) (
+  p = gch_w - d; p < 0 ? p += GCH_LEN;
+  i = floor(p); f = p - i; a = GCH_BUF[i]; i += 1; i >= GCH_LEN ? i = 0; b = GCH_BUF[i];
+  a + (b - a) * f;
+);
+// the same on a feedback line (buf = GCH_FBL or GCH_FBR), its write index gch_fw
+function gch_fread(buf, d) local(p, i, f, a, b) (
+  p = gch_fw - d; p < 0 ? p += GCH_LEN;
+  i = floor(p); f = p - i; a = buf[i]; i += 1; i >= GCH_LEN ? i = 0; b = buf[i];
+  a + (b - a) * f;
+);
+function gch_tick(inl, inr) local(x, t1, t2, l, r, p, fl, fr) (
+  gch_amt_s += (gch_amt - gch_amt_s) * 0.002;
+  gch_ga += (gch_ta - gch_ga) * 0.001; gch_gb += (gch_tb - gch_gb) * 0.001;
+  gch_gx += (gch_fx - gch_gx) * 0.001;
+  // the original sums L + R (a Korg effect slot's own level); a send here: their average, so CHORUS 100 % on a full
+  // send (CC93 40) returns the chorus at the dry sound's level -- the Juno's sweet spot, dry and wet equal
+  x = 0.5 * (inl + inr); x = x * (27 + x * x) / (27 + 9 * x * x);   // SoftLimit (stmlib)
+  x = gch_pre.gch_lpt(x);
+  GCH_BUF[gch_w] = x;
+  gch_ph1 += gch_inc1; gch_ph1 >= 1 ? gch_ph1 -= 1;
+  gch_ph2 += gch_inc2; gch_ph2 >= 1 ? gch_ph2 -= 1;
+  gch_gx < 0.999 ? (                       // the Juno (skipped once a feedback type has fully taken over)
+    t1 = gch_ph1 < 0.5 ? 2 * gch_ph1 : 2 - 2 * gch_ph1;              // the unipolar triangles, 0..1..0 from phase 0
+    t2 = gch_ph2 < 0.5 ? 2 * gch_ph2 : 2 - 2 * gch_ph2;
+    l = gch_ga * gch_read(gch_l0 + gch_ls * t1) + gch_gb * gch_read(gch_l0 + gch_ls * t2);
+    r = gch_ga * gch_read(gch_r0 + gch_rs * (1 - t1)) + gch_gb * gch_read(gch_r0 + gch_rs * (1 - t2));
+    l = gch_postl.gch_lpt(l); r = gch_postr.gch_lpt(r);
+  ) : ( l = r = 0; );
+  gch_w += 1; gch_w >= GCH_LEN ? gch_w = 0;
+  gch_gx > 0.001 ? (                       // the FB Chorus / Flanger: a line a side with its own feedback
+    gch_fb0s += (gch_fb0 - gch_fb0s) * 0.001; gch_fbss += (gch_fbs - gch_fbss) * 0.001;
+    gch_ffbs += (gch_ffb - gch_ffbs) * 0.001; gch_mks += (gch_mk - gch_mks) * 0.001;
+    gch_fph += gch_finc; gch_fph >= 1 ? gch_fph -= 1;
+    p = gch_fph < 0.5 ? 2 * gch_fph : 2 - 2 * gch_fph;
+    fl = gch_fread(GCH_FBL, gch_fb0s + gch_fbss * p); fr = gch_fread(GCH_FBR, gch_fb0s + gch_fbss * (1 - p));
+    GCH_FBL[gch_fw] = x + gch_ffbs * gch_fll.gch_lpt(fl); GCH_FBR[gch_fw] = x + gch_ffbs * gch_flr.gch_lpt(fr);
+    gch_fw += 1; gch_fw >= GCH_LEN ? gch_fw = 0;
+    fl *= gch_mks; fr *= gch_mks;
+  ) : ( fl = fr = 0; );
+  gch_l = (l * (1 - gch_gx) + fl * gch_gx) * gch_amt_s; gch_r = (r * (1 - gch_gx) + fr * gch_gx) * gch_amt_s;
+);

@@ -1,0 +1,119 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_pic.jsfx-inc -- Gumbo's own SPACE pictures (2026-11-06, the owner: "give gumbo its own pictures"; Gumbo is free,
+// Rooms is paid, so Gumbo no longer draws Rooms' room pictures). One small drawing per General MIDI 2 reverb type,
+// drawn straight each frame (the box is about 120 x 60 at 1x: a few dozen shapes, no cached image):
+//   0 Small Room, 1 Medium Room, 2 Large Room -- a wooden room, its back wall further away the bigger it is, boards
+//     running to the back, a window, a lamp;
+//   3 Medium Hall, 4 Large Hall -- a concert hall: rows of seats, a lit stage, side balconies, chandeliers;
+//   5 Plate (2026-11-07) -- a steel sheet hung by its corners in a dark frame, the driver in the middle, a pickup each
+//     side, a bolt at each corner.
+// The back wall (the sheet) glows with the level passed in (the reverb's live output since 2026-11-07, plan step 10; the
+// knob's setting before). @gfx only; every name gbp_ or a local; no slider, no audio-side name.
+// API: gbp_draw(x, y, w, h, type, level, dark): type 0..5, level 0..1, dark 1 = a dark face (the room drawn darker).
+
+@init
+
+// a colour from the room's palette (darker on a dark face)
+function gbp_c(r, g, b, a) ( gfx_set(r * gbp_k, g * gbp_k, b * gbp_k, a); );
+// a four-cornered shape
+function gbp_q(x1, y1, x2, y2, x3, y3, x4, y4) ( gfx_triangle(x1, y1, x2, y2, x3, y3, x4, y4); );
+// a point on the floor: across a (0 left .. 1 right), back b (0 the front edge .. 1 the back wall's foot)
+function gbp_fx(a, b) local(l, r) ( l = gbp_x + (gbp_bx0 - gbp_x) * b; r = gbp_x + gbp_w - (gbp_x + gbp_w - gbp_bx1) * b; l + (r - l) * a; );
+function gbp_fy(b) ( gbp_y + gbp_h + (gbp_by1 - gbp_y - gbp_h) * b; );
+// a point on a side wall (s 0 left, 1 right): back b, up u (0 the floor .. 1 the ceiling)
+function gbp_wx(s, b) ( s ? gbp_x + gbp_w + (gbp_bx1 - gbp_x - gbp_w) * b : gbp_x + (gbp_bx0 - gbp_x) * b; );
+function gbp_wy(b, u) local(lo, hi) ( lo = gbp_fy(b); hi = gbp_y + (gbp_by0 - gbp_y) * b; lo + (hi - lo) * u; );
+
+function gbp_draw(x, y, w, h, type, level, dark) local(m, i, j, b, b2, a, cx, cy, r, hall, plate, n, sw)
+(
+  type = max(0, min(5, type | 0)); hall = type == 3 || type == 4; plate = type == 5;
+  gbp_k = dark ? 0.45 : 1;
+  gbp_x = x; gbp_y = y; gbp_w = w; gbp_h = h;
+  // the back wall: further away (smaller) for a bigger space; the plate: the sheet, most of the box
+  m = type == 0 ? 0.17 : type == 1 ? 0.24 : type == 2 ? 0.31 : type == 3 ? 0.33 : type == 4 ? 0.4 : 0.13;
+  gbp_bx0 = x + w * m; gbp_bx1 = x + w - w * m;
+  gbp_by0 = y + h * m * 0.75; gbp_by1 = y + h - h * m * 0.85;
+  plate ? (
+    // the frame, the sheet with its brushed sheen, the driver and the pickups, the corner bolts
+    gbp_c(0.17, 0.14, 0.12, 1); gfx_rect(x, y, w, h);
+    gbp_c(0.6, 0.63, 0.68, 1); gfx_rect(gbp_bx0, gbp_by0, gbp_bx1 - gbp_bx0, gbp_by1 - gbp_by0);
+    i = 0;
+    loop(5,
+      gbp_c(0.8, 0.82, 0.87, 0.45 - 0.07 * i);
+      gfx_rect(gbp_bx0, gbp_by0 + (gbp_by1 - gbp_by0) * (0.06 + 0.19 * i), gbp_bx1 - gbp_bx0, max(1, (gbp_by1 - gbp_by0) * 0.06));
+      i += 1;
+    );
+    cx = (gbp_bx0 + gbp_bx1) * 0.5; cy = (gbp_by0 + gbp_by1) * 0.5; r = max(1, h * 0.055);
+    gbp_c(0.22, 0.22, 0.25, 1); gfx_circle(cx, cy, r, 1, 1);
+    gfx_circle(gbp_bx0 + (gbp_bx1 - gbp_bx0) * 0.22, cy, r * 0.6, 1, 1); gfx_circle(gbp_bx0 + (gbp_bx1 - gbp_bx0) * 0.78, cy, r * 0.6, 1, 1);
+    gbp_c(0.36, 0.36, 0.4, 1); r = max(1, h * 0.025);
+    gfx_circle(gbp_bx0 + r * 2, gbp_by0 + r * 2, r, 1, 1); gfx_circle(gbp_bx1 - r * 2, gbp_by0 + r * 2, r, 1, 1);
+    gfx_circle(gbp_bx0 + r * 2, gbp_by1 - r * 2, r, 1, 1); gfx_circle(gbp_bx1 - r * 2, gbp_by1 - r * 2, r, 1, 1);
+  ) : (
+  // ceiling, walls, floor, back wall
+  hall ? gbp_c(0.78, 0.75, 0.7, 1) : gbp_c(0.85, 0.8, 0.71, 1);
+  gbp_q(x, y, x + w, y, gbp_bx1, gbp_by0, gbp_bx0, gbp_by0);
+  hall ? gbp_c(0.72, 0.62, 0.52, 1) : gbp_c(0.8, 0.72, 0.6, 1);
+  gbp_q(x, y, gbp_bx0, gbp_by0, gbp_bx0, gbp_by1, x, y + h);
+  gbp_q(x + w, y, gbp_bx1, gbp_by0, gbp_bx1, gbp_by1, x + w, y + h);
+  hall ? gbp_c(0.5, 0.38, 0.27, 1) : gbp_c(0.66, 0.5, 0.33, 1);   // the hall's floor wood, so its red seat rows read
+  gbp_q(x, y + h, gbp_bx0, gbp_by1, gbp_bx1, gbp_by1, x + w, y + h);
+  hall ? gbp_c(0.6, 0.5, 0.4, 1) : gbp_c(0.76, 0.68, 0.56, 1);
+  gfx_rect(gbp_bx0, gbp_by0, gbp_bx1 - gbp_bx0, gbp_by1 - gbp_by0);
+  hall ? (
+    // the stage across the back, lit; the seats in rows toward it; a balcony down each side; chandeliers
+    gbp_c(0.58, 0.44, 0.3, 1);
+    gbp_q(gbp_fx(0.08, 0.86), gbp_fy(0.86), gbp_fx(0.92, 0.86), gbp_fy(0.86), gbp_bx1, gbp_by1, gbp_bx0, gbp_by1);
+    gfx_set(1, 0.86, 0.6, 0.25); gfx_rect(gbp_bx0, gbp_by0 + (gbp_by1 - gbp_by0) * 0.45, gbp_bx1 - gbp_bx0, (gbp_by1 - gbp_by0) * 0.55);
+    n = type == 3 ? 6 : 9;
+    i = 0;
+    loop(n,
+      b = 0.04 + 0.78 * i / n; b2 = b + 0.5 / n;
+      gbp_c(0.62, 0.16, 0.16, 1);
+      gbp_q(gbp_fx(0.05, b), gbp_fy(b), gbp_fx(0.46, b), gbp_fy(b), gbp_fx(0.46, b2), gbp_fy(b2), gbp_fx(0.05, b2), gbp_fy(b2));
+      gbp_q(gbp_fx(0.54, b), gbp_fy(b), gbp_fx(0.95, b), gbp_fy(b), gbp_fx(0.95, b2), gbp_fy(b2), gbp_fx(0.54, b2), gbp_fy(b2));
+      i += 1;
+    );
+    j = 0;
+    loop(2,
+      gbp_c(0.5, 0.42, 0.34, 1);
+      gbp_q(gbp_wx(j, 0), gbp_wy(0, 0.52), gbp_wx(j, 1), gbp_wy(1, 0.52), gbp_wx(j, 1), gbp_wy(1, 0.6), gbp_wx(j, 0), gbp_wy(0, 0.6));
+      gbp_c(0.84, 0.7, 0.4, 1); gfx_line(gbp_wx(j, 0), gbp_wy(0, 0.6), gbp_wx(j, 1), gbp_wy(1, 0.6));
+      j += 1;
+    );
+    i = 0;
+    loop(type == 3 ? 2 : 3,
+      b = 0.25 + 0.5 * i / (type == 3 ? 1 : 2);
+      cx = x + w * 0.5; cy = gbp_wy(b, 0.82); r = max(1, h * 0.035 * (1 - b * 0.5));
+      gfx_set(1, 0.85, 0.55, 0.25); gfx_circle(cx, cy, r * 2.2, 1, 1);
+      gfx_set(1, 0.95, 0.8, 1); gfx_circle(cx, cy, r, 1, 1);
+      i += 1;
+    );
+  ) : (
+    // boards to the back, a window in the back wall, a rug, a lamp
+    gbp_c(0.5, 0.36, 0.23, 0.7);
+    i = 1; loop(7, a = i / 8; gfx_line(gbp_fx(a, 0), gbp_fy(0), gbp_fx(a, 1), gbp_fy(1)); i += 1; );
+    gfx_set(0.9, 0.95, 1, 0.9 * (dark ? 0.6 : 1));
+    a = gbp_bx1 - gbp_bx0; b = gbp_by1 - gbp_by0;
+    gfx_rect(gbp_bx0 + a * 0.58, gbp_by0 + b * 0.2, a * 0.26, b * 0.42);
+    gbp_c(0.45, 0.33, 0.22, 1);
+    gfx_rect(gbp_bx0 + a * 0.58, gbp_by0 + b * 0.2, a * 0.26, b * 0.42, 0);
+    gfx_line(gbp_bx0 + a * 0.71, gbp_by0 + b * 0.2, gbp_bx0 + a * 0.71, gbp_by0 + b * 0.62);
+    gbp_c(0.6, 0.27, 0.22, 0.85);
+    gbp_q(gbp_fx(0.28, 0.2), gbp_fy(0.2), gbp_fx(0.72, 0.2), gbp_fy(0.2), gbp_fx(0.68, 0.6), gbp_fy(0.6), gbp_fx(0.32, 0.6), gbp_fy(0.6));
+    cx = x + w * 0.32; cy = y + (gbp_by0 - y) * 0.5 + h * 0.08; r = max(1, h * 0.045);
+    gbp_c(0.35, 0.27, 0.2, 1); gfx_line(cx, y, cx, cy);
+    gfx_set(1, 0.82, 0.5, 0.22); gfx_circle(cx, cy, r * 2.4, 1, 1);
+    gfx_set(1, 0.95, 0.8, 1); gfx_circle(cx, cy, r, 1, 1);
+  );
+  );
+  // the back wall (the plate's sheet) glows with the level passed in; the box's edges (the plate's hanging wires)
+  sw = max(0, min(1, level));
+  plate ? gfx_set(0.7, 0.85, 1, 0.06 + 0.3 * sw) : hall ? gfx_set(0.38, 0.58, 0.96, 0.06 + 0.3 * sw) : gfx_set(0.85, 0.58, 0.3, 0.06 + 0.3 * sw);
+  gfx_rect(gbp_bx0, gbp_by0, gbp_bx1 - gbp_bx0, gbp_by1 - gbp_by0);
+  plate ? gfx_set(0.7, 0.85, 1, 0.6 + 0.4 * sw) : hall ? gfx_set(0.38, 0.58, 0.96, 0.6 + 0.4 * sw) : gfx_set(0.85, 0.58, 0.3, 0.6 + 0.4 * sw);
+  dark ? 0 : gfx_set(gfx_r * 0.6, gfx_g * 0.6, gfx_b * 0.6, gfx_a);
+  gfx_rect(gbp_bx0, gbp_by0, gbp_bx1 - gbp_bx0, gbp_by1 - gbp_by0, 0);
+  gfx_line(x, y, gbp_bx0, gbp_by0); gfx_line(x + w, y, gbp_bx1, gbp_by0);
+  gfx_line(x, y + h, gbp_bx0, gbp_by1); gfx_line(x + w, y + h, gbp_bx1, gbp_by1);
+);

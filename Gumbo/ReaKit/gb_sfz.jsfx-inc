@@ -20,10 +20,10 @@
 // (2026-11-03: the region table moved up and grew -- a full GM SoundFont has 6,000-7,000 regions, and the old
 // 4,096 x 64 at 200000 silently lost the rest; each region also carries its filter, filter envelope and LFOs now.
 // 200000 .. 470000 holds gb_voice's lookup tables, 1620000 .. 1686000 was free: gb_voice's part tables now sit at
-// 1620000 .. 1634216, the speed index and the bank tables at 1640000 .. 1656764, gb_voice's channel tables at
+// 1620000 .. 1634336, the speed index and the bank tables at 1640000 .. 1656764, gb_voice's channel tables at
 // 1656800 .. 1656876.)
 // (2026-11-05: 32,768 regions -- a GM bank with its variation banks; MuseScore General has ~20,000)
-GB_REG = 2000000; GB_RS = 128; GB_MAXREG = 32768;         // -> 6194304, under GB_MOD (128 since 2026-11-05: the pitch envelope, key scaling, bend range at 108..124)
+GB_REG = 2000000; GB_RS = 144; GB_MAXREG = 32768;         // -> 6718592, under GB_MOD (128 since 2026-11-05: the pitch envelope, key scaling, bend range at 108..124; 127 the pressure vibrato depth, 2026-11-06; 144 since 2026-11-06: the region EQ at 128..140)
 GB_SMP = 470000;  GB_SS = 8;   GB_MAXSMP = 4096;          // -> 502768
 GB_PCH = 510000;  GB_PCH_CAP = 890000;                    // -> 1400000 (was 1,000,000: the names' store took the top)
 GB_VCT = 1520000; GB_VCT_MAX = 512;                       // 512 x 128 -> 1585536
@@ -77,6 +77,24 @@ GBR_KAH = 119; GBR_KAD = 120; GBR_KFH = 121; GBR_KFD = 122;
 // the bend range (2026-11-05, item C; token bend=UP,DOWN, cents, written only when the SFZ sets bend_up or bend_down):
 // 0 and 0 = none of its own (the part's RPN 0 range, else the SETTINGS knob: gb_voice gb_voice_inc)
 GBR_BUP = 123; GBR_BDN = 124;
+// the sound's own reverb / chorus send (2026-11-06; token fxs=REVERB,CHORUS, percent, written only when the SFZ sets
+// effect1 / effect2 -- the SoundFont importer writes a preset's reverb / chorus send generators as those): gb_voice
+// adds them to the part's CC91 / CC93 send. A Gumbo without this line counts the token as unknown and plays on
+GBR_FXR = 125; GBR_FXC = 126;
+// the pitch LFO's extra depth at full channel pressure (2026-11-06, cents; the lfo=0 line's 8th field, SFZ's
+// pitchlfo_depth_oncc129 / lfoN_pitch_oncc129 -- the SoundFont default modulator "pressure -> vibrato, 50 cents",
+// gumbo_sf2.lua writes it on every region): gb_voice adds gb_cc[129] / 127 x this to the LFO's depth, as the mod
+// wheel's GBL_CCD. The region's last cell; an older Gumbo reads seven fields and plays no pressure vibrato
+GBR_LPRD = 127;
+// the region EQ (2026-11-06, 1.3 plan step 6): SFZ v1's eq1_* .. eq3_* -- up to three peaking bands on the region's
+// sound, the one effect real libraries use (the Virtual Playing Orchestra sets them per group: "add a little low
+// end boost"). The converter's eqs=F1,BW1,G1,F2,BW2,G2,F3,BW3,G3 token (Hz, octaves, dB); a band with a gain of 0 is
+// not stored. Each stored band: its centre in cents (gb_voice's tan lookup), in Hz (the Q's warp), its bandwidth
+// in octaves and A = 10^(dB / 40); the voice works the filter out at launch (gb_shape_launch). sfizz's rules
+// (sfz_filters.dsp sfzEqPeak, read 2026-11-06): the RBJ peaking EQ, Q = 1 / (2 sinh(ln2 / 2 x bw x w0 / sin w0)).
+// An older Gumbo skips the token and plays the region flat
+GBR_EQN = 128;                       // bands stored (0..3)
+GBR_EQ = 129; GBR_EQS = 4;           // 3 x 4 cells (129..140): cents, Hz, octaves, A
 // format 2 tables (gumbo_sfz.lua M.FORMAT_VERSION 2), in the free space between gb_cc_init and GB_FN:
 //   GB_MOD    per region GB_MAXMOD mods of 4 cells: type, cc, a, b (types in gumbo_sfz.lua's header)
 //   GB_CCV    custom curves for live controllers, 128 cells each; GB_CCVMAP[curve index 0..255] = slot + 1
@@ -84,7 +102,7 @@ GBR_BUP = 123; GBR_BDN = 124;
 //   GB_KLB    each key's name (a drum kit's sounds: "// label_key NOTE name"), by note: char offset, length
 //   GB_LCH    the names' characters
 GB_MAXMOD = 8; GB_MODS = 32;                              // (8 since 2026-11-05: the envelope-time controllers of a library need the room)
-GB_MOD = 6200000;                                         // GB_MAXREG x 32 -> 7248576, under GB_AUD (gb_load)
+GB_MOD = 6720000;                                         // GB_MAXREG x 32 -> 7768576, under GB_AUD (gb_load; 6200000 until 2026-11-06, the region EQ widened the regions)
 GB_CCV = 1686000; GB_CCV_MAX = 16;                        // 16 x 128 -> 1688048
 GB_CCVMAP = 1688100;                                      // 256 -> 1688356
 GB_LBL = 1688400; GB_LBL_MAX = 32;                        // 32 x 3 -> 1688496
@@ -231,10 +249,11 @@ function gb_csv_n(a, b, n, dflt) local(k, p, q) (
 // fil=TYPE,CUTOFF,RES,KEYTRACK,KEYCENTER,VELTRACK,RANDOM,CC,CCDEPTH  feg=DELAY,ATTACK,HOLD,DECAY,SUSTAIN%,RELEASE,DEPTH,
 // VEL2DEPTH[,VEL2ATTACK,VEL2DECAY,VEL2RELEASE]  lfo=SLOT,WAVE,FREQ,DEPTH,DELAY,FADE,CC1DEPTH  vel=POW,ATT,DEC,REL
 // peg= as feg= (the pitch envelope, 2026-11-05; depths in cents)  keg=AHOLD,ADECAY,FHOLD,FDECAY (timecents a key)
-// bend=UP,DOWN (cents; read in gb_parse_region beside prog=)
+// bend=UP,DOWN (cents; read in gb_parse_region beside prog=)  eqs=F1,BW1,G1,F2,BW2,G2,F3,BW3,G3 (the region EQ, 2026-11-06:
+// Hz, octaves, dB; a band with a gain of 0 or no centre is skipped; see GBR_EQN)
 // -> region r (the converter writes them; see GBR_FTYPE). A keytrack below 0 is Gumbo's (sfizz clamps it): the
 // SoundFont importer needs it. Attack / decay / release may go below 0 when a vel2 part adds to them (clamped at launch).
-function gb_parse_shape(r, c, a, b) local(k, l) (
+function gb_parse_shape(r, c, a, b) local(k, l, f, g, e) (
   c == 'i' ? (                         // fil
     gb_csv_n(a, b, 9, 0);
     // (cutoff, veltrack and the envelope depths beyond sfizz's ranges: the SoundFont importer writes the cutoff and
@@ -245,6 +264,20 @@ function gb_parse_shape(r, c, a, b) local(k, l) (
     r[GBR_FRND] = max(0, min(12000, GB_CSVN[6])); r[GBR_FCC] = GB_CSVN[7] >= 1 && GB_CSVN[7] <= 127 ? GB_CSVN[7] | 0 : -1;
     r[GBR_FCCD] = max(-12000, min(12000, GB_CSVN[8]));
     r[GBR_FTYPE] > 0 ? r[GBR_SHAPE] = 1;
+  ) : c == 'q' ? (                     // eqs (the region EQ): the bands with a gain, packed from the first cell
+    gb_csv_n(a, b, 9, 0);
+    r[GBR_EQN] = 0; k = 0;
+    loop(3,
+      f = GB_CSVN[k * 3]; g = max(-96, min(96, GB_CSVN[k * 3 + 2]));   // sfizz's ranges (Defaults.cpp eqFrequency, eqGain)
+      f > 0 && g != 0 ? (
+        e = r + GBR_EQ + r[GBR_EQN] * GBR_EQS; f = min(20000, f);
+        e[0] = 1200 * log(f / 8.175799) / log(2); e[1] = f;
+        e[2] = max(0.001, min(4, GB_CSVN[k * 3 + 1])); e[3] = 10 ^ (g / 40);
+        r[GBR_EQN] += 1;
+      );
+      k += 1;
+    );
+    r[GBR_EQN] > 0 ? r[GBR_SHAPE] = 1;
   ) : c == 'e' ? (                     // feg
     gb_csv_n(a, b, 11, 0);
     r[GBR_EGDLY] = max(0, GB_CSVN[0]); r[GBR_EGATT] = max(-100, min(100, GB_CSVN[1])); r[GBR_EGHOLD] = max(0, GB_CSVN[2]);
@@ -268,14 +301,15 @@ function gb_parse_shape(r, c, a, b) local(k, l) (
     r[GBR_VPOW] = max(0, min(20, GB_CSVN[0]));
     r[GBR_VATT] = max(-100, min(100, GB_CSVN[1])); r[GBR_VDEC] = max(-100, min(100, GB_CSVN[2])); r[GBR_VREL] = max(-100, min(100, GB_CSVN[3]));
   ) : (                                // lfo
-    gb_csv_n(a, b, 7, 0);
+    gb_csv_n(a, b, 8, 0);              // (the 8th field, the pressure depth, only on the pitch LFO's line)
     k = GB_CSVN[0] | 0;
     k >= 0 && k <= 2 ? (
       l = r + GBR_LFO + k * GBR_LFOS;
       l[GBL_WAVE] = GB_CSVN[1] >= 1 ? 1 : 0; l[GBL_FREQ] = max(0, min(100, GB_CSVN[2]));
       l[GBL_DEPTH] = max(-12000, min(12000, GB_CSVN[3])); l[GBL_DELAY] = max(0, GB_CSVN[4]); l[GBL_FADE] = max(0, GB_CSVN[5]);
       l[GBL_CCD] = max(-12000, min(12000, GB_CSVN[6]));
-      l[GBL_ON] = l[GBL_FREQ] > 0 && (l[GBL_DEPTH] != 0 || l[GBL_CCD] != 0);
+      k == 0 ? r[GBR_LPRD] = max(-12000, min(12000, GB_CSVN[7]));
+      l[GBL_ON] = l[GBL_FREQ] > 0 && (l[GBL_DEPTH] != 0 || l[GBL_CCD] != 0 || (k == 0 && r[GBR_LPRD] != 0));
       l[GBL_ON] ? r[GBR_SHAPE] = 1;
     );
   );
@@ -341,6 +375,9 @@ function gb_parse_region(len) local(r, p, s0, s1, f, a, eq, b, n, c, v, g, cc, l
                 g[1] = max(0, min(127, g[1] | 0));
                 r[GBR_NMOD] += 1;
               ) : gb_mods_dropped += 1;
+            ) : c == 'f' && n == 3 && str_getchar(#gb_ln, a + 1) == 'x' && str_getchar(#gb_ln, a + 2) == 's' ? (   // fxs=REV,CHO (percent)
+              gb_csv_n(eq + 1, b, 2, 0);
+              r[GBR_FXR] = max(0, min(100, GB_CSVN[0])); r[GBR_FXC] = max(0, min(100, GB_CSVN[1]));
             ) : c == 'b' && n == 4 && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 3) == 'd' ? (   // bend=UP,DOWN (cents)
               gb_csv_n(eq + 1, b, 2, 0);
               r[GBR_BUP] = max(-12000, min(12000, GB_CSVN[0])); r[GBR_BDN] = max(-12000, min(12000, GB_CSVN[1]));
@@ -353,8 +390,9 @@ function gb_parse_region(len) local(r, p, s0, s1, f, a, eq, b, n, c, v, g, cc, l
                         || (c == 'l' && str_getchar(#gb_ln, a + 1) == 'f' && str_getchar(#gb_ln, a + 2) == 'o')
                         || (c == 'v' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'l')
                         || (c == 'p' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'g')
-                        || (c == 'k' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'g')) ? (
-              gb_parse_shape(r, c == 'l' || c == 'v' || c == 'p' || c == 'k' ? c : str_getchar(#gb_ln, a + 1), eq + 1, b);   // fil= feg= lfo= vel= peg= keg=
+                        || (c == 'k' && str_getchar(#gb_ln, a + 1) == 'e' && str_getchar(#gb_ln, a + 2) == 'g')
+                        || (c == 'e' && str_getchar(#gb_ln, a + 1) == 'q' && str_getchar(#gb_ln, a + 2) == 's')) ? (
+              gb_parse_shape(r, c == 'l' || c == 'v' || c == 'p' || c == 'k' ? c : str_getchar(#gb_ln, a + 1), eq + 1, b);   // fil= feg= lfo= vel= peg= keg= eqs= (the 'q')
             ) : gb_unknown_tokens += 1;
           );
         );
@@ -546,7 +584,15 @@ function gb_tables_reset() local(i) (
   gb_pix_ok = 0;                     // no speed index until the parse has finished (gb_prog_index)
   memset(GB_BNK, 0, 256); memset(GB_SECB, -1, GB_SECB_N);
   memset(GB_CCVMAP, 0, 256); memset(GB_KLB, 0, 256);
+  // starting controller values when the file sets none (2026-11-06, the EXPRESSION knob read 0): sfizz's defaults
+  // (Synth.cpp resetDefaultCCValues: volume 100, pan 64, expression 127, every other controller 0), the same ones the
+  // converter folds opcodes at (gumbo_sfz.lua CC_DEFAULT); set_ccN wins. These feed the face, the gates (loccN/hiccN)
+  // and the live mods only: Gumbo's own volume x expression level (GB_CV7 / GB_CV11) still starts at 127 as before
   i = 0; loop(128, gb_cc_init[i] = 0; i += 1; );
+  gb_cc_init[7] = 100; gb_cc_init[10] = 64; gb_cc_init[11] = 127;
+  // CC91 (the reverb send) starts at 0, as FluidSynth's (fluid_chan.c: GM2 / XG say 40, "most people preferred
+  // having it at zero"): a fresh Gumbo adds no reverb of its own; the sounds' own amounts and the song's CC91 do
+  // (2026-11-06, SPACE / CHORUS follow the sound; was 40 for a day)
 );
 
 // the speed index (2026-11-05): each (section, program)'s first and last region, and section 0's (plays always), so a
@@ -554,13 +600,23 @@ function gb_tables_reset() local(i) (
 // ~1.9 ms a note offline. Built once when the parse ends (the loader's thread, gb_ready = 0). The spans may hold other
 // programs' regions (an SFZ bank need not be in program order): the voice side still tests every region it reads. A
 // section number past GB_PIX_SECS turns the index off: every note searches every region, as before.
-GB_PIX = 1640000; GB_PIX_SECS = 64;                       // 64 x 128 x 2 -> 1656384 (free: 1634216 .. 1686000)
-function gb_prog_index() local(i, r, s, p, e) (
-  memset(GB_PIX, -1, GB_PIX_SECS * 256);
+GB_PIX = 1640000; GB_PIX_SECS = 64;                       // 64 x 128 x 2 -> 1656384 (free: 1634336 .. 1686000: gb_voice's channel tables end at GB_CHS + 16)
+// each (section, program)'s own reverb / chorus amounts (2026-11-06, SPACE / CHORUS follow the sound): the first
+// region that plays the program sets them (percent, the fxs= token; -1 = no region yet), built with the index. The
+// file's four cells after the table (GB_SXF): an ordinary instrument's (no bank) first region's own amounts, and whether
+// any region sends at all (the engines stay off, at no cost, until a region, a knob or a song's controller asks). A
+// table, not variables: the loader writes it in @gfx, the audio thread reads it once the load is adopted
+GB_SX = 1660000;                                          // 64 x 128 x 2 -> 1676384 (the free band after GB_CHLD 1656876)
+GB_SXF = GB_SX + GB_PIX_SECS * 256;                       // own reverb, own chorus, any reverb, any chorus -> 1676388
+function gb_prog_index() local(i, r, s, p, e, f) (
+  memset(GB_PIX, -1, GB_PIX_SECS * 256); memset(GB_SX, -1, GB_PIX_SECS * 256);
   gb_pix0a = -1; gb_pix0b = -1; gb_pix_ok = 1;
+  GB_SXF[0] = -1; GB_SXF[1] = -1; GB_SXF[2] = 0; GB_SXF[3] = 0;
   i = 0;
   loop(gb_nreg,
     r = GB_REG + i * GB_RS; s = r[GBR_PSEC];
+    r[GBR_FXR] > 0 ? GB_SXF[2] = 1; r[GBR_FXC] > 0 ? GB_SXF[3] = 1;
+    GB_SXF[0] < 0 ? ( GB_SXF[0] = r[GBR_FXR]; GB_SXF[1] = r[GBR_FXC]; );
     s == 0 ? (
       gb_pix0a < 0 ? gb_pix0a = i;
       gb_pix0b = i;
@@ -572,9 +628,18 @@ function gb_prog_index() local(i, r, s, p, e) (
         e = GB_PIX + (s * 128 + p) * 2;
         e[0] < 0 ? e[0] = i;
         e[1] = i;
+        f = GB_SX + (s * 128 + p) * 2;
+        f[0] < 0 ? ( f[0] = r[GBR_FXR]; f[1] = r[GBR_FXC]; );
         p += 1;
       );
     );
     i += 1;
   );
+);
+// the own amount (percent; which 0 = reverb, 1 = chorus) of the sound channel 1 plays: ch0 = section * 128 + program
+// as gb_voice packs it (a bank), or an ordinary instrument's first region's; 0 for a program with no region, or
+// nothing loaded (ch0 < 0)
+function gb_sx_own_of(ch0, which) local(v) (
+  v = gb_nprg == 0 ? GB_SXF[which] : ch0 >= 0 && ch0 < GB_PIX_SECS * 128 ? GB_SX[ch0 * 2 + which] : -1;
+  v < 0 ? 0 : v;
 );

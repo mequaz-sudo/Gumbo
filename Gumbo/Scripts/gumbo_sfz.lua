@@ -425,6 +425,8 @@ end
 --       3 lpf_2p 4 hpf_2p 5 bpf_2p 6 brf_2p 7 lpf_4p 8 hpf_4p; CC 0 = none)
 --   feg=DELAY,ATTACK,HOLD,DECAY,SUSTAIN%,RELEASE,DEPTH,VEL2DEPTH,VEL2ATTACK,VEL2DECAY,VEL2RELEASE
 --   lfo=SLOT,WAVE,FREQ,DEPTH,DELAY,FADE,CC1DEPTH   (slot 0 pitch cents, 1 amp dB, 2 filter cents; wave 0 sine, 1 triangle)
+--   (slot 0 may carry an 8th field, PRESSUREDEPTH: cents at full channel pressure, SFZ's extended controller 129 --
+--   pitchlfo_depth_oncc129 / lfoN_pitch_oncc129, 2026-11-06; an older Gumbo reads seven fields)
 --   vel=POW,VEL2ATTACK,VEL2DECAY,VEL2RELEASE   (2026-11-04: amp_velpow -- Gumbo's own opcode, gain = (v/127)^POW, what a
 --       SoundFont's velocity-to-attenuation modulator is -- and sfizz's ampeg_vel2attack / decay / release, seconds added
 --       at velocity 127)
@@ -436,6 +438,11 @@ end
 --       2^(k x (60 - key) / 1200), a positive k ringing the low keys longer, key 60 unchanged. What a SoundFont's
 --       keynumToVolEnvHold / Decay and keynumToModEnvHold / Decay generators say -- a piano's low notes ring longer;
 --       SFZ has no opcode for it, so other players ignore these four)
+--   fxs=REVERB,CHORUS (2026-11-06: effect1 / effect2, percent, written only when either is set and above 0)
+--   eqs=F1,BW1,G1,F2,BW2,G2,F3,BW3,G3   (2026-11-06: the region EQ, SFZ v1's eq1_* .. eq3_* -- centre Hz, bandwidth in
+--       octaves, gain dB; written when any band's gain is set and not 0; a band without a gain is 0,0,0; a band with a
+--       gain takes the spec's defaults for what it leaves out: 50 / 500 / 5000 Hz, 1 octave. The _vel2* and _onccN
+--       parts stay counted. sfizz's EQ (Defaults.cpp: 0..20000 Hz, 0.001..4 octaves, -96..96 dB) is the reference)
 --   bend=UP,DOWN   (2026-11-05: bend_up / bend_down in cents, written only when the SFZ sets either -- a region without
 --       it bends over the range MIDI's RPN 0 set on its channel, else Gumbo's SETTINGS knob; bend_step / bend_smooth
 --       stay counted)
@@ -455,7 +462,9 @@ local SHAPE_KEYS = { fil_type = true, cutoff = true, resonance = true, fil_keytr
                      pitcheg_sustain = true, pitcheg_release = true, pitcheg_depth = true, pitcheg_vel2depth = true,
                      pitcheg_vel2attack = true, pitcheg_vel2decay = true, pitcheg_vel2release = true,
                      ampeg_hold_keytrack = true, ampeg_decay_keytrack = true, fileg_hold_keytrack = true, fileg_decay_keytrack = true,
-                     bend_up = true, bend_down = true }
+                     bend_up = true, bend_down = true, effect1 = true, effect2 = true,
+                     eq1_freq = true, eq1_bw = true, eq1_gain = true, eq2_freq = true, eq2_bw = true, eq2_gain = true,
+                     eq3_freq = true, eq3_bw = true, eq3_gain = true }
 for _, t in ipairs({ "pitchlfo", "amplfo", "fillfo" }) do
   for _, x in ipairs({ "freq", "depth", "delay", "fade" }) do SHAPE_KEYS[t .. "_" .. x] = true end
 end
@@ -466,6 +475,7 @@ local function is_shape(k)
     or k:match("^lfo%d+_wave$") ~= nil or k:match("^lfo%d+_pitch$") ~= nil or k:match("^lfo%d+_volume$") ~= nil
     or k:match("^lfo%d+_cutoff$") ~= nil or k:match("^lfo%d+_pitch_oncc1$") ~= nil
     or k:match("^lfo%d+_volume_oncc1$") ~= nil or k:match("^lfo%d+_cutoff_oncc1$") ~= nil
+    or k == "pitchlfo_depth_oncc129" or k == "pitchlfo_depthcc129" or k:match("^lfo%d+_pitch_oncc129$") ~= nil   -- channel pressure
 end
 M.is_shape = is_shape
 -- the region's filter / envelope / LFO tokens ({ fil = "...", feg = "...", lfo = { "...", ... } }), or nil
@@ -516,6 +526,25 @@ local function shape_of(r, oo, report)
   if kah ~= 0 or kad ~= 0 or kfh ~= 0 or kfd ~= 0 then
     out.keg = table.concat({ fmtn(kah), fmtn(kad), fmtn(kfh), fmtn(kfd) }, ",")
   end
+  -- the sound's own reverb / chorus send (2026-11-06): SFZ v1's effect1 / effect2, percent, only when the SFZ sets either
+  -- (the SoundFont importer writes a preset's reverb / chorus send generators as these); Gumbo adds them to the channel's
+  -- CC91 / CC93 send (gb_voice GB_FXU)
+  if r.effect1 ~= nil or r.effect2 ~= nil then
+    local e1, e2 = math.max(0, math.min(100, n("effect1", 0))), math.max(0, math.min(100, n("effect2", 0)))
+    if e1 > 0 or e2 > 0 then out.fxs = fmtn(e1) .. "," .. fmtn(e2) end
+  end
+  -- the region EQ (2026-11-06): the three bands, a band with a gain of 0 written as 0,0,0
+  local eqs, eqany = {}, false
+  for b = 1, 3 do
+    local g = n("eq" .. b .. "_gain", 0)
+    if g ~= 0 then
+      eqany = true
+      eqs[#eqs + 1] = fmtn(n("eq" .. b .. "_freq", ({ 50, 500, 5000 })[b])) .. "," .. fmtn(n("eq" .. b .. "_bw", 1)) .. "," .. fmtn(g)
+    else
+      eqs[#eqs + 1] = "0,0,0"
+    end
+  end
+  if eqany then out.eqs = table.concat(eqs, ",") end
   -- the bend range (2026-11-05): only when the SFZ says; the other side takes SFZ's default (200 / -200)
   if r.bend_up ~= nil or r.bend_down ~= nil then
     out.bend = fmtn(n("bend_up", 200)) .. "," .. fmtn(n("bend_down", -200))
@@ -528,10 +557,13 @@ local function shape_of(r, oo, report)
   -- the LFOs: v1 first (pitchlfo / amplfo / fillfo), then a v2 LFO fills a slot still free
   local slots = {}
   local function cc1(base) return n(base .. "_depthcc1", nil) or n(base .. "_depth_oncc1", 0) end
+  -- channel pressure (SFZ's extended controller 129, 2026-11-06): an 8th field, on the pitch LFO's line only
+  local function tail(pr) return pr ~= 0 and ("," .. fmtn(pr)) or "" end
   for s, base in ipairs({ "pitchlfo", "amplfo", "fillfo" }) do
     local f, dp, c1 = n(base .. "_freq", 0), n(base .. "_depth", 0), cc1(base)
-    if f > 0 and (dp ~= 0 or c1 ~= 0) then
-      slots[s - 1] = table.concat({ s - 1, 0, fmtn(f), fmtn(dp), fmtn(n(base .. "_delay", 0)), fmtn(n(base .. "_fade", 0)), fmtn(c1) }, ",")
+    local pr = s == 1 and (n(base .. "_depthcc129", nil) or n(base .. "_depth_oncc129", 0)) or 0
+    if f > 0 and (dp ~= 0 or c1 ~= 0 or pr ~= 0) then
+      slots[s - 1] = table.concat({ s - 1, 0, fmtn(f), fmtn(dp), fmtn(n(base .. "_delay", 0)), fmtn(n(base .. "_fade", 0)), fmtn(c1) }, ",") .. tail(pr)
     end
   end
   local ids = {}
@@ -545,10 +577,11 @@ local function shape_of(r, oo, report)
     if f > 0 then
       for s, tgt in ipairs({ "pitch", "volume", "cutoff" }) do
         local dp, c1 = n(p .. tgt, 0), n(p .. tgt .. "_oncc1", 0)
-        if dp ~= 0 or c1 ~= 0 then
+        local pr = s == 1 and n(p .. tgt .. "_oncc129", 0) or 0
+        if dp ~= 0 or c1 ~= 0 or pr ~= 0 then
           if slots[s - 1] then report.lfo_dropped = (report.lfo_dropped or 0) + 1
           else
-            slots[s - 1] = table.concat({ s - 1, wave, fmtn(f), fmtn(dp), fmtn(n(p .. "delay", 0)), fmtn(n(p .. "fade", 0)), fmtn(c1) }, ",")
+            slots[s - 1] = table.concat({ s - 1, wave, fmtn(f), fmtn(dp), fmtn(n(p .. "delay", 0)), fmtn(n(p .. "fade", 0)), fmtn(c1) }, ",") .. tail(pr)
           end
         end
       end
@@ -556,7 +589,8 @@ local function shape_of(r, oo, report)
   end
   out.lfo = {}
   for s = 0, 2 do if slots[s] then out.lfo[#out.lfo + 1] = slots[s] end end
-  if not out.fil and not out.feg and #out.lfo == 0 and not out.vel and not out.peg and not out.keg and not out.bend then return nil end
+  if not out.fil and not out.feg and #out.lfo == 0 and not out.vel and not out.peg and not out.keg and not out.bend
+     and not out.fxs and not out.eqs then return nil end
   return out
 end
 
@@ -1175,6 +1209,8 @@ function M.convert(sfz_path, out_path, opts)
       if sh.peg then parts[#parts + 1] = "peg=" .. sh.peg end
       if sh.keg then parts[#parts + 1] = "keg=" .. sh.keg end
       if sh.bend then parts[#parts + 1] = "bend=" .. sh.bend end
+      if sh.fxs then parts[#parts + 1] = "fxs=" .. sh.fxs end
+      if sh.eqs then parts[#parts + 1] = "eqs=" .. sh.eqs end
     end
     L[#L + 1] = table.concat(parts, " ")
   end

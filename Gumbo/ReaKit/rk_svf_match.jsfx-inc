@@ -238,7 +238,8 @@ function rk_svfm_onepole(mode, freq, fs)
  * The cut cascades, as rk_svf_lp / _hp / _lpb / _hpb: slope = rk_svf's slope index (nlp; stage i runs while
  * nlp > 2i; an odd order adds the one-pole). The resonant ones put the same Q on every stage; the Butterworth ones
  * take rk_svf's own pole Q list (_rk_svf_update_splane). Only the stages that run are set: a stage that comes back
- * into use later is set by that retarget.
+ * into use later is set by that retarget. bw = 2: the Q list already on the object (q0..q9, set by the caller; Quezy's
+ * resonant steep cuts, qz_engine qz_res_cut, 2026-11-07); q is then unused.
  */
 function _rk_svfm_cut(freq, q, slope, hp, bw, fs)
   instance(nlp, onepole, cutoff, mw2, ms, op0, op1, cas1, cas2, cas3, cas4, cas5, cas6, cas7, cas8, cas9,
@@ -248,7 +249,7 @@ function _rk_svfm_cut(freq, q, slope, hp, bw, fs)
   onepole = (slope + 1) & 1;
   cutoff = freq;
   this.rk_svfm_map(freq, fs);
-  bw ? this._rk_svf_update_splane(slope) : ( q0 = q1 = q2 = q3 = q4 = q5 = q6 = q7 = q8 = q9 = q; );
+  bw == 1 ? this._rk_svf_update_splane(slope) : bw == 0 ? ( q0 = q1 = q2 = q3 = q4 = q5 = q6 = q7 = q8 = q9 = q; );
   hp ? (
     nlp > 0 ? this._rk_svfm_hp_w(mw2, ms, q0);
     nlp > 2 ? cas1._rk_svfm_hp_w(mw2, ms, q1);

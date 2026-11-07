@@ -209,18 +209,84 @@ function qz_analog_highcut(f, gdb)
  * QZ_DECRAMP: the matched maps for every shape but All Pass (phase only: its magnitude is flat either way); the
  * Pultec and the analog low cut keep their caps so the multiplied frequency stays under Nyquist in both builds.
  */
-function qz_band_shape(sh, f, gdb, q, sl, fmax)
+// The four shapes the dynamics can move (qz_dyn_able: Peak 0, Low Shelf 3, High Shelf 4, Bell Prop Q 14), exactly as
+// qz_band_shape sets them (it hands them here: one master). Quezy's Dyn tick retargets through this alone, so each
+// band's copy compiles this small tree, not qz_band_shape's whole one (2026-11-07; plan
+// Plan_Quezy_Band_Code_Once_2026-11-05). sh must be one of the four (a reacting band's dsh always is: qz_band_step sets
+// dsh and dlive only when qz_dyn_able(sh)); anything else is set as 14.
+function qz_dyn_able(sh) ( sh == 0 || sh == 3 || sh == 4 || sh == 14; );
+function qz_dyn_shape(sh, f, gdb, q)
   instance(filter, run_sr)
   local(A)
 (
   A = 10 ^ (gdb / 40);
   QZ_DECRAMP ? (
     sh == 0 ? filter.rk_svfm_eq(f, q, A, run_sr) :
-    sh == 1 ? filter.rk_svfm_hp(f, q, sl, run_sr) :
+    sh == 3 ? filter.rk_svfm_ls(f, q, A, run_sr) :
+    sh == 4 ? filter.rk_svfm_hs(f, q, A, run_sr) :
+              filter.rk_svfm_eq(f, q * 10 ^ (abs(gdb) / 40), A, run_sr);
+  ) :
+  sh == 0 ? filter.rk_svf_eq(f, q, A) :
+  sh == 3 ? filter.rk_svf_ls(f, q, A) :
+  sh == 4 ? filter.rk_svf_hs(f, q, A) :
+            filter.rk_svf_eq(f, q * 10 ^ (abs(gdb) / 40), A);   // Bell Prop Q: narrows as it boosts or cuts
+);
+// The resonant cuts (Low Cut 1, High Cut 5; hp = 1 for the Low Cut's high pass) steeper than 12 dB/oct (2026-11-07,
+// the owner's go; the research and numbers: handoff Quezy_Steep_Cut_Resonance_2026-11-07.md). qz_cut_law is a GLOBAL
+// the host sets (each instance its own; Gumbo never sets it, so 0):
+//   0 = ReEQ's law: every 12 dB stage takes the band's Q, so the corner grows with the slope (Q 2.5 at 96 dB/oct
+//       +64 dB) and sinks at the default Q (96 dB/oct: -24 dB at f, the -3 dB point near 0.55 f).
+//   1 = the Butterworth cascade (Low / High Cut Butterworth's), every stage's Q times r, r ^ (12 dB stages) = Q / 0.7071:
+//       the level at f is the 12 dB cut's at that Q at every slope (exactly, in the analog prototype), the peak within
+//       ~2 dB of it, Q 0.7071 IS the Butterworth cut, and the sharpest stage's Q stays near the Butterworth's own (it
+//       rings about as long; raising only that stage's Q matched the peak exactly but rang up to ~7x longer).
+// 6 and 12 dB/oct take the old path under both laws (bit-identical: one stage at Q is already the 12 dB rule).
+// The bilinear build's cascade on the Q list already on the filter (rk_svf_hpb / _lpb with their update_splane left out).
+function qz_res_cut_bl(hp, f, sl)
+  instance(filter)
+(
+  filter.nlp = sl;
+  filter.onepole = (sl + 1) & 1;
+  hp ? (
+    filter.rk_svf_single_hp(f, filter.q0);      filter.cas1.rk_svf_single_hp(f, filter.q1);
+    filter.cas2.rk_svf_single_hp(f, filter.q2); filter.cas3.rk_svf_single_hp(f, filter.q3);
+    filter.cas4.rk_svf_single_hp(f, filter.q4); filter.cas5.rk_svf_single_hp(f, filter.q5);
+    filter.cas6.rk_svf_single_hp(f, filter.q6); filter.cas7.rk_svf_single_hp(f, filter.q7);
+    filter.cas8.rk_svf_single_hp(f, filter.q8); filter.cas9.rk_svf_single_hp(f, filter.q9);
+  ) : (
+    filter.rk_svf_single_lp(f, filter.q0);      filter.cas1.rk_svf_single_lp(f, filter.q1);
+    filter.cas2.rk_svf_single_lp(f, filter.q2); filter.cas3.rk_svf_single_lp(f, filter.q3);
+    filter.cas4.rk_svf_single_lp(f, filter.q4); filter.cas5.rk_svf_single_lp(f, filter.q5);
+    filter.cas6.rk_svf_single_lp(f, filter.q6); filter.cas7.rk_svf_single_lp(f, filter.q7);
+    filter.cas8.rk_svf_single_lp(f, filter.q8); filter.cas9.rk_svf_single_lp(f, filter.q9);
+  );
+);
+function qz_res_cut(hp, f, q, sl)
+  instance(filter, run_sr)
+  local(r)
+(
+  qz_cut_law && sl >= 2 ? (
+    filter._rk_svf_update_splane(sl);
+    r = (q / 0.7071) ^ (1 / floor((sl + 1) / 2));
+    filter.q0 *= r; filter.q1 *= r; filter.q2 *= r; filter.q3 *= r; filter.q4 *= r;
+    filter.q5 *= r; filter.q6 *= r; filter.q7 *= r; filter.q8 *= r; filter.q9 *= r;
+    QZ_DECRAMP ? filter._rk_svfm_cut(f, q, sl, hp, 2, run_sr) : this.qz_res_cut_bl(hp, f, sl);
+  ) :
+  QZ_DECRAMP ? ( hp ? filter.rk_svfm_hp(f, q, sl, run_sr) : filter.rk_svfm_lp(f, q, sl, run_sr); ) :
+               ( hp ? filter.rk_svf_hp(f, q, sl) : filter.rk_svf_lp(f, q, sl); );
+);
+function qz_band_shape(sh, f, gdb, q, sl, fmax)
+  instance(filter, run_sr)
+  local(A)
+(
+  A = 10 ^ (gdb / 40);
+  qz_dyn_able(sh) ? this.qz_dyn_shape(sh, f, gdb, q) :
+  sh == 1 || sh == 5 ? this.qz_res_cut(sh == 1, f, q, sl) :
+  QZ_DECRAMP ? (
+    sh == 0 ? filter.rk_svfm_eq(f, q, A, run_sr) :
     sh == 2 ? filter.rk_svfm_hpb(f, sl, run_sr) :
     sh == 3 ? filter.rk_svfm_ls(f, q, A, run_sr) :
     sh == 4 ? filter.rk_svfm_hs(f, q, A, run_sr) :
-    sh == 5 ? filter.rk_svfm_lp(f, q, sl, run_sr) :
     sh == 6 ? filter.rk_svfm_lpb(f, sl, run_sr) :
     sh == 7 ? filter.rk_svfm_bs(f, q, run_sr) :
     sh == 8 ? filter.rk_svfm_bp2(f, q, run_sr) :
@@ -234,11 +300,9 @@ function qz_band_shape(sh, f, gdb, q, sl, fmax)
                this.qz_flat_gain(gdb);
   ) :
   sh == 0 ? filter.rk_svf_eq(f, q, A) :
-  sh == 1 ? filter.rk_svf_hp(f, q, sl) :
   sh == 2 ? filter.rk_svf_hpb(f, sl) :
   sh == 3 ? filter.rk_svf_ls(f, q, A) :
   sh == 4 ? filter.rk_svf_hs(f, q, A) :
-  sh == 5 ? filter.rk_svf_lp(f, q, sl) :
   sh == 6 ? filter.rk_svf_lpb(f, sl) :
   sh == 7 ? filter.rk_svf_bs(f, q) :
   sh == 8 ? filter.rk_svf_bp2(f, q) :                       // never rk_svf_bp: it passes a2 for a3
@@ -594,7 +658,7 @@ function qz_xf_gain(a, b, g0, g1, q) (
 // ======================================================================================================================
 QZ_DYN_STEP = 16;
 QZ_DYN_TINY = 10 ^ -30;
-function qz_dyn_able(sh) ( sh == 0 || sh == 3 || sh == 4 || sh == 14; );
+// (qz_dyn_able, the shapes that can react, is defined above qz_dyn_shape)
 // a note length (Release sync index 1..21: 1/64T 1/64 1/32T 1/64. 1/32 1/16T 1/32. 1/16 1/8T 1/16. 1/8 1/4T 1/8. 1/4
 // 1/2T 1/4. 1/2 1/1T 1/2. 1/1 1/1.) at the song's tempo, in ms, 5 ms .. 10 s
 function qz_note_ms(i) local(w) (
@@ -629,12 +693,16 @@ function qz_dyn_det(sh, f, q)
 // one detector sample (free: through both passes)
 function qz_dyn_x0(v) instance(det, det2, dfree, dnorm) ( dfree ? det2.rk_svf_svf0(det.rk_svf_svf0(v)) * dnorm : det.rk_svf_svf0(v); );
 function qz_dyn_x1(v) instance(det, det2, dfree, dnorm) ( dfree ? det2.rk_svf_svf1(det.rk_svf_svf1(v)) * dnorm : det.rk_svf_svf1(v); );
-// one sample of a reacting band's detector, and every QZ_DYN_STEP samples its gain (@sample, before the band runs)
+// one sample of a reacting band's detector, and every QZ_DYN_STEP samples its gain (@sample, before the band runs).
+// Returns 1 when the band's filter must retarget now, to qz_band_shape(dsh, dsf, dsg + dgap * dgs, dsq, dsl, dfmax); the
+// CALLER retargets (2026-11-06, Quezy's band code compiled once, plan Plan_Quezy_Band_Code_Once_2026-11-05): qz_band_run
+// does it with qz_band_shape (Gumbo's path), Quezy with qz_dyn_shape directly (both on the band itself).
 function qz_dyn_tick()
-  instance(filter, det, xf, dms0, dms1, dkrms, dg, dgap, dcnt, dthr, dratio, drange, datt, drel, dbelow, dgs,
+  instance(det, xf, dms0, dms1, dkrms, dg, dgap, dcnt, dthr, dratio, drange, datt, drel, dbelow, dgs,
            dsh, dsl, dfmax, dpl, dsf, dsq, dsg, dtf, dtq, dtg, dsmooth, dlvl, bidx, dauto, dg1, dg2, datt2, drel2, dgsa)
-  local(x, lvl, over, y, want, mv)
+  local(x, lvl, over, y, want, mv, rt)
 (
+  rt = 0;
   dpl == 0 ? (
     x = this.qz_dyn_x0(qz_di0); dms0 += dkrms * (x * x - dms0) + QZ_DYN_TINY;
     bidx == qz_dlb ? ( qz_dlx0 = x; qz_dlhit = 1; );
@@ -671,9 +739,10 @@ function qz_dyn_tick()
     );
     mv && !xf ? (
       dgap = dg; dgsa = dgs;
-      this.qz_band_shape(dsh, dsf, dsg + dgap * dgs, dsq, dsl, dfmax);
+      rt = 1;                            // the caller retargets (see above)
     );
   );
+  rt;
 );
 
 /*
@@ -790,16 +859,46 @@ function qz_band_step(o, gs)
 );
 
 /*
+ * 1 when qz_band_step(o, gs) would change nothing but the five values it copies every block (bidx and the detector
+ * settings from qz_dyp), which this writes itself: the band is Off or Bypassed, stays so, keeps its placement, rests
+ * (no crossfade, glide, one-pole or stage drop pending), is not fresh and not reacting, and its p / sp / r_g are what
+ * the step would set. A host that runs the step elsewhere (Quezy: on its workspace, a whole-band copy in and out) skips
+ * it then; an Off band's other sliders are not read while it stays Off. KEEP IN STEP WITH qz_band_step above: every
+ * member it writes unconditionally is written here, every branch it can take is ruled out here (2026-11-07).
+ * Today !p already implies !xf, the rest tests and r_g === c_g (the step that left p = 0 found the band at rest and
+ * only @sample runs between steps); they stay so a later change to the step fails safe. Tested on the band's whole
+ * state, not only its sound: .dev_tests/quezy/qz_idle_check.py (every skipped block runs the step on a copy and
+ * compares all 1,706 members).
+ */
+function qz_band_idle(o)
+  instance(filter, p, sp, c_mode, c_pl, xf, fresh, dlive, r_g, c_g, n_drop, opk, opw, op_i, bidx, dauto, dlink, ddf, ddw)
+  local(idle)
+(
+  idle = c_mode < 2 && max(0, min(4, slider(o) | 0)) === c_mode && max(0, min(4, slider(o + 1) | 0)) === c_pl &&
+         !xf && !fresh && !dlive && !p && !sp && r_g === c_g && n_drop < 0 && !(opk && !opw) && op_i >= 1 &&
+         (filter.nlp <= 0 || filter.iter_t >= 1);
+  idle ? (
+    bidx = ((o - 1) / 13) | 0;
+    dauto = qz_dyp[bidx] >= 0.5;
+    dlink = qz_dyp[16 + bidx] >= 0.5; ddf = max(20, min(20000, qz_dyp[32 + bidx])); ddw = max(0.25, min(8, qz_dyp[48 + bidx]));
+  );
+  idle;
+);
+
+/*
  * Process one sample through the band in place (spl0 = left, spl1 = right), ReEQ's placement: Stereo both channels;
  * Mid / Side encode, filter one side of the pair, decode; Left / Right one channel. The steady path is inline (one
  * object, the one-pole's glide when it runs); a crossfade runs the band and its partner on the same input.
+ * qz_band_run = the dynamics tick (with its retarget on the band itself), then qz_band_proc, when the band plays. A host
+ * that retargets another way (Quezy: qz_dyn_shape directly) calls the same steps itself: p ? ( dlive ? ( qz_dyn_tick()
+ * ? <retarget> ); qz_band_proc(); ). 2026-11-06: split, same steps in the same order.
  */
-function qz_band_run()
-  instance(filter, xb, p, pl, sp, xf, xc, xc_step, xpl, o0, o1, op_i, dlive)
+// the band's sample itself (after the dynamics tick)
+function qz_band_proc()
+  instance(filter, xb, pl, sp, xf, xc, xc_step, xpl, o0, o1, op_i)
   local(m, s)
 (
-  p ? (
-    dlive ? this.qz_dyn_tick();          // dynamics: the detector, and every QZ_DYN_STEP samples the band's gain
+  (
     sp ? (                                // the slow path: a crossfade, or the one-pole's glide (sp off once it lands)
       xf ? (
         xc < 1 ? ( this.qz_obj_tick(); this.qz_obj_route(spl0, spl1, pl); );
@@ -825,6 +924,15 @@ function qz_band_run()
         pl == 0 || pl == 4 ? spl1 = filter.rk_svf_svf1(spl1);
       );
     );
+  );
+);
+function qz_band_run()
+  instance(p, dlive, dsh, dsf, dsg, dgap, dgs, dsq, dsl, dfmax)
+(
+  p ? (
+    // dynamics: the detector, and every QZ_DYN_STEP samples the band's gain
+    dlive ? ( this.qz_dyn_tick() ? this.qz_band_shape(dsh, dsf, dsg + dgap * dgs, dsq, dsl, dfmax); );
+    this.qz_band_proc();
   );
 );
 
@@ -872,6 +980,8 @@ function qz_listen_shape(sh, f, q, gdb, sl, on, w, fmax)
 (
   fc = qz_lclamp(f, fmax);
   q = max(0.1, q);
+  // a resonant cut's listen: the other direction under the band's own law (qz_res_cut)
+  sh == 1 || sh == 5 ? this.qz_res_cut(sh == 5, fc, q, sl) :
   QZ_DECRAMP ? (                         // matched like the bands (build step 1b): a listen plays the band's own filters
     sh < 0 ? (
       filter.rk_svfm_listen_eq(qz_lclamp(f * exp(-QZ_LF * w), fmax), qz_lclamp(f * exp(QZ_LF * w), fmax), fc, 0.7071, 1, run_sr);
@@ -884,9 +994,7 @@ function qz_listen_shape(sh, f, q, gdb, sl, on, w, fmax)
       filter.rk_svfm_listen_bs(lo, hi, fc, q, run_sr);
     ) :
     sh == 7 ? filter.rk_svfm_bp2(fc, q, run_sr) :
-    sh == 1 ? filter.rk_svfm_lp(fc, q, sl, run_sr) :
     sh == 2 ? filter.rk_svfm_lpb(fc, sl, run_sr) :
-    sh == 5 ? filter.rk_svfm_hp(fc, q, sl, run_sr) :
     sh == 6 ? filter.rk_svfm_hpb(fc, sl, run_sr) :
     sh == 12 ? filter.rk_svfm_lp(fc, 0.701, 3, run_sr) :
     sh == 13 ? filter.rk_svfm_hp(fc, 0.701, 3, run_sr) :
@@ -905,9 +1013,7 @@ function qz_listen_shape(sh, f, q, gdb, sl, on, w, fmax)
     filter.rk_svf_listen_bs(lo, hi, fc, q);
   ) :
   sh == 7 ? filter.rk_svf_bp2(fc, q) :
-  sh == 1 ? filter.rk_svf_lp(fc, q, sl) :
   sh == 2 ? filter.rk_svf_lpb(fc, sl) :
-  sh == 5 ? filter.rk_svf_hp(fc, q, sl) :
   sh == 6 ? filter.rk_svf_hpb(fc, sl) :
   sh == 12 ? filter.rk_svf_lp(fc, 0.701, 3) :
   sh == 13 ? filter.rk_svf_hp(fc, 0.701, 3) :

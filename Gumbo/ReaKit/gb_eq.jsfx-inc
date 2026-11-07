@@ -73,7 +73,14 @@ function gb_eq_display_apply(tone) (
 // the EQ as it is through a change: only the key moves, and the EQ then belongs to the new program.
 // Nothing loaded yet (key 0): the first instrument keeps the EQ already set. Called from @gfx every pass (gb_eqm_follow,
 // outside the loader's lock: slider_automate can make REAPER run @serialize in the same thread) and from the tests.
+// SPACE and CHORUS (2026-11-06, the owner: "space should be remembered per sound like EQ"): the two knobs are the own
+// send of the sound channel 1 plays (gb_voice), so the memory keeps each knob's DISTANCE from that sound's own amount
+// (GB_EQM_FX, beside the EQ entry: 0 = the knob sits at the sound's own, nothing to keep). A change of sound puts the
+// knobs at the new sound's own amount plus what was kept -- from key 0 too (a fresh Gumbo's knobs follow the first
+// sound; the EQ does not, see above). HOLD keeps them where they are, as it keeps the EQ. Saved in gate 4.
 GB_EQM = 1745000; GB_EQM_N = 128;    // 128 programs x GB_EQM_W cells -> 1749096 (was 32 while the key was the file alone)
+GB_EQM_FX = 1749200;                 // 128 x 2: each entry's SPACE / CHORUS distance (the same slot as its EQ entry) -> 1749456
+GB_EQM_WS = 1749500;                 // 128: the slots gate 3 wrote, in order, so gate 4 writes the same ones (@serialize) -> 1749628
 GB_EQM_W = 32;                       // +0 key (0 = empty), +1 age (for reuse), +2.. the values in GB_EQM_SL order
 GB_EQM_NV = 29;                      // 4 bands x 7 (mode, place, shape, freq, gain, Q, slope) + TONE (slider 7)
 GB_EQM_DEF = GB_EQM + GB_EQM_N * GB_EQM_W;   // 29 defaults (the slider lines' own): 1749096 -> 1749125
@@ -94,6 +101,7 @@ GB_EQM_DEF[28] = 0;
 gb_eqm_key = 0;                      // the program whose EQ the sliders hold (0 = none yet); @serialize sets it too
 gb_eqm_age = 0;
 gb_eqm_hold = 0;                     // HOLD (@gfx copies slider 95 here each pass; the tests set it)
+gb_eqm_own_r = 0; gb_eqm_own_c = 0;  // the own SPACE / CHORUS amounts (percent) of the sound under gb_eqm_key
 gb_eqm_f_ch0 = -1; gb_eqm_f_gen = -1;   // gb_eqm_follow's last program and load (the key is hashed only on a change)
 
 // a path's key: never 0 for a path; "" -> 0
@@ -115,9 +123,10 @@ function gb_eqm_key_of(path, ch0) local(h) (
   h = gb_eqm_hash(path);
   h != 0 && gb_nprg > 0 ? ( h = h * 131 + ch0; h -= floor(h / 2147483629) * 2147483629; h + 1; ) : h;
 );
-// is the EQ page at its defaults (flat, never set): such an EQ is not kept
+// is the EQ page at its defaults (flat, never set) with SPACE and CHORUS at the sound's own amounts (within the knobs'
+// whole-percent steps): such a sound is not kept
 function gb_eqm_flat() local(i, f) (
-  f = 1; i = 0;
+  f = abs(slider96 - gb_eqm_own_r) < 0.5 && abs(slider98 - gb_eqm_own_c) < 0.5; i = 0;
   loop(GB_EQM_NV, slider(GB_EQM_SL[i]) !== GB_EQM_DEF[i] ? f = 0; i += 1; );
   f;
 );
@@ -142,9 +151,18 @@ function gb_eqm_stash(key) local(e, i, o, oa) (
     );
     i = 0;
     loop(GB_EQM_NV, e[2 + i] = slider(GB_EQM_SL[i]); i += 1; );
+    o = GB_EQM_FX + (e - GB_EQM) / GB_EQM_W * 2; o[0] = slider96 - gb_eqm_own_r; o[1] = slider98 - gb_eqm_own_c;
     gb_eqm_age += 1; e[1] = gb_eqm_age;
     e[0] = key;                      // last: @serialize (another thread) skips an entry with no key
   );
+);
+// key's kept SPACE / CHORUS distances (or none) on the new sound's own amounts nr / nc -> the knobs (whole percents,
+// 0..100, each automated); the own amounts become the current ones
+function gb_eqm_apply_fx(key, nr, nc) local(e, o, v) (
+  e = gb_eqm_find(key); o = e >= 0 ? GB_EQM_FX + (e - GB_EQM) / GB_EQM_W * 2 : 0;
+  v = max(0, min(100, floor(nr + (e >= 0 ? o[0] : 0) + 0.5))); v !== slider96 ? ( slider96 = v; slider_automate(slider96); );
+  v = max(0, min(100, floor(nc + (e >= 0 ? o[1] : 0) + 0.5))); v !== slider98 ? ( slider98 = v; slider_automate(slider98); );
+  gb_eqm_own_r = nr; gb_eqm_own_c = nc;
 );
 // key's entry (or the defaults) -> the sliders; only changed ones, each automated (undo, the host's own view).
 // Gumbo's face never changes a band's mode, so the order of the writes does not matter here (Quezy's qzg_restore).
@@ -158,21 +176,27 @@ function gb_eqm_apply(key) local(e, i, n, v) (
   );
   e >= 0 ? ( gb_eqm_age += 1; e[1] = gb_eqm_age; );
 );
-// the program (or the file) changed to new key nk: the EQ stored under the old one, the new one's brought back -- or,
-// with HOLD on, kept as it is (nothing stored, nothing applied: the EQ travels with the user and belongs to the new
-// program from here)
-function gb_eqm_switch(nk) (
+// the program (or the file) changed to new key nk (a sound whose own SPACE / CHORUS amounts are nr / nc): the EQ and
+// the knobs stored under the old one, the new one's brought back -- or, with HOLD on, kept as they are (nothing stored,
+// nothing applied: they travel with the user and belong to the new program from here). From key 0 (nothing loaded
+// yet) the EQ stays and only the knobs follow
+function gb_eqm_switch(nk, nr, nc) (
   nk != gb_eqm_key ? (
     gb_eqm_key != 0 && nk != 0 && !gb_eqm_hold ? ( gb_eqm_stash(gb_eqm_key); gb_eqm_apply(nk); );
+    nk != 0 && !gb_eqm_hold ? gb_eqm_apply_fx(nk, nr, nc) : ( gb_eqm_own_r = nr; gb_eqm_own_c = nc; );
     gb_eqm_key = nk;
   );
 );
+// the key of path's sound ch0 (gb_eqm_key_of) with that sound's own amounts: a switch to it, or (set) just the key --
+// the sliders already hold its EQ and knobs (@serialize restored them)
+function gb_eqm_switch_to(path, ch0) ( gb_eqm_switch(gb_eqm_key_of(path, ch0), gb_sx_own_of(ch0, 0), gb_sx_own_of(ch0, 1)); );
+function gb_eqm_set_key(path, ch0) ( gb_eqm_key = gb_eqm_key_of(path, ch0); gb_eqm_own_r = gb_sx_own_of(ch0, 0); gb_eqm_own_c = gb_sx_own_of(ch0, 1); );
 // every @gfx pass, once the audio thread has adopted the load: follow what channel 1 plays (ch0 as gb_eqm_key_of
 // takes it); the key is hashed only when the program or the load changed
 function gb_eqm_follow(path, ch0) (
   ch0 != gb_eqm_f_ch0 || gb_load_gen != gb_eqm_f_gen ? (
     gb_eqm_f_ch0 = ch0; gb_eqm_f_gen = gb_load_gen;
-    gb_eqm_switch(gb_eqm_key_of(path, ch0));
+    gb_eqm_switch_to(path, ch0);
   );
 );
 // @serialize gate 3 (rd = reading): the used entries; on a read the caller sets the key of the instrument restored
@@ -187,10 +211,28 @@ function gb_eqm_ser(rd) local(n, i, e, z) (
   ) : (
     n = 0; i = 0;
     loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; e[0] != 0 ? n += 1; i += 1; );
-    file_var(0, n);
+    file_var(0, n); gb_eqm_wn = 0;
     i = 0;
-    loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; e[0] != 0 && n > 0 ? ( file_mem(0, e, GB_EQM_W); n -= 1; ); i += 1; );
+    loop(GB_EQM_N, e = GB_EQM + i * GB_EQM_W; e[0] != 0 && n > 0 ? ( file_mem(0, e, GB_EQM_W); GB_EQM_WS[gb_eqm_wn] = i; gb_eqm_wn += 1; n -= 1; ); i += 1; );
     // exactly n written: an entry freed between the count and the writes (gb_eqm_stash) leaves empty ones (key 0)
-    loop(n, loop(GB_EQM_W, z = 0; file_var(0, z); ); );
+    loop(n, loop(GB_EQM_W, z = 0; file_var(0, z); ); GB_EQM_WS[gb_eqm_wn] = -1; gb_eqm_wn += 1; );
+  );
+);
+// @serialize gate 4 (2026-11-06): the SPACE / CHORUS distances of the entries gate 3 wrote, in the same order (the slots
+// it noted, GB_EQM_WS; a padding entry's as zeros), so a read lands them beside the entries gate 3 read into slots
+// 0 .. n-1. A project saved before gate 4 reads none (the caller clears the table)
+function gb_eqm_ser_fx(rd) local(n, i, o, z) (
+  rd ? (
+    memset(GB_EQM_FX, 0, GB_EQM_N * 2);
+    n = 0; file_var(0, n); n = max(0, min(GB_EQM_N, n | 0));
+    i = 0; loop(n, file_mem(0, GB_EQM_FX + i * 2, 2); i += 1; );
+  ) : (
+    n = gb_eqm_wn; file_var(0, n);
+    i = 0;
+    loop(n,
+      o = GB_EQM_WS[i] >= 0 ? GB_EQM_FX + GB_EQM_WS[i] * 2 : 0;
+      o ? file_mem(0, o, 2) : ( z = 0; file_var(0, z); file_var(0, z); );
+      i += 1;
+    );
   );
 );

@@ -1,0 +1,439 @@
+// Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
+// gb_space.jsfx-inc -- Gumbo's SPACE: one shared stereo reverb, fed by each MIDI part's send (CC91, gb_voice) and
+// mixed back in after DRIVE (Gumbo_ReaKit @sample). The General MIDI 2 types (2026-11-06; plan
+// .docs/specs/Plan_Gumbo_1.3_Space_Chorus_SoundFont_2026-11-06.md):
+//   0 Small Room, 1 Medium Room, 2 Large Room -- William G. Gardner's diffuse reverberators, "The Virtual Acoustic
+//     Room", MIT M.S. thesis 1992, figure 4.11 (p. 56), read with the schematic rules of figures 4.7-4.8 (p. 51).
+//     Used inside their own designed ranges (the owner: "use them as is"): loop gain 0.148 / 0.443 / 0.186 ->
+//     0.5 / 1.0 / 1.8 s. Our choices, not the thesis's: a one-pole low-pass at the drawn cutoff, the right channel's
+//     delays 1.7 % longer for stereo, a mono input.
+//   3 Medium Hall, 4 Large Hall (the GM2 default) -- the Faust library's zita_rev1_stereo (reverbs.lib 1.6.2,
+//     faustlibraries b0e363a6; "jos section, Copyright (C) 2003-2017 by Julius O. Smith III, released under the
+//     (MIT-style) STK-4.3 license"), a model of Fons Adriaensen's zita-rev1. Medium: 30 ms, 200 Hz, 5 kHz, 1.8 s low /
+//     1.5 s mid; Large: 50 ms, 200 Hz, 7 kHz, 1.8 / 1.8 s.
+//   5 Plate -- Chris Johnson's kPlateA (Airwindows, MIT; Copyright (c) 2018 Chris Johnson), ported by hand at his
+//     defaults, as is (the owner, 2026-11-06: "use them as is"; its own decay, about 2.1 s). See the plate section.
+// Tested first as .dev_tests/gumbo_verb/gardner_rooms_test.jsfx and zita_faust_test.jsfx (bundle); the plate against
+// his C++ in .dev_tests/gumbo_plate_null.py.
+//
+// Memory: GSP_BASE .. GSP_END (1,217,000 cells, the top of maxmem above gb_load's GB_AUD_END); every type's lines are
+// laid out at once for the current rate (about 1.04 M cells at 192 kHz, the plate's 0.11 M in). Threads: @block (gsp_block) and @sample
+// (gsp_tick) only; @gfx never touches it, except reading gsp_glow (below).
+// API: gsp_init() @init; gsp_block(type, amount) @block (type 0..5); gsp_tick(inl, inr) @sample -> gsp_l, gsp_r
+// (already times the amount and the switch fade). gsp_on = 0 while SPACE is off and the tail has gone: the caller
+// skips gsp_tick then, so SPACE at 0 leaves Gumbo's sound exactly as it was.
+// gsp_glow (0..1) is the return's level for the face's picture (plan step 10, 2026-11-07): the last block's peak
+// sample in dB over GSP_GLOW_LO..GSP_GLOW_HI, up at once, let go over GSP_GLOW_T. gsp_block writes it once a
+// block; @gfx only reads it (gb_face_p2) -- the one audio-to-face value here (gfx_audio_shared_vars.py counts
+// the other direction).
+
+@init
+GSP_BASE = 133000000; GSP_END = 134217000;
+gsp_top = GSP_BASE; gsp_sr = 0; gsp_type = -1; gsp_want = 4; gsp_g = 0; gsp_amt = 0; gsp_amt_s = 0;
+// the return gain (2026-11-06, "follow the sound"): the voices send fractions of themselves (a sound's own percent /
+// 100 plus 20 % x CC91 / 127, FluidSynth's sum); this is what one unit of send comes back as. MEASURED against
+// FluidSynth 2.6.2 (plan R7, .dev_tests/gumbo_vs_fluidsynth.py): the same looped sine SoundFont, one 3 s note, the
+// wet (render with the reverb minus without) in the steady window 2-3 s into the note. FluidSynth's default reverb
+// (engine dat, level 0.7, room 0.5) returns 1.00 x the dry per unit of send; the Large Hall at a gain of 1 returned
+// 0.42 (gsp_block clamped the amount to 1 until this evening, so the provisional 5.5 never applied), so 2.4 puts it
+// level (its tail 0.4-0.9 s after the note-off then sits at 0.6 x FluidSynth's: the hall's own decay, not a gain).
+// Then the owner's ear (2026-11-06, "a little wetter ... thunderstorm, not hurricane"): 1.5 x FluidSynth's level
+// (+3.5 dB) -- the standard says what fraction is sent, not how loud it comes back; the gate expects this 1.5
+GSP_RET = 3.6;
+gsp_on = 0; gsp_quiet = 0; gsp_clear = 0;
+// the glow: -60 dB (a tail about gone) .. -12 dB (a loud return) of the peak sample; let go over 0.25 s
+GSP_GLOW_LO = -60; GSP_GLOW_HI = -12; GSP_GLOW_T = 0.25; gsp_pk = 0; gsp_glow = 0;
+
+// ── small building blocks (instance namespaces) ──────────────────────────────────────────────────────────────────
+function gsp_dl(n) instance(buf, len, p) global(gsp_top) ( buf = gsp_top; len = max(1, n); p = 0; gsp_top += len + 4; );
+function gsp_peek() instance(buf, p) ( buf[p] );
+function gsp_push(x) instance(buf, len, p) ( buf[p] = x; p += 1; p >= len ? p = 0; );
+function gsp_dt(x) instance(buf, len, p) local(y) ( y = buf[p]; buf[p] = x; p += 1; p >= len ? p = 0; y; );
+function gsp_ap(n, gg) instance(buf, len, p, g) global(gsp_top) ( buf = gsp_top; len = max(1, n); p = 0; g = gg; gsp_top += len + 4; );
+function gsp_apt(x) instance(buf, len, p, g) local(d, v) (
+  d = buf[p]; v = x + g * d; buf[p] = v; p += 1; p >= len ? p = 0; d - g * v;
+);
+function gsp_lp(fc) instance(a, z) ( a = 1 - exp(-2 * $pi * fc / srate); z = 0; );
+function gsp_lpt(x) instance(a, z) ( z += a * (x - z); z; );
+function gsp_ms(t, k) ( max(1, floor(t * k * srate / 1000 + 0.5)) );
+
+// ── Gardner's three rooms, one channel each (k = delay scale: 1 left, 1.017 right) ───────────────────────────────
+// An outer allpass with allpasses nested in its delay: its output is read (peek) before its input is known, then
+// the input runs through the inner allpasses and the rest of the outer delay (the outer's length minus theirs).
+function gsp_room_init(k) (
+  // small: 24, [35 (0.3): 22 (0.4), 8.3 (0.6)], tap 0.5, [66 (0.1): 30 (0.4)], tap 0.5, LPF 4.2 kHz
+  this.s_d24.gsp_dl(gsp_ms(24, k));
+  this.s_a22.gsp_ap(gsp_ms(22, k), 0.4); this.s_a8.gsp_ap(gsp_ms(8.3, k), 0.6); this.s_r35.gsp_dl(gsp_ms(35 - 22 - 8.3, k));
+  this.s_a30.gsp_ap(gsp_ms(30, k), 0.4); this.s_r66.gsp_dl(gsp_ms(66 - 30, k));
+  this.s_lp.gsp_lp(4200);
+  // medium: [35 (0.3): 8.3 (0.7), 22 (0.5)], tap 0.5, 5, 30 (0.5), 67, tap 0.5, 15, x gain, + input,
+  //         [39 (0.3): 9.8 (0.6)], tap 0.5, 108, LPF 2.5 kHz
+  this.m_a8.gsp_ap(gsp_ms(8.3, k), 0.7); this.m_a22.gsp_ap(gsp_ms(22, k), 0.5); this.m_r35.gsp_dl(gsp_ms(35 - 8.3 - 22, k));
+  this.m_d5.gsp_dl(gsp_ms(5, k)); this.m_a30.gsp_ap(gsp_ms(30, k), 0.5); this.m_d67.gsp_dl(gsp_ms(67, k));
+  this.m_d15.gsp_dl(gsp_ms(15, k));
+  this.m_a98.gsp_ap(gsp_ms(9.8, k), 0.6); this.m_r39.gsp_dl(gsp_ms(39 - 9.8, k));
+  this.m_d108.gsp_dl(gsp_ms(108, k)); this.m_lp.gsp_lp(2500);
+  // large: 8 (0.3), 12 (0.3), 4, tap 0.34, 17, [87 (0.5): 62 (0.25)], 31, tap 0.14, 3,
+  //        [120 (0.5): 76 (0.25), 30 (0.25)], tap 0.14, LPF 2.6 kHz
+  this.l_a8.gsp_ap(gsp_ms(8, k), 0.3); this.l_a12.gsp_ap(gsp_ms(12, k), 0.3); this.l_d4.gsp_dl(gsp_ms(4, k));
+  this.l_d17.gsp_dl(gsp_ms(17, k)); this.l_a62.gsp_ap(gsp_ms(62, k), 0.25); this.l_r87.gsp_dl(gsp_ms(87 - 62, k));
+  this.l_d31.gsp_dl(gsp_ms(31, k)); this.l_d3.gsp_dl(gsp_ms(3, k));
+  this.l_a76.gsp_ap(gsp_ms(76, k), 0.25); this.l_a30.gsp_ap(gsp_ms(30, k), 0.25); this.l_r120.gsp_dl(gsp_ms(120 - 76 - 30, k));
+  this.l_lp.gsp_lp(2600);
+  this.fb = 0;
+);
+function gsp_small(x, gain) local(a, out, v, w, t1, t2) (
+  a = this.s_d24.gsp_dt(x + this.fb);
+  out = this.s_r35.gsp_peek(); v = a + 0.3 * out; t1 = out - 0.3 * v;
+  w = this.s_a22.gsp_apt(v); w = this.s_a8.gsp_apt(w); this.s_r35.gsp_push(w);
+  out = this.s_r66.gsp_peek(); v = t1 + 0.1 * out; t2 = out - 0.1 * v;
+  w = this.s_a30.gsp_apt(v); this.s_r66.gsp_push(w);
+  this.fb = gain * this.s_lp.gsp_lpt(t2);
+  0.5 * t1 + 0.5 * t2;
+);
+function gsp_medium(x, gain) local(out, v, w, t1, t2, t3, a) (
+  out = this.m_r35.gsp_peek(); v = x + this.fb + 0.3 * out; t1 = out - 0.3 * v;
+  w = this.m_a8.gsp_apt(v); w = this.m_a22.gsp_apt(w); this.m_r35.gsp_push(w);
+  a = this.m_d5.gsp_dt(t1); a = this.m_a30.gsp_apt(a); t2 = this.m_d67.gsp_dt(a);
+  a = gain * this.m_d15.gsp_dt(t2) + x;
+  out = this.m_r39.gsp_peek(); v = a + 0.3 * out; t3 = out - 0.3 * v;
+  w = this.m_a98.gsp_apt(v); this.m_r39.gsp_push(w);
+  this.fb = gain * this.m_lp.gsp_lpt(this.m_d108.gsp_dt(t3));
+  0.5 * (t1 + t2 + t3);
+);
+function gsp_large(x, gain) local(a, out, v, w, t1, t2, t3) (
+  a = this.l_a8.gsp_apt(x + this.fb); a = this.l_a12.gsp_apt(a); t1 = this.l_d4.gsp_dt(a);
+  a = this.l_d17.gsp_dt(t1);
+  out = this.l_r87.gsp_peek(); v = a + 0.5 * out; a = out - 0.5 * v;
+  w = this.l_a62.gsp_apt(v); this.l_r87.gsp_push(w);
+  t2 = this.l_d31.gsp_dt(a); a = this.l_d3.gsp_dt(t2);
+  out = this.l_r120.gsp_peek(); v = a + 0.5 * out; t3 = out - 0.5 * v;
+  w = this.l_a76.gsp_apt(v); w = this.l_a30.gsp_apt(w); this.l_r120.gsp_push(w);
+  this.fb = gain * this.l_lp.gsp_lpt(t3);
+  0.34 * t1 + 0.14 * t2 + 0.14 * t3;
+);
+
+// ── the Zita hall (Faust zita_rev1_stereo) ───────────────────────────────────────────────────────────────────────
+// lines: input 2 x gsp_zin, allpass 8 x gsp_zap, feedback 8 x gsp_zfb (powers of two sized for the rate); small tables
+function gsp_zita_alloc() local(i) (
+  gsp_zin = 2 ^ ceil(log(0.11 * srate) / log(2));   // up to 90 ms of input delay (rdel - 20)
+  gsp_zap = 2 ^ ceil(log(0.0317 * srate + 2) / log(2));
+  gsp_zfb = 2 ^ ceil(log(0.2569 * srate + 2) / log(2));
+  GSP_ZI = gsp_top; gsp_top += 2 * gsp_zin;
+  GSP_ZA = gsp_top; gsp_top += 8 * gsp_zap;
+  GSP_ZF = gsp_top; gsp_top += 8 * gsp_zfb;
+  GSP_APD = gsp_top; GSP_TD = gsp_top + 8; GSP_APC = gsp_top + 16; GSP_G0 = gsp_top + 24; GSP_GM = gsp_top + 32;
+  GSP_PSM = gsp_top + 40; GSP_LSX = gsp_top + 48; GSP_LSY = gsp_top + 56; GSP_SMZ = gsp_top + 64; GSP_APW = gsp_top + 72;
+  GSP_FBW = gsp_top + 80; GSP_YV = gsp_top + 88; GSP_AV = gsp_top + 96; GSP_XV = gsp_top + 104;
+  GSP_SHD = gsp_top + 112; GSP_P1 = gsp_top + 120;
+  gsp_top += 136;
+);
+function gsp_zita_tables() local(i) (
+  GSP_APD[0] = 0.020346; GSP_APD[1] = 0.024421; GSP_APD[2] = 0.031604; GSP_APD[3] = 0.027333;
+  GSP_APD[4] = 0.022904; GSP_APD[5] = 0.029291; GSP_APD[6] = 0.013458; GSP_APD[7] = 0.019123;
+  GSP_TD[0] = 0.153129; GSP_TD[1] = 0.210389; GSP_TD[2] = 0.127837; GSP_TD[3] = 0.256891;
+  GSP_TD[4] = 0.174713; GSP_TD[5] = 0.192303; GSP_TD[6] = 0.125000; GSP_TD[7] = 0.219991;
+  i = 0; loop(8, GSP_APC[i] = (i & 1) ? -0.6 : 0.6; i += 1; );
+  gsp_zw = 0; gsp_zap_p = 0; gsp_zfb_p = 0;
+);
+// rdel (ms), f1, f2 (Hz), t60dc, t60m (s): the per-loop gains and filters (log / exp / cos: @block only)
+function gsp_zita_coef(rdel, f1, f2, t60dc, t60m) local(i, tds, gs, cw, mbo2, k1) (
+  i = 0;
+  loop(8,
+    tds = floor(0.5 + srate * GSP_TD[i]);
+    GSP_APW[i] = floor(0.5 + srate * GSP_APD[i]);
+    GSP_FBW[i] = tds - GSP_APW[i];
+    GSP_G0[i] = exp(-3 * log(10) * tds / (t60dc * srate));
+    GSP_GM[i] = exp(-3 * log(10) * tds / (t60m * srate));
+    gs = GSP_GM[i] * GSP_GM[i];
+    cw = f2 > 0.49 * srate ? -1 : cos(2 * $pi * f2 / srate);
+    mbo2 = (1 - gs * cw) / (1 - gs);
+    GSP_PSM[i] = mbo2 - sqrt(max(0, mbo2 * mbo2 - 1));
+    GSP_SHD[i] = GSP_G0[i] - GSP_GM[i]; GSP_P1[i] = 1 - GSP_PSM[i];   // per-sample factors, worked out here
+    i += 1;
+  );
+  k1 = tan($pi * f1 / srate); gsp_zlb = k1 / (1 + k1); gsp_zla = (k1 - 1) / (k1 + 1);
+  gsp_zind = max(0, floor(0.5 + srate * (rdel - 20) * 0.001));
+  gsp_zt1 = 0.525 / sqrt(t60m);
+  gsp_zinv8 = 1 / sqrt(8); gsp_ztiny = 0.00000000000000000001;   // Faust's staynormal, 10^-20
+);
+function gsp_zita(inl, inr) local(rp, xl, xr, i, b, p, u, a, q, old, v, h0, h1, h2, h3, h4, h5, h6, h7,
+                                   k0, k1, k2, k3, k4, k5, k6, k7, x, lp, sh) (
+  GSP_ZI[gsp_zw] = inl; GSP_ZI[gsp_zin + gsp_zw] = inr;
+  rp = gsp_zw - gsp_zind; rp < 0 ? rp += gsp_zin;
+  xl = GSP_ZI[rp] * 0.3; xr = GSP_ZI[gsp_zin + rp] * 0.3;
+  gsp_zw += 1; gsp_zw >= gsp_zin ? gsp_zw = 0;
+  GSP_XV[0] = xl; GSP_XV[1] = xl; GSP_XV[2] = -xl; GSP_XV[3] = -xl;
+  GSP_XV[4] = xr; GSP_XV[5] = xr; GSP_XV[6] = -xr; GSP_XV[7] = -xr;
+  i = 0;
+  loop(8,
+    b = GSP_ZF + i * gsp_zfb; p = gsp_zfb_p - GSP_FBW[i]; p < 0 ? p += gsp_zfb;
+    u = GSP_XV[i] + b[p];
+    a = GSP_ZA + i * gsp_zap; q = gsp_zap_p - GSP_APW[i]; q < 0 ? q += gsp_zap;
+    old = a[q]; v = u - GSP_APC[i] * old; a[gsp_zap_p] = v;
+    GSP_AV[i] = old + GSP_APC[i] * v;
+    i += 1;
+  );
+  // the 8 x 8 Hadamard (Sylvester order, unnormalised: the loops' filters carry the 1/sqrt(8))
+  h0 = GSP_AV[0] + GSP_AV[4]; h1 = GSP_AV[1] + GSP_AV[5]; h2 = GSP_AV[2] + GSP_AV[6]; h3 = GSP_AV[3] + GSP_AV[7];
+  h4 = GSP_AV[0] - GSP_AV[4]; h5 = GSP_AV[1] - GSP_AV[5]; h6 = GSP_AV[2] - GSP_AV[6]; h7 = GSP_AV[3] - GSP_AV[7];
+  k0 = h0 + h2; k1 = h1 + h3; k2 = h0 - h2; k3 = h1 - h3; k4 = h4 + h6; k5 = h5 + h7; k6 = h4 - h6; k7 = h5 - h7;
+  GSP_YV[0] = k0 + k1; GSP_YV[1] = k0 - k1; GSP_YV[2] = k2 + k3; GSP_YV[3] = k2 - k3;
+  GSP_YV[4] = k4 + k5; GSP_YV[5] = k4 - k5; GSP_YV[6] = k6 + k7; GSP_YV[7] = k6 - k7;
+  i = 0;
+  loop(8,
+    x = GSP_YV[i];
+    lp = gsp_zlb * (x + GSP_LSX[i]) - gsp_zla * GSP_LSY[i];
+    GSP_LSX[i] = x; GSP_LSY[i] = lp;
+    sh = GSP_GM[i] * x + GSP_SHD[i] * lp;            // = (x + (G0/GM - 1) lp) GM, Faust's low shelf times gM
+    GSP_SMZ[i] = GSP_P1[i] * sh + GSP_PSM[i] * GSP_SMZ[i];
+    b = GSP_ZF + i * gsp_zfb; b[gsp_zfb_p] = GSP_SMZ[i] * gsp_zinv8 + gsp_ztiny;
+    i += 1;
+  );
+  gsp_zfb_p += 1; gsp_zfb_p >= gsp_zfb ? gsp_zfb_p = 0;
+  gsp_zap_p += 1; gsp_zap_p >= gsp_zap ? gsp_zap_p = 0;
+  gsp_l = (GSP_YV[1] + GSP_YV[2]) * gsp_zt1; gsp_r = (GSP_YV[1] - GSP_YV[2]) * gsp_zt1;
+);
+
+// ── the plate: Chris Johnson's kPlateA (Airwindows, MIT) ─────────────────────────────────────────────────────────
+// Ported by hand from his kPlateAProc.cpp (airwindows commit b79c7a3f, vendored unmodified in the bundle's
+// .dev_tests/aw_ref/airwindows/kPlateA/) at his defaults: no input pad (A 1), regen B 0.5, the input high-pass C 1,
+// no predelay (D 0), wet only (the return is Gumbo's). His structure as is: a two-point average (his "10k filter") and
+// a one-pole high-pass (his "600hz"; by its coefficient about 54 Hz) before and after a sine-shaped drive with a slow
+// self-levelling gain (it turns down when driven hard, so the plate's level follows the input's); nine early allpasses a side in three
+// rounds of three; five banks of five delays a side, each bank a 5 x 5 Householder mix, with a wide low bandpass (his
+// "fix") and a two-point average (his "mulch") on one line each; the feedback from the fifth bank into the first (his
+// own wiring: some across the sides, some within); the sum x 0.0016 through the same levelling gain, an average, a
+// 2.8 clip and his BigFastArcSin curve. Our changes: every delay length scaled by srate / 44100 so the plate sounds the
+// same at any rate (his runs the lines as they are at 44.1 and 48 kHz and skips samples above 88.2 kHz); at 44.1 kHz
+// the port nulls against his C++ (.dev_tests/gumbo_plate_null.py). Left out: his dither, his denormal noise, his
+// first-sample predelay quirk. sin(u) for u in 0..1 (the levelling gain's curve) is a 7-term series: nothing
+// transcendental per sample. Names: gsp_pel_? / gsp_per_? the early lines, gsp_pdl_? / gsp_pdr_? the delays (his
+// letters), gsp_pfl_? / gsp_pfr_? the feedback, gsp_pml_? / gsp_pmr_? the averages, GSP_PF the four bandpasses.
+function gsp_pn(n) ( max(1, floor(n * srate / 44100 + 0.5)) );
+// his early allpass: the line's oldest value d, v = x - d / 2 goes in, v / 2 + d comes out
+function gsp_pap(x) instance(buf, len, p) local(d, v) ( d = buf[p]; v = x - (d * 0.5); buf[p] = v; p += 1; p >= len ? p = 0; (v * 0.5) + d; );
+// his fixed biquad (coefficients at f: a0, a1, a2, b1, b2; the state at s, two cells)
+function gsp_pbq(x, f, s) local(y) ( y = (x * f[0]) + s[0]; s[0] = (x * f[1]) - (y * f[3]) + s[1]; s[1] = (x * f[2]) - (y * f[4]); y; );
+// sin(u), 0 <= u <= 1, to u^13 (the error under 1e-12)
+function gsp_psn(u) local(u2) ( u2 = u * u; u * (1 - u2 / 6 * (1 - u2 / 20 * (1 - u2 / 42 * (1 - u2 / 72 * (1 - u2 / 110 * (1 - u2 / 156)))))); );
+function gsp_plate_alloc() (
+  gsp_pel_a.gsp_dl(gsp_pn(61)); gsp_pel_b.gsp_dl(gsp_pn(499)); gsp_pel_c.gsp_dl(gsp_pn(107)); gsp_pel_d.gsp_dl(gsp_pn(127));
+  gsp_pel_e.gsp_dl(gsp_pn(607)); gsp_pel_f.gsp_dl(gsp_pn(313)); gsp_pel_g.gsp_dl(gsp_pn(563)); gsp_pel_h.gsp_dl(gsp_pn(47));
+  gsp_pel_i.gsp_dl(gsp_pn(409));
+  gsp_per_a.gsp_dl(gsp_pn(61)); gsp_per_b.gsp_dl(gsp_pn(499)); gsp_per_c.gsp_dl(gsp_pn(107)); gsp_per_d.gsp_dl(gsp_pn(127));
+  gsp_per_e.gsp_dl(gsp_pn(607)); gsp_per_f.gsp_dl(gsp_pn(313)); gsp_per_g.gsp_dl(gsp_pn(563)); gsp_per_h.gsp_dl(gsp_pn(47));
+  gsp_per_i.gsp_dl(gsp_pn(409));
+  gsp_pdl_a.gsp_dl(gsp_pn(631)); gsp_pdl_b.gsp_dl(gsp_pn(281)); gsp_pdl_c.gsp_dl(gsp_pn(97)); gsp_pdl_d.gsp_dl(gsp_pn(709));
+  gsp_pdl_e.gsp_dl(gsp_pn(307)); gsp_pdl_f.gsp_dl(gsp_pn(149)); gsp_pdl_g.gsp_dl(gsp_pn(313)); gsp_pdl_h.gsp_dl(gsp_pn(37));
+  gsp_pdl_i.gsp_dl(gsp_pn(659)); gsp_pdl_j.gsp_dl(gsp_pn(701)); gsp_pdl_k.gsp_dl(gsp_pn(13)); gsp_pdl_l.gsp_dl(gsp_pn(733));
+  gsp_pdl_m.gsp_dl(gsp_pn(773)); gsp_pdl_n.gsp_dl(gsp_pn(23)); gsp_pdl_o.gsp_dl(gsp_pn(61)); gsp_pdl_p.gsp_dl(gsp_pn(787));
+  gsp_pdl_q.gsp_dl(gsp_pn(83)); gsp_pdl_r.gsp_dl(gsp_pn(691)); gsp_pdl_s.gsp_dl(gsp_pn(5)); gsp_pdl_t.gsp_dl(gsp_pn(587));
+  gsp_pdl_u.gsp_dl(gsp_pn(829)); gsp_pdl_v.gsp_dl(gsp_pn(449)); gsp_pdl_w.gsp_dl(gsp_pn(53)); gsp_pdl_x.gsp_dl(gsp_pn(503));
+  gsp_pdl_y.gsp_dl(gsp_pn(181));
+  gsp_pdr_a.gsp_dl(gsp_pn(631)); gsp_pdr_b.gsp_dl(gsp_pn(281)); gsp_pdr_c.gsp_dl(gsp_pn(97)); gsp_pdr_d.gsp_dl(gsp_pn(709));
+  gsp_pdr_e.gsp_dl(gsp_pn(307)); gsp_pdr_f.gsp_dl(gsp_pn(149)); gsp_pdr_g.gsp_dl(gsp_pn(313)); gsp_pdr_h.gsp_dl(gsp_pn(37));
+  gsp_pdr_i.gsp_dl(gsp_pn(659)); gsp_pdr_j.gsp_dl(gsp_pn(701)); gsp_pdr_k.gsp_dl(gsp_pn(13)); gsp_pdr_l.gsp_dl(gsp_pn(733));
+  gsp_pdr_m.gsp_dl(gsp_pn(773)); gsp_pdr_n.gsp_dl(gsp_pn(23)); gsp_pdr_o.gsp_dl(gsp_pn(61)); gsp_pdr_p.gsp_dl(gsp_pn(787));
+  gsp_pdr_q.gsp_dl(gsp_pn(83)); gsp_pdr_r.gsp_dl(gsp_pn(691)); gsp_pdr_s.gsp_dl(gsp_pn(5)); gsp_pdr_t.gsp_dl(gsp_pn(587));
+  gsp_pdr_u.gsp_dl(gsp_pn(829)); gsp_pdr_v.gsp_dl(gsp_pn(449)); gsp_pdr_w.gsp_dl(gsp_pn(53)); gsp_pdr_x.gsp_dl(gsp_pn(503));
+  gsp_pdr_y.gsp_dl(gsp_pn(181));
+  GSP_PF = gsp_top; gsp_top += 48;   // his four "fix" bandpasses, 12 cells each: a0 a1 a2 b1 b2, left state x 2, right x 2
+);
+// the four bandpasses (46 Hz, 22 Hz and two between, his Q values), the high-pass amount, the regen (tan: @block only)
+function gsp_plate_coef() local(i, f, k, q, nrm, fa, fd) (
+  fa = 46 / srate; fd = 22 / srate;
+  i = 0;
+  loop(4,
+    f = GSP_PF + i * 12;
+    k = i == 0 ? fa : i == 1 ? (fa + fa + fd) / 3 : i == 2 ? (fa + fd + fd) / 3 : fd;
+    q = i == 0 ? 0.0061504 : i == 1 ? 0.0045802 : i == 2 ? 0.0030101 : 0.00144;
+    k = tan($pi * k); nrm = 1 / (1 + k / q + k * k);
+    f[0] = k / q * nrm; f[1] = 0; f[2] = -f[0]; f[3] = 2 * (k * k - 1) * nrm; f[4] = (1 - k / q + k * k) * nrm;
+    i += 1;
+  );
+  gsp_piir = ((1 * 0.3) + 0.04) * 1000 / srate;
+  gsp_preg = ((0.5 * 0.415) + 0.16) * 0.0001 + 0.00024;
+  gsp_psin4 = sin(4);
+);
+function gsp_plate_reset() (
+  gsp_pina_l = gsp_pina_r = gsp_pinb_l = gsp_pinb_r = gsp_piira_l = gsp_piira_r = gsp_piirb_l = gsp_piirb_r = 0;
+  gsp_pout_l = gsp_pout_r = 0;
+  gsp_pfl_a = gsp_pfl_b = gsp_pfl_c = gsp_pfl_d = gsp_pfl_e = gsp_pfr_e = gsp_pfr_j = gsp_pfr_o = gsp_pfr_t = gsp_pfr_y = 0;
+  gsp_pml_a = gsp_pml_b = gsp_pml_c = gsp_pml_d = gsp_pml_e = gsp_pmr_a = gsp_pmr_b = gsp_pmr_c = gsp_pmr_d = gsp_pmr_e = 0;
+  gsp_pgi = gsp_pgol = gsp_pgor = 1;
+);
+// @sample: the plate of (inl, inr) -> gsp_l, gsp_r (wet, at its own level)
+function gsp_plate(inl, inr) local(l, r, o, a, f,
+  ea, eb, ec, ed, ee, ef, eg, eh, ei, fa, fb, fc, fd, fe, ff, fg, fh, fi,
+  xa, xb, xc, xd, xe, xf, xg, xh, xi, xj, xk, xl, xm, xn, xo, xp, xq, xr, xs, xt, xu, xv, xw, xx, xy,
+  ya, yb, yc, yd, ye, yf, yg, yh, yi, yj, yk, yl, ym, yn, yo, yp, yq, yr, ys, yt, yu, yv, yw, yx, yy)
+(
+  // in: the average, the high-pass, the levelling gain and the drive, the high-pass and the average again
+  l = inl; r = inr;
+  o = (l + gsp_pina_l) * 0.5; gsp_pina_l = l; l = o;
+  o = (r + gsp_pina_r) * 0.5; gsp_pina_r = r; r = o;
+  gsp_piira_l = (gsp_piira_l * (1 - gsp_piir)) + (l * gsp_piir); l = l - gsp_piira_l;
+  gsp_piira_r = (gsp_piira_r * (1 - gsp_piir)) + (r * gsp_piir); r = r - gsp_piira_r;
+  l *= 0.5; r *= 0.5;
+  gsp_pgi < 0.0078125 ? gsp_pgi = 0.0078125; gsp_pgi > 1 ? gsp_pgi = 1;
+  l *= gsp_pgi; r *= gsp_pgi;
+  a = abs(l * 4); gsp_pgi += (a > 1 ? gsp_psin4 : gsp_psn(a)) * (l * l * l * l);
+  a = abs(r * 4); gsp_pgi += (a > 1 ? gsp_psin4 : gsp_psn(a)) * (r * r * r * r);
+  l > 1.4137166941154 ? l = 1.4137166941154; l < -1.4137166941154 ? l = -1.4137166941154;
+  l = l > 0 ? (l / 2) * (2.8274333882308 - l) : -(l / -2) * (2.8274333882308 + l);
+  r > 1.4137166941154 ? r = 1.4137166941154; r < -1.4137166941154 ? r = -1.4137166941154;
+  r = r > 0 ? (r / 2) * (2.8274333882308 - r) : -(r / -2) * (2.8274333882308 + r);
+  gsp_piirb_l = (gsp_piirb_l * (1 - gsp_piir)) + (l * gsp_piir); l = l - gsp_piirb_l;
+  gsp_piirb_r = (gsp_piirb_r * (1 - gsp_piir)) + (r * gsp_piir); r = r - gsp_piirb_r;
+  o = (l + gsp_pinb_l) * 0.5; gsp_pinb_l = l; l = o;
+  o = (r + gsp_pinb_r) * 0.5; gsp_pinb_r = r; r = o;
+  // the early allpasses, three rounds of three a side (his order: left A B C, D E F, G H I; right C F I, B E H, A D G)
+  ea = gsp_pel_a.gsp_pap(l); eb = gsp_pel_b.gsp_pap(l); ec = gsp_pel_c.gsp_pap(l);
+  fc = gsp_per_c.gsp_pap(r); ff = gsp_per_f.gsp_pap(r); fi = gsp_per_i.gsp_pap(r);
+  ed = gsp_pel_d.gsp_pap((eb + ec) - ea); ee = gsp_pel_e.gsp_pap((ea + ec) - eb); ef = gsp_pel_f.gsp_pap((ea + eb) - ec);
+  fb = gsp_per_b.gsp_pap((ff + fi) - fc); fe = gsp_per_e.gsp_pap((fc + fi) - ff); fh = gsp_per_h.gsp_pap((fc + ff) - fi);
+  eg = gsp_pel_g.gsp_pap((ee + ef) - ed); eh = gsp_pel_h.gsp_pap((ed + ef) - ee); ei = gsp_pel_i.gsp_pap((ed + ee) - ef);
+  fa = gsp_per_a.gsp_pap((fe + fh) - fb); fd = gsp_per_d.gsp_pap((fb + fh) - fe); fg = gsp_per_g.gsp_pap((fb + fe) - fh);
+  l = (eg + eh + ei) * 0.25; r = (fa + fd + fg) * 0.25;   // his predelay line, at its default of none
+  // bank one (left A..E, right E J O T Y), with the feedback in
+  f = GSP_PF;
+  xa = gsp_pdl_a.gsp_dt(l + (gsp_pfl_a * gsp_preg)); xb = gsp_pdl_b.gsp_dt(l + (gsp_pfl_b * gsp_preg));
+  xc = gsp_pdl_c.gsp_dt(l + (gsp_pfl_c * gsp_preg)); xd = gsp_pdl_d.gsp_dt(l + (gsp_pfl_d * gsp_preg));
+  xe = gsp_pdl_e.gsp_dt(l + (gsp_pfl_e * gsp_preg));
+  ye = gsp_pdr_e.gsp_dt(r + (gsp_pfr_e * gsp_preg)); yj = gsp_pdr_j.gsp_dt(r + (gsp_pfr_j * gsp_preg));
+  yo = gsp_pdr_o.gsp_dt(r + (gsp_pfr_o * gsp_preg)); yt = gsp_pdr_t.gsp_dt(r + (gsp_pfr_t * gsp_preg));
+  yy = gsp_pdr_y.gsp_dt(r + (gsp_pfr_y * gsp_preg));
+  xa = gsp_pbq(xa, f, f + 5); ye = gsp_pbq(ye, f, f + 7);
+  o = (xb + gsp_pml_a) * 0.5; gsp_pml_a = xb; xb = o;
+  o = (yj + gsp_pmr_a) * 0.5; gsp_pmr_a = yj; yj = o;
+  // bank two (left F..J, right D I N S X)
+  xf = gsp_pdl_f.gsp_dt((xa * 3) - ((xb + xc + xd + xe) * 2)); xg = gsp_pdl_g.gsp_dt((xb * 3) - ((xa + xc + xd + xe) * 2));
+  xh = gsp_pdl_h.gsp_dt((xc * 3) - ((xa + xb + xd + xe) * 2)); xi = gsp_pdl_i.gsp_dt((xd * 3) - ((xa + xb + xc + xe) * 2));
+  xj = gsp_pdl_j.gsp_dt((xe * 3) - ((xa + xb + xc + xd) * 2));
+  yd = gsp_pdr_d.gsp_dt((ye * 3) - ((yj + yo + yt + yy) * 2)); yi = gsp_pdr_i.gsp_dt((yj * 3) - ((ye + yo + yt + yy) * 2));
+  yn = gsp_pdr_n.gsp_dt((yo * 3) - ((ye + yj + yt + yy) * 2)); ys = gsp_pdr_s.gsp_dt((yt * 3) - ((ye + yj + yo + yy) * 2));
+  yx = gsp_pdr_x.gsp_dt((yy * 3) - ((ye + yj + yo + yt) * 2));
+  f += 12;
+  xf = gsp_pbq(xf, f, f + 5); yd = gsp_pbq(yd, f, f + 7);
+  o = (xg + gsp_pml_b) * 0.5; gsp_pml_b = xg; xg = o;
+  o = (yi + gsp_pmr_b) * 0.5; gsp_pmr_b = yi; yi = o;
+  // bank three (left K..O, right C H M R W)
+  xk = gsp_pdl_k.gsp_dt((xf * 3) - ((xg + xh + xi + xj) * 2)); xl = gsp_pdl_l.gsp_dt((xg * 3) - ((xf + xh + xi + xj) * 2));
+  xm = gsp_pdl_m.gsp_dt((xh * 3) - ((xf + xg + xi + xj) * 2)); xn = gsp_pdl_n.gsp_dt((xi * 3) - ((xf + xg + xh + xj) * 2));
+  xo = gsp_pdl_o.gsp_dt((xj * 3) - ((xf + xg + xh + xi) * 2));
+  yc = gsp_pdr_c.gsp_dt((yd * 3) - ((yi + yn + ys + yx) * 2)); yh = gsp_pdr_h.gsp_dt((yi * 3) - ((yd + yn + ys + yx) * 2));
+  ym = gsp_pdr_m.gsp_dt((yn * 3) - ((yd + yi + ys + yx) * 2)); yr = gsp_pdr_r.gsp_dt((ys * 3) - ((yd + yi + yn + yx) * 2));
+  yw = gsp_pdr_w.gsp_dt((yx * 3) - ((yd + yi + yn + ys) * 2));
+  f += 12;
+  xk = gsp_pbq(xk, f, f + 5); yc = gsp_pbq(yc, f, f + 7);
+  o = (xl + gsp_pml_c) * 0.5; gsp_pml_c = xl; xl = o;
+  o = (yh + gsp_pmr_c) * 0.5; gsp_pmr_c = yh; yh = o;
+  // bank four (left P..T, right B G L Q V)
+  xp = gsp_pdl_p.gsp_dt((xk * 3) - ((xl + xm + xn + xo) * 2)); xq = gsp_pdl_q.gsp_dt((xl * 3) - ((xk + xm + xn + xo) * 2));
+  xr = gsp_pdl_r.gsp_dt((xm * 3) - ((xk + xl + xn + xo) * 2)); xs = gsp_pdl_s.gsp_dt((xn * 3) - ((xk + xl + xm + xo) * 2));
+  xt = gsp_pdl_t.gsp_dt((xo * 3) - ((xk + xl + xm + xn) * 2));
+  yb = gsp_pdr_b.gsp_dt((yc * 3) - ((yh + ym + yr + yw) * 2)); yg = gsp_pdr_g.gsp_dt((yh * 3) - ((yc + ym + yr + yw) * 2));
+  yl = gsp_pdr_l.gsp_dt((ym * 3) - ((yc + yh + yr + yw) * 2)); yq = gsp_pdr_q.gsp_dt((yr * 3) - ((yc + yh + ym + yw) * 2));
+  yv = gsp_pdr_v.gsp_dt((yw * 3) - ((yc + yh + ym + yr) * 2));
+  f += 12;
+  xp = gsp_pbq(xp, f, f + 5); yb = gsp_pbq(yb, f, f + 7);
+  o = (xq + gsp_pml_d) * 0.5; gsp_pml_d = xq; xq = o;
+  o = (yg + gsp_pmr_d) * 0.5; gsp_pmr_d = yg; yg = o;
+  // bank five (left U..Y, right A F K P U)
+  xu = gsp_pdl_u.gsp_dt((xp * 3) - ((xq + xr + xs + xt) * 2)); xv = gsp_pdl_v.gsp_dt((xq * 3) - ((xp + xr + xs + xt) * 2));
+  xw = gsp_pdl_w.gsp_dt((xr * 3) - ((xp + xq + xs + xt) * 2)); xx = gsp_pdl_x.gsp_dt((xs * 3) - ((xp + xq + xr + xt) * 2));
+  xy = gsp_pdl_y.gsp_dt((xt * 3) - ((xp + xq + xr + xs) * 2));
+  ya = gsp_pdr_a.gsp_dt((yb * 3) - ((yg + yl + yq + yv) * 2)); yf = gsp_pdr_f.gsp_dt((yg * 3) - ((yb + yl + yq + yv) * 2));
+  yk = gsp_pdr_k.gsp_dt((yl * 3) - ((yb + yg + yq + yv) * 2)); yp = gsp_pdr_p.gsp_dt((yq * 3) - ((yb + yg + yl + yv) * 2));
+  yu = gsp_pdr_u.gsp_dt((yv * 3) - ((yb + yg + yl + yq) * 2));
+  o = (xv + gsp_pml_e) * 0.5; gsp_pml_e = xv; xv = o;
+  o = (yf + gsp_pmr_e) * 0.5; gsp_pmr_e = yf; yf = o;
+  // the feedback for the next sample: his wiring as written (E J O of the right from the left's U V W, A B C of the
+  // left from the right's A F K, D and E of the left from the left's own X and Y, T and Y of the right from its own P and U)
+  gsp_pfr_e = (xu * 3) - ((xv + xw + xx + xy) * 2);
+  gsp_pfl_a = (ya * 3) - ((yf + yk + yp + yu) * 2);
+  gsp_pfr_j = (xv * 3) - ((xu + xw + xx + xy) * 2);
+  gsp_pfl_b = (yf * 3) - ((ya + yk + yp + yu) * 2);
+  gsp_pfr_o = (xw * 3) - ((xu + xv + xx + xy) * 2);
+  gsp_pfl_c = (yk * 3) - ((ya + yf + yp + yu) * 2);
+  gsp_pfl_d = (xx * 3) - ((xu + xv + xw + xy) * 2);
+  gsp_pfr_t = (yp * 3) - ((ya + yf + yk + yu) * 2);
+  gsp_pfl_e = (xy * 3) - ((xu + xv + xw + xx) * 2);
+  gsp_pfr_y = (yu * 3) - ((ya + yf + yk + yp) * 2);
+  // out: the sum, the levelling gain, the average, the clip and his curve
+  l = (xu + xv + xw + xx + xy) * 0.0016; r = (ya + yf + yk + yp + yu) * 0.0016;
+  l *= 0.5; r *= 0.5;
+  gsp_pgol < 0.0078125 ? gsp_pgol = 0.0078125; gsp_pgol > 1 ? gsp_pgol = 1;
+  gsp_pgor < 0.0078125 ? gsp_pgor = 0.0078125; gsp_pgor > 1 ? gsp_pgor = 1;
+  l *= gsp_pgol; r *= gsp_pgor;
+  a = abs(l * 4); gsp_pgol += (a > 1 ? gsp_psin4 : gsp_psn(a)) * (l * l * l * l);
+  a = abs(r * 4); gsp_pgor += (a > 1 ? gsp_psin4 : gsp_psn(a)) * (r * r * r * r);
+  l *= 2; r *= 2;
+  o = (l + gsp_pout_l) * 0.5; gsp_pout_l = l; l = o;
+  o = (r + gsp_pout_r) * 0.5; gsp_pout_r = r; r = o;
+  l > 2.8 ? l = 2.8; l < -2.8 ? l = -2.8; r > 2.8 ? r = 2.8; r < -2.8 ? r = -2.8;
+  gsp_l = l > 0 ? (l * 2) / (2.8274333882308 - l) : -(l * -2) / (2.8274333882308 + l);
+  gsp_r = r > 0 ? (r * 2) / (2.8274333882308 - r) : -(r * -2) / (2.8274333882308 + r);
+);
+
+// ── set-up, switching, the idle gate ─────────────────────────────────────────────────────────────────────────────
+// lay every type's lines out for this rate and clear them (@block: a type switch, a rate change, SPACE back on)
+function gsp_setup() (
+  gsp_top = GSP_BASE;
+  gsp_chl.gsp_room_init(1); gsp_chr.gsp_room_init(1.017);
+  gsp_zita_alloc();
+  gsp_plate_alloc();
+  gsp_used = min(gsp_top, GSP_END) - GSP_BASE;
+  memset(GSP_BASE, 0, gsp_used);
+  gsp_zita_tables();
+  gsp_type == 3 ? gsp_zita_coef(30, 200, 5000, 1.8, 1.5) : gsp_type == 4 ? gsp_zita_coef(50, 200, 7000, 1.8, 1.8);
+  gsp_plate_reset(); gsp_type == 5 ? gsp_plate_coef();
+  gsp_room_g = gsp_type == 0 ? 0.148 : gsp_type == 1 ? 0.443 : 0.186;
+  // each type's level matched to the Large Hall's under steady noise (measured 2026-11-06 at 48 kHz through the test
+  // plugins: small +4.7 dB, medium +7.5, large 0.0, medium hall +0.6; the plate 2026-11-07 through
+  // .dev_tests/gumbo_plate_null.py at 44.1 kHz under PINK noise at an rms of 0.1: +11.0 dB, so 0.2813 -- pink, not
+  // white, because the hall cuts the top the plate keeps, so white flatters the hall by 2 dB against a held chord;
+  // his levelling gains make the plate quieter when driven harder: +2.7 dB at an rms of 0.3), so a type switch keeps the level
+  gsp_mk = gsp_type == 0 ? 0.5846 : gsp_type == 1 ? 0.4237 : gsp_type == 2 ? 0.9967 : gsp_type == 3 ? 0.9356 : gsp_type == 5 ? 0.2813 : 1;
+  gsp_sr = srate; gsp_quiet = 0;
+);
+function gsp_init() ( gsp_type = -1; gsp_on = 0; gsp_g = 0; gsp_sr = 0; gsp_pk = 0; gsp_glow = 0; );
+// type 0..5, amount 0..1 (the SPACE knob). A type change fades the old tail out (10 ms) before the lines are cleared
+function gsp_block(type, amount) local(x) (
+  // the glow for the face: the last block's peak in dB, scaled to 0..1; a rise shows at once, a fall takes
+  // GSP_GLOW_T (the eye sees a tail, not a flicker). 8.6858896 = 20 / ln 10
+  x = gsp_pk > 0.000001 ? (log(gsp_pk) * 8.6858896 - GSP_GLOW_LO) / (GSP_GLOW_HI - GSP_GLOW_LO) : 0;
+  x = max(0, min(1, x));
+  gsp_glow = x >= gsp_glow ? x : gsp_glow + (x - gsp_glow) * min(1, samplesblock / (GSP_GLOW_T * srate));
+  gsp_glow < 0.001 ? gsp_glow = 0;   // the let-go would creep for ever: dark is 0
+  gsp_pk = 0;
+  type = max(0, min(5, type | 0));
+  gsp_amt = max(0, amount);   // a gain (GSP_RET or 0), not the old 0..1 knob
+  gsp_want = type;
+  gsp_gstep = 1 / max(1, 0.01 * srate);
+  gsp_tailn = 6 * srate;
+  // turned down to 0 and faded: stop (the caller skips gsp_tick, so Gumbo sounds exactly as without SPACE); on again:
+  // start clean (gsp_setup clears the old tail)
+  gsp_amt <= 0 && gsp_amt_s < 0.00001 ? gsp_on = 0;
+  gsp_amt > 0 && !gsp_on ? ( gsp_type = gsp_want; gsp_setup(); gsp_g = 1; gsp_on = 1; );
+  gsp_on && srate != gsp_sr ? ( gsp_type = gsp_want; gsp_setup(); );
+  gsp_on && gsp_clear ? ( gsp_type = gsp_want; gsp_setup(); gsp_clear = 0; );
+);
+// @sample: the reverb of (inl, inr) times the knob and the switch fade -> gsp_l, gsp_r
+function gsp_tick(inl, inr) local(x) (
+  gsp_amt_s += (gsp_amt - gsp_amt_s) * 0.002;
+  gsp_want != gsp_type ? ( gsp_g -= gsp_gstep; gsp_g <= 0 ? ( gsp_g = 0; gsp_clear = 1; ); )
+                       : gsp_g < 1 ? gsp_g = min(1, gsp_g + gsp_gstep);
+  abs(inl) + abs(inr) < 0.0000000001 ? gsp_quiet += 1 : gsp_quiet = 0;
+  gsp_clear || gsp_quiet > gsp_tailn ? ( gsp_l = gsp_r = 0; ) : (
+    gsp_type <= 2 ? (
+      x = 0.5 * (inl + inr);
+      gsp_type == 0 ? ( gsp_l = gsp_chl.gsp_small(x, gsp_room_g); gsp_r = gsp_chr.gsp_small(x, gsp_room_g); )
+      : gsp_type == 1 ? ( gsp_l = gsp_chl.gsp_medium(x, gsp_room_g); gsp_r = gsp_chr.gsp_medium(x, gsp_room_g); )
+      : ( gsp_l = gsp_chl.gsp_large(x, gsp_room_g); gsp_r = gsp_chr.gsp_large(x, gsp_room_g); );
+    ) : gsp_type == 5 ? gsp_plate(inl, inr) : gsp_zita(inl, inr);
+    x = gsp_amt_s * gsp_g * gsp_mk; gsp_l *= x; gsp_r *= x;
+    x = max(abs(gsp_l), abs(gsp_r)); x > gsp_pk ? gsp_pk = x;   // for the glow (gsp_block)
+  );
+);

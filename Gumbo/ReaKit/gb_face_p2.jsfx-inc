@@ -11,10 +11,11 @@
 // Imported AFTER gb_face (it uses gbf_knob, gbf_display, gbf_browser ...). Talks to the audio thread only through the
 // designed channels: gb_kb_note / gb_kb_vel (a mouse note, also the chips' keyswitch and the pads; its velocity) and
 // gb_ui_cc_* (a CONTROLS knob turned:
-// gb_voice applies it as a controller once per change).
+// gb_voice applies it as a controller once per change). Reads back one audio-side value: gsp_glow (gb_space, the
+// reverb's level for the SPACE picture, written once a block there).
 
 @init
-GBF_K_CTL = 9; GBF_K_SET = 17; GBF_K_EQ = 22; GBF_K_EQQ = 26; GBF_NK2 = 21;   // knob memory after gb_face's nine: 8 CONTROLS, 5 SETTINGS, 4 EQ, 4 EQ Q
+GBF_K_CHO = 30; GBF_K_CTL = 9; GBF_K_SET = 17; GBF_K_EQ = 22; GBF_K_EQQ = 26; GBF_NK2 = 22;   // knob memory after gb_face's nine: 8 CONTROLS, 5 SETTINGS, 4 EQ, 4 EQ Q, CHORUS (30)
 memset(gbf_km + GBF_KS * GBF_NK, 0, GBF_KS * GBF_NK2);
 GBF_BM = 1721000;                    // widget memory for the tabs and the toggles, 8 cells each
 memset(GBF_BM, 0, 64);
@@ -60,9 +61,22 @@ function gbf_tabs(x, y, tw, h, n) local(i, sel, tx) (
   );
 );
 
-// ── SOUND: seven knobs (TONE is on the EQ page, beside the curve it draws: the owner, 2026-10-31) ──
-function gbf_page_sound(cx, dy, cw, kr, yb) local(kx, nv, bw, bh, bx, by, d, th) (
-  kx = cw / 7;
+// ── the drawn menu (rk_menu, the EON menus: Quezy's and Swing's look), in the theme's colours ──
+function gbf_rgb(r, g, b) ( (max(0, min(1, r)) * 255 | 0) * 65536 + (max(0, min(1, g)) * 255 | 0) * 256 + (max(0, min(1, b)) * 255 | 0); );
+function gbf_menu(items, x, y, what) (
+  rkm_style(gbf_rgb(gbf_pn_r * 1.3, gbf_pn_g * 1.3, gbf_pn_b * 1.3), gbf_rgb(gbf_bd_r, gbf_bd_g, gbf_bd_b),
+            gbf_rgb(gbf_bd_r, gbf_bd_g, gbf_bd_b), gbf_rgb(gbf_tx_r, gbf_tx_g, gbf_tx_b),
+            gbf_rgb(gbf_td_r, gbf_td_g, gbf_td_b), gbf_rgb(gbf_ac_r, gbf_ac_g, gbf_ac_b));
+  rkm_open(items, x, y, gbf_s);
+  gbf_mwhat = what;
+);
+
+// ── SOUND: nine knobs (CHORUS beside SPACE since 2026-11-06); before that eight knobs (TONE is on the EQ page, beside the curve it draws: the owner, 2026-10-31; SPACE in its kept
+// slot between GLIDE and WIDTH since 2026-11-06, its type under it as DRIVE's switch sits under DRIVE) ──
+function gbf_chorus_name(t) ( t == 0 ? "I" : t == 1 ? "I + II" : t == 2 ? "II" : t == 3 ? "FB CHORUS" : "FLANGER"; );
+function gbf_space_name(t) ( t == 0 ? "SMALL ROOM" : t == 1 ? "MEDIUM ROOM" : t == 2 ? "LARGE ROOM" : t == 3 ? "MEDIUM HALL" : t == 4 ? "LARGE HALL" : "PLATE"; );
+function gbf_page_sound(cx, dy, cw, kr, yb) local(kx, nv, bw, bh, bx, by, d, th, t, lk) (
+  kx = cw / 9;
   nv = gbf_knob(1, cx + kx * 0.5, dy, kr, slider8, 0, 100, 0, 101, "DRIVE", sprintf(#gbf_v, "%.0f%%", slider8), 0);
   nv = floor(nv + 0.5); nv != slider8 ? ( slider8 = nv; slider_automate(slider8); );
   // under DRIVE: its curve (EON Saturation's, rk_sat) with the sound's level riding it, and where it sits -- before the
@@ -93,26 +107,76 @@ function gbf_page_sound(cx, dy, cw, kr, yb) local(kx, nv, bw, bh, bx, by, d, th)
   // GLIDE: 0..2 s, square law (0 = off; it slides over held notes, or every note in MONO)
   nv = gbf_knob(5, cx + kx * 3.5, dy, kr, sqrt(slider12 / 2), 0, 1, 0, 0, "GLIDE", slider12 <= 0 ? "off" : slider12 < 1 ? sprintf(#gbf_v, "%.0f ms", slider12 * 1000) : sprintf(#gbf_v, "%.2f s", slider12), 0);
   nv = nv * nv * 2; nv < 0.001 ? nv = 0; abs(nv - slider12) > 0.00001 ? ( slider12 = nv; slider_automate(slider12); );
-  nv = gbf_knob(7, cx + kx * 4.5, dy, kr, slider10, 0, 200, 100, 201, "WIDTH", sprintf(#gbf_v, "%.0f%%", slider10), 0);
+  // SPACE: the reverb's level (0 = off; each MIDI channel sends by its CC91, gb_space), and under it the type, a click
+  // opening General MIDI 2's list (the drawn menu, gbf_menu_pick's what 20)
+  nv = gbf_knob(6, cx + kx * 4.5, dy, kr, slider96, 0, 100, 0, 101, "SPACE", slider96 <= 0 ? "off" : sprintf(#gbf_v, "%.0f%%", slider96), 0);
+  nv = floor(nv + 0.5); nv != slider96 ? ( slider96 = nv; slider_automate(slider96); );
+  th = max(16 * gbf_s, 9 * gbf_s * gbf_tk + 6 * gbf_s);
+  bw = min(kx * 0.86, 120 * gbf_s); bx = cx + kx * 4.5 - bw * 0.5;
+  by = dy + kr * 1.25 + 26 * gbf_s * gbf_tk;
+  // the room (the owner 2026-11-06: "yes I want the pictures under the space knob"), Gumbo's OWN pictures (gb_pic;
+  // the owner, the same day: "give gumbo its own pictures" -- Gumbo is free, Rooms' pictures are paid): three
+  // rooms, two halls and a plate; the glow follows the reverb's live output (gsp_glow, plan step 10, 2026-11-07:
+  // written once a block by gb_space's gsp_block, only read here), so it lights with a chord and fades with the tail
+  bh = min(bw * 0.5, yb - by - th - 4 * gbf_s);
+  bh >= 18 * gbf_s ? (
+    t = max(0, min(5, slider97 | 0));
+    gfx_set(gbf_bg_r * 0.8, gbf_bg_g * 0.8, gbf_bg_b * 0.8, 1); gfx_rect(bx, by, bw, bh);
+    d = 0.299 * gbf_pn_r + 0.587 * gbf_pn_g + 0.114 * gbf_pn_b > 0.5;   // a light face: Rooms' light-theme colours
+    gbp_draw(bx + 1, by + 1, bw - 2, bh - 2, t, gsp_glow, !d);
+    gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, bh);
+    by += bh + 4 * gbf_s;
+  );
+  by + th <= yb ? (
+    t = max(0, min(5, slider97 | 0));
+    nv = !gbf_menu_block && gbf_hit(bx, by, bw, th);
+    gfx_set(gbf_pn_r * 1.35, gbf_pn_g * 1.35, gbf_pn_b * 1.35, 1); gfx_rect(bx, by, bw, th);
+    nv ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(bx, by, bw, th); );
+    gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, th);
+    gbf_fit(gbf_space_name(t), bw - 8 * gbf_s, 9 * gbf_s, 'b');
+    slider96 > 0 ? gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+    gfx_x = bx + (bw - gbf_tw) * 0.5; gfx_y = by + (th - gbf_th_) * 0.5; gfx_drawstr(gbf_space_name(t));
+    nv && lmb_down ? (
+      lmb_down = 0;
+      sprintf(#gbf_spm, "%sSmall Room|%sMedium Room|%sLarge Room|%sMedium Hall|%sLarge Hall|%sPlate",
+        t == 0 ? "!" : "", t == 1 ? "!" : "", t == 2 ? "!" : "", t == 3 ? "!" : "", t == 4 ? "!" : "", t == 5 ? "!" : "");
+      gbf_menu(#gbf_spm, bx, by + th + 2 * gbf_s, 20);
+    );
+  );
+  // CHORUS (2026-11-06): the chorus's level (0 = off; each channel sends by its CC93 and its sound's own amount,
+  // gb_chorus), its setting under it (the Juno's I, I+II, II; General MIDI 2's FB Chorus and Flanger since 2026-11-07, plan
+  // step 9; the drawn menu, gbf_menu_pick's what 21)
+  nv = gbf_knob(GBF_K_CHO, cx + kx * 5.5, dy, kr, slider98, 0, 100, 0, 101, "CHORUS", slider98 <= 0 ? "off" : sprintf(#gbf_v, "%.0f%%", slider98), 0);
+  nv = floor(nv + 0.5); nv != slider98 ? ( slider98 = nv; slider_automate(slider98); );
+  bw = min(kx * 0.86, 120 * gbf_s); bx = cx + kx * 5.5 - bw * 0.5;
+  by = dy + kr * 1.25 + 26 * gbf_s * gbf_tk;
+  by + th <= yb ? (
+    t = max(0, min(4, slider99 | 0));
+    nv = !gbf_menu_block && gbf_hit(bx, by, bw, th);
+    gfx_set(gbf_pn_r * 1.35, gbf_pn_g * 1.35, gbf_pn_b * 1.35, 1); gfx_rect(bx, by, bw, th);
+    nv ? ( gfx_set(1, 1, 1, 0.12); gfx_rect(bx, by, bw, th); );
+    gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, th);
+    gbf_fit(gbf_chorus_name(t), bw - 8 * gbf_s, 9 * gbf_s, 'b');
+    slider98 > 0 ? gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1) : gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1);
+    gfx_x = bx + (bw - gbf_tw) * 0.5; gfx_y = by + (th - gbf_th_) * 0.5; gfx_drawstr(gbf_chorus_name(t));
+    nv && lmb_down ? (
+      lmb_down = 0;
+      sprintf(#gbf_chm, "%sI|%sI + II|%sII|%sFB Chorus|%sFlanger", t == 0 ? "!" : "", t == 1 ? "!" : "", t == 2 ? "!" : "",
+        t == 3 ? "!" : "", t == 4 ? "!" : "");
+      gbf_menu(#gbf_chm, bx, by + th + 2 * gbf_s, 21);
+    );
+  );
+  nv = gbf_knob(7, cx + kx * 6.5, dy, kr, slider10, 0, 200, 100, 201, "WIDTH", sprintf(#gbf_v, "%.0f%%", slider10), 0);
   nv = floor(nv + 0.5); nv != slider10 ? ( slider10 = nv; slider_automate(slider10); );
   // PAN (the old PUNCH slot's knob memory): centre at 12 o'clock
-  nv = gbf_knob(2, cx + kx * 5.5, dy, kr, slider11, -100, 100, 0, 201, "PAN", slider11 == 0 ? "C" : sprintf(#gbf_v, slider11 < 0 ? "%.0f L" : "%.0f R", abs(slider11)), 0);
+  nv = gbf_knob(2, cx + kx * 7.5, dy, kr, slider11, -100, 100, 0, 201, "PAN", slider11 == 0 ? "C" : sprintf(#gbf_v, slider11 < 0 ? "%.0f L" : "%.0f R", abs(slider11)), 0);
   nv = floor(nv + 0.5); nv != slider11 ? ( slider11 = nv; slider_automate(slider11); );
   // VOLUME: unity at 12 o'clock (left half -60..0 dB, right half 0..+12)
-  nv = gbf_knob(8, cx + kx * 6.5, dy, kr, slider1 < 0 ? slider1 / 60 : slider1 / 12, -1, 1, 0, 0, "VOLUME", sprintf(#gbf_v, "%.1f dB", slider1), 0);
+  nv = gbf_knob(8, cx + kx * 8.5, dy, kr, slider1 < 0 ? slider1 / 60 : slider1 / 12, -1, 1, 0, 0, "VOLUME", sprintf(#gbf_v, "%.1f dB", slider1), 0);
   nv = nv < 0 ? nv * 60 : nv * 12; abs(nv - slider1) > 0.0001 ? ( slider1 = nv; slider_automate(slider1); );
 );
 
 
-// ── the drawn menu (rk_menu, the EON menus: Quezy's and Swing's look), in the theme's colours ──
-function gbf_rgb(r, g, b) ( (max(0, min(1, r)) * 255 | 0) * 65536 + (max(0, min(1, g)) * 255 | 0) * 256 + (max(0, min(1, b)) * 255 | 0); );
-function gbf_menu(items, x, y, what) (
-  rkm_style(gbf_rgb(gbf_pn_r * 1.3, gbf_pn_g * 1.3, gbf_pn_b * 1.3), gbf_rgb(gbf_bd_r, gbf_bd_g, gbf_bd_b),
-            gbf_rgb(gbf_bd_r, gbf_bd_g, gbf_bd_b), gbf_rgb(gbf_tx_r, gbf_tx_g, gbf_tx_b),
-            gbf_rgb(gbf_td_r, gbf_td_g, gbf_td_b), gbf_rgb(gbf_ac_r, gbf_ac_g, gbf_ac_b));
-  rkm_open(items, x, y, gbf_s);
-  gbf_mwhat = what;
-);
 
 // ── a lit button and a row label (the OPTIONS sheet's, Swing's pad-editor sheet; the EQ page's HOLD too) ──
 // the button returns 1 on a click
@@ -231,6 +295,10 @@ function gbf_menu_pick(what, r) local(e) (
   e = r >= 1 && r <= GB_PRG_MAX ? GBF_PGMAP[r - 1] : -2;
   what == 10 ? ( e == -1 ? gbf_prog_groups() : gbf_prog_pick(e); );
   what == 11 && e >= 0 ? gbf_prog_list(e);
+  // SPACE's type (what 20, the SOUND page): rows 1..6 = General MIDI 2's Small Room .. Large Hall, Plate
+  what == 20 && r >= 1 && r <= 6 ? ( slider97 = r - 1; slider_automate(slider97); );
+  // CHORUS's setting (what 21): rows 1..5 = I, I+II, II, FB Chorus, Flanger
+  what == 21 && r >= 1 && r <= 5 ? ( slider99 = r - 1; slider_automate(slider99); );
 );
 // the display's program box (gbf_display): < and > (or the wheel over the box) step through the bank; a click on the
 // name opens its programs (a big bank: its groups first)

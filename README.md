@@ -1,16 +1,20 @@
 # Gumbo
 
 An SFZ instrument player for REAPER, in one free JSFX, by EON Studios. Pick an instrument in its browser and play,
-or drop an SFZ library or a SoundFont (.sf2, or a compressed .sf3) on its window: Gumbo plays it with velocity
+or drop an SFZ library or a SoundFont (.sf2, a compressed .sf3, 16 or 24-bit) on its window: Gumbo plays it with velocity
 layers, round robins, key switches, release samples, loops, the sustain pedal, each instrument's own envelopes
-(the filter's and the pitch's too), its bend range and its own controls, at full quality, every recording as it
-was made.
+(the filter's and the pitch's too), its EQ bands, its bend range and its own controls, at full quality, every
+recording as it was made.
 
 - **The browser**: family tiles, a GM set filed under them, search by name, and stars for your favourites.
 - **The sound**: DRIVE (before or after the EQ), ATTACK, RELEASE, GLIDE, WIDTH, PAN and VOLUME; a four-band EQ (each
   band a bell, shelf or cut, with Q knobs) and a dark-to-bright TONE tilt, remembered per instrument and per program
   of a GM set, with a HOLD switch; the library's own controls, attack and release knobs included; pitch and mod
-  wheels.
+  wheels; key pressure for vibrato.
+- **SPACE and CHORUS**: a reverb with General MIDI 2's six types (three rooms, two halls and a plate), its picture
+  glowing with the live tail, and a chorus with a Juno-style I, I + II and II, a feedback chorus and a flanger. Each
+  sound brings its own amounts, the song's reverb and chorus controllers add to them, and the knobs are remembered per
+  sound, like the EQ.
 - **Drums**: a kit's keys carry the names of their sounds, and a PADS page plays the kit as 16 pads a bank, each
   pad with an icon and its family's colour (or one you pick); the MIDI editor's lanes take the names too.
 - **In the mixer**: Gumbo opens embedded in the mixer, where the keys and wheels play right in the track's strip;

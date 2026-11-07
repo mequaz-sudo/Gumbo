@@ -16,7 +16,7 @@
 -- them (Research .docs/research/Gumbo_Tone_Filter_Research_2026-11-03.md): a 2-pole low-pass at initialFilterFc, its
 -- resonance cB/10 - 3.01 dB (FluidSynth's Q), and FluidSynth's level drop for a resonant filter (1/sqrt(Q), unity at
 -- 0 cB) as volume; the mod envelope -> fileg_* (to the cutoff); the vibrato LFO -> lfo01 on the pitch, plus the
--- default modulator's mod wheel vibrato (+50 cents); the mod LFO -> lfo02 on the volume (a positive amount louder on
+-- default modulators' mod wheel and channel pressure vibrato (+50 cents each; the pressure since 2026-11-06); the mod LFO -> lfo02 on the volume (a positive amount louder on
 -- the swing up, as FluidSynth) and the cutoff. Velocity does not darken the filter by default (FluidSynth turns that
 -- default modulator off; GeneralUser GS and MuseScore General are voiced without it).
 -- The file's own modulators (2026-11-04, "the modulators" below): the velocity and key rules on the cutoff, Q, the
@@ -29,9 +29,13 @@
 -- name Breath (FluidSynth starts it at 0, which would mute a breath-shaped sound for a keyboard player). In the GM sets
 -- every breath-shaped preset sits in a variation bank (MuseScore General's "Expr." banks 17-51, GeneralUser's wah
 -- guitar on CC21 in bank 11), kept since 2026-11-05 with every other variation bank.
--- Not carried (counted in the report): pressure and the wheel as sources, two live sources on one modulator,
--- modulators to the LFOs / pitch / sends, the mod LFO on the pitch (when the vibrato LFO takes the pitch), chorus /
--- reverb sends, sm24 (24-bit) data, ROM samples. Carried since 2026-11-05: the mod envelope on the pitch (generator 7,
+-- Not carried (counted in the report): pressure (beyond the default vibrato) and the wheel as sources, two live sources on one modulator,
+-- modulators to the LFOs / pitch / sends, the mod LFO on the pitch (when the vibrato LFO takes the pitch),
+-- ROM samples. Carried since 2026-11-07 (plan 1.3 step 4): sm24, the 24-bit low bytes (SoundFont 2.04 section 6.2;
+-- FluidSynth's rule, fluid_sffile.c read 2026-11-06: used only when ifil says 2.04 or later and the chunk's size is
+-- half of smpl's rounded up to even, one byte a point in smpl's order; else ignored and counted in the report as
+-- sm24_ignored); those samples are written as 24-bit WAVs (Gumbo's loader plays any depth; a bank over its RAM
+-- budget is still packed to 16 bits on load). An SF3 stream never has one. Carried since 2026-11-06: the chorus / reverb send generators (15 / 16) as effect2 / effect1. Carried since 2026-11-05: the mod envelope on the pitch (generator 7,
 -- pitcheg_*), the key scaling of the hold / decay times (39, 40, 31, 32: Gumbo's own ampeg_hold_keytrack /
 -- ampeg_decay_keytrack / fileg_hold_keytrack / fileg_decay_keytrack, timecents a key), and SF3 -- MuseScore's
 -- compressed SoundFont (sfSampleType & 0x10: a complete mono Ogg Vorbis stream at BYTES dwStart .. dwEnd - 1 of smpl,
@@ -44,7 +48,8 @@
 -- API:  local S = dofile(".../gumbo_sf2.lua")
 --       local res = S.extract(sf2_path, out_dir [, sub [, probe]])   -- writes out_dir/<name>.sfz and out_dir/<sub>/*.wav (.ogg from an SF3)
 --         (sub defaults to "samples"; the caller makes out_dir/<sub> first: folders need REAPER's own call)
---         res = { ok, sfz = path, presets = n, regions = n, written = { wav names },
+--         res = { ok, sfz = path, presets = n, regions = n, written = { wav names }, report.bits = 16 or 24 (sm24 used),
+--               report.sm24_ignored = why (an sm24 chunk the rules reject),
 --                 report = { errors = {}, skipped = {}, ignored = {} } }
 --       A damaged file never raises: any read past its data ends as res.ok = false with an error line, and
 --       res.written still lists every WAV written before it (the caller removes them).
@@ -73,7 +78,8 @@ local CARRIED = { [0] = true, [1] = true, [2] = true, [3] = true, [4] = true, [1
   [5] = true, [8] = true, [9] = true, [10] = true, [11] = true, [13] = true, [6] = true, [21] = true, [22] = true, [23] = true,
   [24] = true, [25] = true, [26] = true, [27] = true, [28] = true, [29] = true, [30] = true,
   [7] = true,                          -- the mod envelope on the pitch (2026-11-05): pitcheg_*
-  [39] = true, [40] = true, [31] = true, [32] = true }   -- key-scaled hold / decay (2026-11-05): Gumbo's *_keytrack opcodes
+  [39] = true, [40] = true, [31] = true, [32] = true,     -- key-scaled hold / decay (2026-11-05): Gumbo's *_keytrack opcodes
+  [15] = true, [16] = true }           -- the chorus / reverb send (2026-11-06): SFZ's effect2 / effect1, percent
 local G_FC, G_Q, G_LFO2FC, G_ENV2FC, G_LFO2VOL, G_VIB2PITCH, G_LFO2PITCH = 8, 9, 10, 11, 13, 6, 5
 local G_MLFO_DLY, G_MLFO_FRQ, G_VLFO_DLY, G_VLFO_FRQ = 21, 22, 23, 24
 local G_MDLY, G_MATT, G_MHOLD, G_MDEC, G_MSUS, G_MREL = 25, 26, 27, 28, 29, 30
@@ -253,6 +259,16 @@ local function extract(sf2_path, out_dir, sub, track, probe)
   local pmod = c.pmod and records(s, c.pmod, 10) or nil
   local smpl0, smpln = c.smpl[1], c.smpl[2] // 2          -- 16-bit sample points
   local smplb = c.smpl[2]                                 -- ... and bytes (an SF3 stream's offsets)
+  -- the 24-bit low bytes (2026-11-07): sm24 counts only from 2.04 on and at the right size; its start, or nil
+  local sm24_0 = nil
+  if c.sm24 then
+    local major = c.ifil and u16(s, c.ifil[1]) or 0
+    local minor = c.ifil and u16(s, c.ifil[1] + 2) or 0
+    local want = smpln + smpln % 2
+    if (major > 2 or (major == 2 and minor >= 4)) and c.sm24[2] == want then sm24_0 = c.sm24[1]
+    else report.sm24_ignored = string.format("version %d.%d, size %d, wanted %d", major, minor, c.sm24[2], want) end
+  end
+  report.bits = sm24_0 and 24 or 16
   local function skip(why) report.skipped[why] = (report.skipped[why] or 0) + 1 end
   local function ignore(op)
     local n = type(op) == "string" and op or (GEN_NAME[op] or ("gen" .. op))
@@ -339,10 +355,23 @@ local function extract(sf2_path, out_dir, sub, track, probe)
     local rate = u32(s, h + 36)
     local name = base .. ".wav"
     local data = s:sub(smpl0 + a * 2, smpl0 + b * 2 - 1)
+    local bytes = 2
+    if sm24_0 then
+      -- 24-bit: each point's low byte (sm24) before its 16-bit word, 8192 points a piece
+      bytes = 3
+      local lo = s:sub(sm24_0 + a, sm24_0 + b - 1)
+      local parts, piece, n = {}, {}, b - a
+      for i = 1, n do
+        piece[#piece + 1] = lo:sub(i, i) .. data:sub(2 * i - 1, 2 * i)
+        if #piece == 8192 or i == n then parts[#parts + 1] = table.concat(piece); piece = {} end
+      end
+      data = table.concat(parts)
+    end
     local wf = io.open(samples_dir .. "/" .. name, "wb")
     if not wf then failed_dir = true; written[si] = false; return false end
-    wf:write("RIFF", le32(36 + #data), "WAVE", "fmt ", le32(16), le16(1), le16(1), le32(rate), le32(rate * 2), le16(2),
-             le16(16), "data", le32(#data), data)
+    local pad = (#data % 2 == 1) and " " or ""   -- RIFF: a chunk of odd size ends on a pad byte, counted by the file
+    wf:write("RIFF", le32(36 + #data + #pad), "WAVE", "fmt ", le32(16), le16(1), le16(1), le32(rate), le32(rate * bytes), le16(bytes),
+             le16(bytes * 8), "data", le32(#data), data, pad)
     wf:close()
     written[si] = name; track[#track + 1] = name
     return name
@@ -685,6 +714,8 @@ local function extract(sf2_path, out_dir, sub, track, probe)
                   if mpitch ~= 0 then ignore(G_LFO2PITCH) end
                 end
                 r[#r + 1] = "lfo01_pitch_oncc1=50"            -- the default modulator: the mod wheel's vibrato
+                r[#r + 1] = "lfo01_pitch_oncc129=50"          -- ... and channel pressure's (2.01 section 8.4.3; FluidSynth's
+                                                              -- default_at2viblfo): a held key pressed harder gains vibrato
                 local mvol, mfc = add(G_LFO2VOL) / 10, filtered and lfo2fc or 0   -- (+ cB = louder on the swing up: FluidSynth)
                 if mvol ~= 0 or mfc ~= 0 then
                   r[#r + 1] = "lfo02_freq=" .. fmt(hz(add(G_MLFO_FRQ))); r[#r + 1] = "lfo02_delay=" .. fmt(secs(add(G_MLFO_DLY)))
@@ -694,6 +725,15 @@ local function extract(sf2_path, out_dir, sub, track, probe)
                 local ex = g[G_EXCL] or 0
                 if ex > 0 then r[#r + 1] = "group=" .. ex; r[#r + 1] = "off_by=" .. ex end
                 if #live > 0 then live_tokens(P, r, filtered) end
+                -- the preset's own reverb / chorus send (generators 16 / 15, 0.1 %; instrument value + the preset's
+                -- addition, 0..100 %), as SFZ's effect1 / effect2: Gumbo adds them to the channel's CC91 / CC93 send
+                -- (written last, so the region's other opcodes keep their order)
+                -- the way FluidSynth adds them to its default controller modulators (2026-11-06)
+                do
+                  local rv, ch = math.max(0, math.min(1000, add(16))) / 10, math.max(0, math.min(1000, add(15))) / 10
+                  if rv > 0 then r[#r + 1] = "effect1=" .. fmt(rv) end
+                  if ch > 0 then r[#r + 1] = "effect2=" .. fmt(ch) end
+                end
                 L[#L + 1] = table.concat(r, " ")
                 res.regions = res.regions + 1
               end
