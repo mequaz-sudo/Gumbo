@@ -370,7 +370,11 @@ function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, k
     gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1); gbf_font(max(9, floor(10 * gbf_s)), 0);
     sprintf(#gbf_v, gbf_eq_fr(k) < 1000 ? "%s  %.0f Hz  Q %.2f" : "%s  %.2f kHz  Q %.2f", gbf_eq_sh_name(gbf_eq_sh(k) | 0),
             gbf_eq_fr(k) < 1000 ? gbf_eq_fr(k) : gbf_eq_fr(k) / 1000, gbf_eq_qv(k));
-    gfx_x = gx + 6 * gbf_s; gfx_y = top + gh - 14 * gbf_s; gfx_drawstr(#gbf_v);
+    // top right of the graph, on its own patch of ground: it used to sit on the bottom line, over the grid's frequency
+    // labels (the owner's picture, 2026-11-09: "the eq text...")
+    gfx_measurestr(#gbf_v, gbf_tw, gbf_th_);
+    gfx_set(gbf_bg_r * 0.7, gbf_bg_g * 0.7, gbf_bg_b * 0.7, 0.9); gfx_rect(gx + gw - gbf_tw - 10 * gbf_s, top + 3 * gbf_s, gbf_tw + 8 * gbf_s, gbf_th_ + 4 * gbf_s);
+    gfx_set(gbf_td_r, gbf_td_g, gbf_td_b, 1); gfx_x = gx + gw - gbf_tw - 6 * gbf_s; gfx_y = top + 5 * gbf_s; gfx_drawstr(#gbf_v);
   );
   gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(gx, top, gw, gh);
   // the knobs: the four bands, then TONE (its curve is the teal one)
@@ -934,7 +938,7 @@ function gbf_page_pads(x, y, w, h) local(s, nb, bh, bw, i, g, pw, ph, px, py, k,
   !LMB ? gbf_pad_note = -1;
 );
 
-function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, dht, kh, ky, kr, ka, hit, cur, compact, thx, thy, x0, tby, tbh, nyy, gw, bwt, bh, hot, pon, gh, kht, kon)
+function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, dht, dh0, spare, pe, kh, ky, kr, ka, hit, cur, compact, thx, thy, x0, tby, tbh, nyy, gw, bwt, bh, hot, pon, gh, kht, kon)
 (
   s = gbf_s; tb = 46 * s; pad = 10 * s;
   // the window (re)opened (no window pass for half a second): read the lists again, so sound packages installed or
@@ -994,7 +998,14 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, dht,
   // collapsable"; the browser's drawer, turned). Its height slides; the body above takes the room (the display, the
   // knobs, the page); while it moves the row draws as plain ground, the keys only once it has landed.
   gh = 14 * s;
+  tbh = max(20 * s, 9 * s * gbf_tk + 10 * s);   // the tab strip, taller when its text is
+  // a tall window (the owner, 2026-11-09: "doesn't scale how Swing does"): the keyboard takes a quarter of the spare
+  // height too, up to 60 s more (the spare below is the same sum as further down, with the knobs at their 30 s
+  // ceiling); the display and the knobs take the rest (kr / dht below)
   kh = max(44 * s, min(90 * s, gfx_h * 0.16));
+  spare = gfx_h - gh - 2 * s - kh - tb - 2 * pad - tbh - 14 * s - (slider93 >= 0.5 ? 230 * s : max(34 * s, 13 * s * gbf_tk + 20 * s))
+          - (30 * s * 3.53 + 10 * s) - (26 * s * gbf_tk + 46 * s);
+  kh += min(60 * s, max(0, spare) * 0.25);
   kht = slider20 >= 0.5 ? kh : 0;
   gbf_kh_snap ? ( gbf_kh_a = kht; gbf_kh_snap = 0; ) : gbf_kh_a += (kht - gbf_kh_a) * min(1, dt * 16);
   abs(kht - gbf_kh_a) < 0.5 * s ? gbf_kh_a = kht;
@@ -1019,14 +1030,22 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, dht,
     );
   );
   cx = bw + pad; cw = gfx_w - cx - pad;
-  tbh = max(20 * s, 9 * s * gbf_tk + 10 * s);   // the tab strip, taller when its text is
-  // the knobs take what the width allows (and fit the height); the display gets the rest
+  // the knobs take what the width allows (and fit the height); the display gets the rest. A window taller than the
+  // rows need (the display used to stop at 230 s, the knobs at 30 s, and the spare height sat empty under the knobs
+  // -- the owner, 2026-11-09: "doesn't scale how Swing does"): the spare is shared, a third to the knobs (as far as
+  // the width allows) and the rest to the display, so the face fills the window as Swing's does. pe = what the page
+  // needs under the knob row (the SOUND page's drive curve, room picture and their switches, 26 s under the knobs,
+  // up to 60 s tall, a 16 s switch, 4 s gaps; the row's own height already covers 0.88 kr + 10 s of that)
   kr = max(12 * s, min(min(cw / 8 * 0.30, 30 * s), (ky - tb - 2 * pad - 120 * s - tbh - 16 * s) / (1.4 + 1.45 + 0.95)));
+  dh0 = slider93 >= 0.5 ? 230 * s : max(34 * s, 13 * s * gbf_tk + 20 * s);   // the display's design height, or its bar's
+  pe = 26 * s * gbf_tk + 46 * s;
+  spare = max(0, ky - tb - 2 * pad - tbh - 14 * s - dh0 - (kr * 3.53 + 10 * s) - pe);
+  spare > 0 ? kr = max(kr, min(cw / 8 * 0.30, kr + spare / 3 / 3.53));
   gbf_lf = max(8, floor(kr * 0.36)); gbf_vf = max(8, floor(kr * 0.32));
   ka = kr * (1.4 + 1.45) + gbf_lf + gbf_vf + 10 * s;              // the knob row's height
   // the display, or its bar when folded (the owner, 2026-11-05: "can we make the lcd collapsable?"); the height
-  // slides as the keyboard's does, plain ground while it moves
-  dht = slider93 >= 0.5 ? max(120 * s, min(230 * s, ky - tb - 2 * pad - ka - tbh - 14 * s)) : max(34 * s, 13 * s * gbf_tk + 20 * s);
+  // slides as the keyboard's does, plain ground while it moves. With spare height it takes what the knobs left
+  dht = slider93 >= 0.5 ? max(120 * s, min(spare > 0 ? ky - tb - 2 * pad - ka - tbh - 14 * s - pe : 230 * s, ky - tb - 2 * pad - ka - tbh - 14 * s)) : dh0;
   gbf_dh_snap ? ( gbf_dh_a = dht; gbf_dh_snap = 0; ) : gbf_dh_a += (dht - gbf_dh_a) * min(1, dt * 16);
   abs(dht - gbf_dh_a) < 0.5 * s ? gbf_dh_a = dht;
   dh = gbf_dh_a;

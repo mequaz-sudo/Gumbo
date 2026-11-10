@@ -530,7 +530,7 @@ function gbf_display_fold_btn(x, y, w) local(s, bx, by, bs, hot, cx, cy) (
                   : gfx_triangle(cx - 4 * s, cy - 2 * s, cx + 4 * s, cy - 2 * s, cx, cy + 2 * s);
   lmb_down && hot ? ( lmb_down = 0; slider93 = slider93 >= 0.5 ? 0 : 1; slider_automate(slider93); );
 );
-function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch, fr, step, c, i, j, a, b, v, kx, kw, n, lo, hi, nb, bl, bh, cnt, k, bx, bw, seg, db, pk, gn)
+function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch, fr, step, c, i, j, a, b, v, kx, kw, n, lo, hi, nb, bl, bh, cnt, k, bx, bw, seg, db, pk, gn, lm, ls, le, tl, ft, q, gq)
 (
   s = gbf_s;
   d = (gbf_tk - 1) * 9 * s;            // what a section label grows by at this TEXT SIZE
@@ -574,8 +574,13 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
     gbf_scr(0.23, 0.16, 0.12, 1); gfx_rect(x + 16 * s, y + h - 14 * s, w * 0.45 - 16 * s, 4 * s);
     gbf_scr(1, 0.48, 0.24, 1); gfx_rect(x + 16 * s, y + h - 14 * s, (w * 0.45 - 16 * s) * gb_js / gb_nsmp, 4 * s);
   );
-  // the last note's waveform (min/max per column over its first 1.5 s)
-  wx = x + 16 * s; ww = w * 0.45 - 16 * s; wy = y + h * 0.42; wh = h * 0.40;
+  // the last note's waveform (min/max per column over the WHOLE sound; it used to stop at 1.5 s, so a sustained sound
+  // ended in a vertical wall -- the owner, 2026-11-09: "the waveform still gets cut off"). Its place: the left column under the name, at
+  // 42 % of a design-height display (230 s) and 40 % tall; a taller display (a tall window's spare height, gbf_window
+  // 2026-11-09) keeps the header where it is and the waveform grows down to 41 s above the bottom (its note line sits
+  // under it); from 310 s up it moves under the right column too and takes the whole width
+  wx = x + 16 * s; ww = w * 0.45 - 16 * s; wy = y + min(h * 0.42, 97 * s); wh = max(h * 0.40, y + h - wy - 41 * s);
+  h >= 310 * s + 2 * d ? ( ww = w - 32 * s; wy = y + 170 * s + 2 * d; wh = y + h - wy - 41 * s; );
   // the playing-style chips sit under the name (gb_face_p2): the waveform starts below them
   // (and below a bank's program box)
   gb_ready && gbf_pg_h > 0 ? ( wy = max(wy, gbf_pg_y + gbf_pg_h + 8 * s); wh = min(wh, y + h - wy - 16 * s); );
@@ -584,22 +589,37 @@ function gbf_display(x, y, w, h) local(d, s, fs, wx, ww, wy, wh, r, sm, ptr, nch
     r = GB_REG + gb_last_reg * GB_RS; sm = r[GBR_SMP];
     sm >= 0 && GB_SMP[sm * GB_SS + GBS_STAT] == GB_SS_OK ? (
       ptr = GB_SMP[sm * GB_SS + GBS_PTR]; nch = GB_SMP[sm * GB_SS + GBS_NCH];
-      fr = min(GB_SMP[sm * GB_SS + GBS_FRAMES], GB_SMP[sm * GB_SS + GBS_SR] * 1.5);
-      step = max(1, (fr / max(1, ww)) | 0);
+      fr = GB_SMP[sm * GB_SS + GBS_FRAMES];
+      // a looped sound (a sustain loop: the recording ends at playing level, so its picture ended in a wall -- the
+      // owner, 2026-11-09: "the waveform still gets cut off"): the picture runs on past the recording's end through
+      // the loop with the region's release fading it (gb_coef_sfz's law, -78 dB at the release time; 0.1 .. 4 s), as
+      // the sound does when the key is let go there
+      lm = r[GBR_LMODE]; ls = r[GBR_LSTART]; le = min(r[GBR_LEND], fr - 1);
+      tl = (lm == GB_LM_CONT || lm == GB_LM_SUST) && le > ls ? (min(4, max(0.1, r[GBR_REL])) * GB_SMP[sm * GB_SS + GBS_SR]) | 0 : 0;
+      ft = fr + tl;
+      step = max(1, (ft / max(1, ww)) | 0);
       // drawn to fill its space: the loudest point of what is shown reaches the top (quiet recordings, like the
       // orchestra's, otherwise drew a flat line), at most x32 so a near-silent tail stays near-silent
       pk = 0; c = 0;
-      loop(max(1, min(ww, fr) | 0),
+      loop(max(1, min(ww, ft) | 0),
         j = (c * step) | 0; i = 0;
-        loop(min(24, step), k = (j + ((i * step / min(24, step)) | 0)) * nch; v = abs(gb_pack ? gb_pk(ptr, k) : ptr[k]); v > pk ? pk = v; i += 1; );
+        loop(min(24, step),
+          q = j + ((i * step / min(24, step)) | 0);
+          q >= fr ? ( gq = exp(-9 * (q - fr) / tl); q = ls + ((q - ls) % (le - ls + 1)); ) : gq = 1;
+          v = abs(gb_pack ? gb_pk(ptr, q * nch) : ptr[q * nch]) * gq; v > pk ? pk = v; i += 1;
+        );
         c += 1;
       );
       gn = pk > 0 ? min(32, 0.95 / pk) : 1;
       gbf_scr(1, 0.48, 0.24, 1);
       c = 0;
-      loop(max(1, min(ww, fr) | 0),    // a sound shorter than the strip is wide: stop at its end
+      loop(max(1, min(ww, ft) | 0),    // a sound shorter than the strip is wide: stop at its end
         a = 0; b = 0; j = (c * step) | 0; i = 0;
-        loop(min(24, step), k = (j + ((i * step / min(24, step)) | 0)) * nch; v = gb_pack ? gb_pk(ptr, k) : ptr[k]; v < a ? a = v; v > b ? b = v; i += 1; );
+        loop(min(24, step),
+          q = j + ((i * step / min(24, step)) | 0);
+          q >= fr ? ( gq = exp(-9 * (q - fr) / tl); q = ls + ((q - ls) % (le - ls + 1)); ) : gq = 1;
+          v = (gb_pack ? gb_pk(ptr, q * nch) : ptr[q * nch]) * gq; v < a ? a = v; v > b ? b = v; i += 1;
+        );
         a *= gn; b *= gn;
         gfx_line(wx + c, wy + wh * 0.5 - b * wh * 0.5, wx + c, wy + wh * 0.5 - a * wh * 0.5);
         c += 1;
