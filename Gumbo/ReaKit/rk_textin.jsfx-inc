@@ -17,10 +17,15 @@
 //   rk_textin_draw(str, x, y, w, h, hint, s, tr, tg, tb, br, bg, bb, ar, ag, ab)
 //                                          the box: str (its end when too long) or the hint dimmed, a caret blinking
 //                                          while it has the focus. t* text, b* ground, a* the focus line.
+//   rk_textin_num(str)                     the number typed in str: digits, a point or a comma, a leading minus, and k
+//                                          (x 1000: "2k" = 2000, "2.5k" = 2500); anything else is ignored. No digit
+//                                          at all returns RK_TI_NONE. (Quezy's qzg_parse, qz_face, is the same law;
+//                                          it moves onto this one later, the one-master rule.)
 // The caller sets the font before drawing. rk_ti_focus is one box's focus: a face with two boxes keeps its own.
 
 @init
 RK_TI_MAX = 64; rk_ti_focus = 0;
+RK_TI_NONE = -1000000000;            // rk_textin_num: no number typed
 
 function rk_textin_click(x, y, w, h, embedded) local(in) (
   in = mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h;
@@ -38,6 +43,18 @@ function rk_textin_keys(str, first) local(c, ch, n) (
     c = gfx_getchar();
   );
   ch;
+);
+function rk_textin_num(str) local(i, c, v, sg, fr, fd, any, mul) (
+  v = 0; sg = 1; fr = 0; fd = 0.1; any = 0; mul = 1; i = 0;
+  loop(strlen(str),
+    c = str_getchar(str, i);
+    c == '-' ? sg = -1
+    : c >= '0' && c <= '9' ? ( fr ? ( v += (c - '0') * fd; fd *= 0.1; ) : v = v * 10 + (c - '0'); any = 1; )
+    : c == '.' || c == ',' ? fr = 1
+    : c == 'k' || c == 'K' ? mul = 1000;
+    i += 1;
+  );
+  any ? sg * v * mul : RK_TI_NONE;
 );
 function rk_textin_draw(str, x, y, w, h, hint, s, tr, tg, tb, br, bg, bb, ar, ag, ab) local(tw, th, k, cx) (
   gfx_set(br, bg, bb, 1); gfx_rect(x, y, w, h);

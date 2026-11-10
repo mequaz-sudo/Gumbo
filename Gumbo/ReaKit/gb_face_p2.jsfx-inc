@@ -38,6 +38,8 @@ gbf_eq_c[0] = 0.96; gbf_eq_c[1] = 0.22; gbf_eq_c[2] = 0.22;   gbf_eq_c[3] = 1.00
 gbf_eq_c[6] = 0.20; gbf_eq_c[7] = 0.86; gbf_eq_c[8] = 0.30;   gbf_eq_c[9] = 0.22; gbf_eq_c[10] = 0.50; gbf_eq_c[11] = 1.00;
 gbf_eq_c[12] = 0.70; gbf_eq_c[13] = 0.42; gbf_eq_c[14] = 0.98;
 i = 0; loop(GBF_EQN, gbf_eq_fq[i] = 20 * (22000 / 20) ^ (i / (GBF_EQN - 1)); i += 1; );
+// the EQ's frequency fields (gbf_eqf_*): the band + 1 dragged / typed into, the last press on one (band, time)
+gbf_eqf_drag = 0; gbf_eqf_ty = 0; gbf_eqf_ck = -1; gbf_eqf_ct = 0; gbf_eqf_my = 0; gbf_eqf_seen = 0;
 gbf_chip_note = -1;                  // the keyswitch a chip holds while the mouse is down on it
 gbf_mod_sent = -1; gbf_smod = -1;    // the mod wheel's last value sent while dragged (-1 = none): the window's, a strip's
 gbf_kbn_w = -1; gbf_kbn_s = -1;      // the mouse note the window holds, and a strip's (gb_kb_note = the strip's, else the window's)
@@ -222,14 +224,51 @@ function gbf_eq_shape_set(k, sh) (
 function gbf_eq_sh_name(sh) (
   sh == 0 ? "BELL" : sh == 3 ? "LOW SHELF" : sh == 4 ? "HIGH SHELF" : sh == 1 ? "LOW CUT" : sh == 5 ? "HIGH CUT" : "BAND";
 );
+// The frequency field under a band's gain value (the owner, 2026-11-10: "should we add freq knobs for the eq?" -- a
+// field, not a third knob: the page has no room for a third row; "Yes, build it" on the render). A drag up / down
+// moves the frequency (an octave every 40 px, SHIFT or CTRL four times finer), the wheel steps a semitone, a
+// double-click opens it for typing: Hz, or "2k" / "2.5k", and a bare number under 20 is kHz too (nothing under
+// 20 Hz can be meant). Enter or a press anywhere else sets it, Esc leaves it as it was. A cut has no field: its big
+// knob is the frequency. One field types at a time; it takes the keyboard from the browser's search box (rk_ti_focus
+// off) and the search box taking it back sets the value. No typing in a strip (an embedded face gets no keys).
+function gbf_eqf_end(commit) local(k, v) (
+  k = gbf_eqf_ty - 1;
+  commit && k >= 0 && k < 4 ? (
+    v = rk_textin_num(#gbf_eqf_t);
+    v > 0 ? ( v < 20 ? v *= 1000; gbf_eq_set(k, max(20, min(20000, v)), gbf_eq_gn(k)); );
+  );
+  gbf_eqf_ty = 0;
+);
+// once a pass of the EQ page, before the fields: the typing field takes the keys -- every key of the pass (several
+// can land in one: rk_textin's measured contract). A page that was away (another tab) drops the typing and a drag.
+function gbf_eqf_keys() local(c, n) (
+  gbf_t - gbf_eqf_seen > 0.5 ? ( gbf_eqf_ty = 0; gbf_eqf_drag = 0; );
+  gbf_eqf_ty ? (
+    gbf_eq_cut(gbf_eqf_ty - 1) ? gbf_eqf_ty = 0
+    : rk_ti_focus ? gbf_eqf_end(1)
+    : !gbf_menu_block ? (
+      c = gfx_getchar();
+      while (c > 0) (
+        n = strlen(#gbf_eqf_t);
+        !gbf_eqf_ty ? 0
+        : c == 13 || c == 10 ? gbf_eqf_end(1)
+        : c == 27 ? gbf_eqf_end(0)
+        : c == 8 ? ( n > 0 ? str_setlen(#gbf_eqf_t, n - 1); )
+        : ((c >= '0' && c <= '9') || c == '.' || c == ',' || c == 'k' || c == 'K') && n < 10 ? str_setchar(#gbf_eqf_t, n, c);
+        c = gfx_getchar();
+      );
+    );
+  );
+  gbf_eqf_seen = gbf_t;
+);
 // one band's knob: gain for a bell or a shelf, frequency for a cut (a cut has no gain); its label is the shape and a
 // click on the label opens the shape menu. Under it a smaller Q knob (the owner, 2026-11-05: "the Q knobs for the eq
 // we talked about"): the band's width, 0.3 .. 12 on a bell, 0.3 .. 4 on a shelf or a cut -- the same range the
 // wheel over the band's node moves -- on a log scale, 0.71 at rest.
-function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly, q, qmax, r2, y2) (
+function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly, q, qmax, r2, y2, fy, fw, fbh, hot, ty) (
   sh = gbf_eq_sh(k) | 0; cut = gbf_eq_cut(k); f = gbf_eq_fr(k); g = gbf_eq_gn(k);
   q = gbf_eq_qv(k); qmax = sh == 0 ? 12 : 4;
-  r2 = r * 0.5; y2 = y + r * 1.45 + gbf_lf + gbf_vf + 10 * gbf_s + r2;
+  r2 = r * 0.5; y2 = y + r * 1.45 + gbf_lf + gbf_vf + 10 * gbf_s + gbf_eq_fh + r2;
   nv = gbf_knob_c(GBF_K_EQQ + k, x, y2, r2, log(max(0.3, min(qmax, q)) / 0.3) / log(qmax / 0.3), 0, 1,
                   log(0.71 / 0.3) / log(qmax / 0.3), 0, "Q", sprintf(#gbf_v, "%.2f", q), 0,
                   gbf_eq_c[k * 3], gbf_eq_c[k * 3 + 1], gbf_eq_c[k * 3 + 2]);
@@ -245,6 +284,49 @@ function gbf_eq_band_knob(k, x, y, r) local(sh, cut, f, g, nv, lw, ly, q, qmax, 
     nv = gbf_knob_c(GBF_K_EQ + k, x, y, r, g, -15, 15, 0, 61, #gbf_eql, sprintf(#gbf_v, "%+.1f dB", g), 0,
                     gbf_eq_c[k * 3], gbf_eq_c[k * 3 + 1], gbf_eq_c[k * 3 + 2]);
     abs(nv - g) > 0.01 ? gbf_eq_set(k, f, floor(nv * 2 + 0.5) / 2);
+  );
+  // the frequency field (gbf_eqf_*, above) under the gain value; the Q knob sits a line lower for it (gbf_eq_fh)
+  !cut ? (
+    fbh = gbf_vf + 5 * gbf_s; fw = r * 2.7; fy = floor(y + r * 1.45 + gbf_lf + gbf_vf + 6 * gbf_s);
+    hot = !gbf_menu_block && !gbf_kb_drag && gbf_hit(x - fw / 2, fy, fw, fbh);
+    ty = gbf_eqf_ty == k + 1;
+    // a press on it: the second inside the knobs' double-click time opens the typing, else a drag starts
+    lmb_down && hot ? (
+      lmb_down = 0;
+      ty ? 0
+      : !is_embedded && gbf_eqf_ck == k && gbf_t - gbf_eqf_ct < RK_DBLCLICK_T ? (
+        gbf_eqf_ty = k + 1; strcpy(#gbf_eqf_t, ""); rk_ti_focus = 0; gbf_eqf_drag = 0; gbf_eqf_ck = -1; ty = 1;
+        loop(32, gfx_getchar());         // keys pressed before it opened are not its text
+      ) : ( gbf_eqf_drag = k + 1; gbf_eqf_my = my; gbf_eqf_ck = k; gbf_eqf_ct = gbf_t; );
+    );
+    // typing, and a press anywhere else (whoever takes it): the value is set
+    ty && LMB && !prev_LMB && !gbf_hit(x - fw / 2, fy, fw, fbh) ? ( gbf_eqf_end(1); ty = 0; f = gbf_eq_fr(k); );
+    gbf_eqf_drag == k + 1 ? (
+      !LMB ? gbf_eqf_drag = 0
+      : my != gbf_eqf_my ? (
+        f = max(20, min(20000, f * (2 ^ ((gbf_eqf_my - my) / (40 * gbf_s) * (SHIFT || CTRL ? 0.25 : 1)))));
+        gbf_eqf_my = my; gbf_eq_set(k, f, g);
+      );
+    );
+    hot && !ty && frame_wheel != 0 ? (
+      f = max(20, min(20000, f * (2 ^ (max(-4, min(4, frame_wheel)) / 12)))); gbf_eq_set(k, f, g);
+    );
+    gfx_set(gbf_bg_r * 0.7, gbf_bg_g * 0.7, gbf_bg_b * 0.7, 1); gfx_rect(floor(x - fw / 2), fy, fw, fbh);
+    gfx_set(gbf_eq_c[k * 3], gbf_eq_c[k * 3 + 1], gbf_eq_c[k * 3 + 2], ty ? 1 : hot || gbf_eqf_drag == k + 1 ? 0.9 : 0.55);
+    gbf_box(floor(x - fw / 2), fy, floor(fw), floor(fbh));
+    // typing: the text so far and a caret after it; until a key is typed, the old value dimmed, the caret before it
+    ty && strlen(#gbf_eqf_t) > 0 ? strcpy(#gbf_v, #gbf_eqf_t)
+    : f < 1000 ? sprintf(#gbf_v, "%.0f Hz", f) : sprintf(#gbf_v, "%.2f kHz", f / 1000);
+    gbf_fit(#gbf_v, fw - 6 * gbf_s, gbf_vf, 0);
+    gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, ty && strlen(#gbf_eqf_t) == 0 ? 0.4 : 1);
+    gfx_x = x - gbf_tw / 2; gfx_y = fy + (fbh - gbf_th_) / 2; gfx_drawstr(#gbf_v);
+    ty && floor(gbf_t * 2) % 2 == 0 ? (
+      gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 0.9);
+      gfx_rect(floor(strlen(#gbf_eqf_t) > 0 ? x + gbf_tw / 2 + gbf_s : x - gbf_tw / 2 - 2 * gbf_s), fy + 2 * gbf_s, max(1, floor(gbf_s)), fbh - 4 * gbf_s);
+    );
+  ) : (
+    gbf_eqf_drag == k + 1 ? gbf_eqf_drag = 0;
+    gbf_eqf_ty == k + 1 ? gbf_eqf_ty = 0;
   );
   lw = r * 3.2; ly = y + r * 1.45;
   !gbf_menu_block && lmb_down && gbf_hit(x - lw / 2, ly - 2 * gbf_s, lw, gbf_lf + 4 * gbf_s) ? (
@@ -379,6 +461,8 @@ function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, k
   gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(gx, top, gw, gh);
   // the knobs: the four bands, then TONE (its curve is the teal one)
   kx = (cw - gw - 10 * gbf_s) / 5; kx0 = gx + gw + 10 * gbf_s; ky2 = top + kr * 1.4;
+  gbf_eq_fh = gbf_vf + 8 * gbf_s;       // the frequency fields' line, between a band's gain value and its Q knob
+  gbf_eqf_keys();
   k = 0;
   loop(4, gbf_eq_band_knob(k, kx0 + kx * (k + 0.5), ky2, kr * 0.8); k += 1; );
   gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gfx_rect(kx0 + kx * 4, top + 6 * gbf_s, max(1, gbf_s), kr * 3.4);
@@ -389,7 +473,7 @@ function gbf_page_eq(cx, top, cw, ph, kr) local(gx, gw, gh, dr, k, i, sig, kx, k
   // HOLD under TONE, in the Q knobs' row (2026-11-05, the owner: "the EQ going flat per instrument with a hold
   // switch"): off, each program brings its own EQ (flat until set; gb_eq's memory); on, the EQ stays as it is through
   // a program or instrument change. Slider 95, which @gfx copies to gb_eqm_hold every pass
-  yq = ky2 + kr * 0.8 * 1.45 + gbf_lf + gbf_vf + 10 * gbf_s + kr * 0.4;   // the Q knobs' centre line (gbf_eq_band_knob)
+  yq = ky2 + kr * 0.8 * 1.45 + gbf_lf + gbf_vf + 10 * gbf_s + gbf_eq_fh + kr * 0.4;   // the Q knobs' centre line (gbf_eq_band_knob)
   bw = min(kx * 0.82, 60 * gbf_s); bh = max(16 * gbf_s, gbf_lf + 6 * gbf_s);
   gbf_opt_btn(kx0 + kx * 4.5 - bw * 0.5, yq - bh * 0.5, bw, bh, "HOLD", slider95 >= 0.5) ? (
     slider95 = slider95 >= 0.5 ? 0 : 1; slider_automate(slider95);
