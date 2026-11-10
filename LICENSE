@@ -1,0 +1,48 @@
+This repository holds code under more than one licence.
+
+Gumbo itself is free to use and its code stays EON Studios' (all rights reserved). That
+covers the plugin (Gumbo/Eon_JSFX/Instruments/Gumbo_ReaKit.jsfx), the gb_* includes in
+Gumbo/ReaKit/ and the Gumbo scripts in Gumbo/Scripts/ (the "Gumbo ..." actions and the
+gumbo_*.lua files). The terms are in Gumbo/Gumbo_LICENSE.md, which also carries the
+notices of the published work SPACE, CHORUS and the EQ are built on.
+
+The EON Free Licence 1.0 (LICENSE-EON-FREE.md beside this file: free to use in any work,
+not for sale or redistribution) covers the parts Gumbo shares with EON Studios' free
+ReaKit FX: Gumbo/ReaKit/qz_engine.jsfx-inc (Quezy's filter engine), the three
+"ReaKit FX - ..." scripts in Gumbo/Scripts/ (the dock behind the action "Gumbo - Dock")
+and the icons in Gumbo/Data/.
+
+The MIT licence below covers the other includes in Gumbo/ReaKit/ (the ReaKit library:
+knobs, buttons, meters, rk_* and the other shared files). Parts ported from other
+authors' code keep those authors' notices, in the files themselves: Quezy's engine after
+Justin Johnson's ReEQ (MIT), rk_svf after Justin Johnson (MIT), rk_svf_match after Yuriy
+Ivantsov (MIT), and the curve in rk_sat after Michael Gruhn (LOSER).
+
+It does NOT cover the sounds. The Gumbo GM sounds in GM/ are made from MuseScore General
+(MIT), whose own licence file is beside them
+(GM/Data/EON_Gumbo/Library/MuseScore General/MuseScore_General_License.md).
+THIRD_PARTY_CREDITS.md lists everyone whose work Gumbo is built on or measured against.
+
+----------------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2026 EON Studios
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

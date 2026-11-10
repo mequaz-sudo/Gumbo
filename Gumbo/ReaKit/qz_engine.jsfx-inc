@@ -10,7 +10,7 @@
 //                             gs = Scale / 100 (an argument, so each bank owns its own copy)
 //   b.qz_band_run()           @sample, bands in slot order 1..16: filters spl0 / spl1 in place
 // Every band reads its own 13 sliders (spec §5): +0 Mode, +1 Place, +2 Shape, +3 Freq (Hz), +4 Gain (dB),
-// +5 Q, +6 Slope (index: (s + 1) * 6 dB/oct), +7..+12 the release-2 dynamics (inert in release 1).
+// +5 Q, +6 Slope (index: (s + 1) * 6 dB/oct), +7..+12 the dynamics (build stage 2; live since Quezy 1.0.0).
 //
 // The coefficients (build step 1b, research R12): QZ_DECRAMP = 1 (shipped) sets every shape except All Pass through
 // rk_svf_match.jsfx-inc's magnitude-matched maps, so the curve keeps its analogue shape up to Nyquist at the base

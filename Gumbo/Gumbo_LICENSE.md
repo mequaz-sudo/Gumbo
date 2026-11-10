@@ -14,9 +14,14 @@ Without written permission from EON Studios you may not:
 
 This covers Gumbo's own files: `Gumbo_ReaKit.jsfx`, the `gb_*.jsfx-inc` includes beside it (`gb_sfz`, `gb_load`,
 `gb_voice`, `gb_helper`, `gb_eq`, `gb_space`, `gb_chorus`, `gb_face`, `gb_face_p2`, `gb_pic`: the SPACE pictures) and the Gumbo scripts (`Gumbo helper.lua`, `Gumbo - Add a library.lua`,
-`Gumbo - Start with REAPER.lua`, `gumbo_sfz.lua`, `gumbo_sf2.lua`, `gumbo_index.lua`, `gumbo_helper_core.lua`). The
+`Gumbo - Start with REAPER.lua`, `Gumbo - Dock.lua`, `gumbo_sfz.lua`, `gumbo_sf2.lua`, `gumbo_index.lua`, `gumbo_helper_core.lua`). The
 other ReaKit includes installed with it (knobs, buttons, meters, theme, piano, the curve painter and the rest) are EON
 Studios' ReaKit library under the MIT licence (`LICENSE` in the repository).
+
+The action "Gumbo - Dock" runs three scripts shared with EON Studios' free ReaKit FX (`ReaKit FX - Dock following
+the selected track.lua`, `ReaKit FX - Dock icon picker.lua`, `ReaKit FX - Mixer slot.lua`). They and the icons
+installed with Gumbo are under the EON Free Licence 1.0 (free to use; not for sale or redistribution;
+`LICENSE-EON-FREE.md` in the repository).
 
 SPACE and CHORUS (`gb_space.jsfx-inc`, `gb_chorus.jsfx-inc`) are EON Studios' code built on published and freely
 licensed work:
