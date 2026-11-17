@@ -117,14 +117,14 @@ function gbf_page_sound(cx, dy, cw, kr, yb) local(kx, nv, bw, bh, bx, by, d, th,
   bw = min(kx * 0.86, 120 * gbf_s); bx = cx + kx * 4.5 - bw * 0.5;
   by = dy + kr * 1.25 + 26 * gbf_s * gbf_tk;
   // the room (the owner 2026-11-06: "yes I want the pictures under the space knob"), Gumbo's OWN pictures (gb_pic;
-  // the owner, the same day: "give gumbo its own pictures" -- Gumbo is free, Rooms' pictures are paid): three
+  // the owner, the same day: "give gumbo its own pictures" -- Gumbo is free, Grand Tour's pictures are paid): three
   // rooms, two halls and a plate; the glow follows the reverb's live output (gsp_glow, plan step 10, 2026-11-07:
   // written once a block by gb_space's gsp_block, only read here), so it lights with a chord and fades with the tail
   bh = min(bw * 0.5, yb - by - th - 4 * gbf_s);
   bh >= 18 * gbf_s ? (
     t = max(0, min(5, slider97 | 0));
     gfx_set(gbf_bg_r * 0.8, gbf_bg_g * 0.8, gbf_bg_b * 0.8, 1); gfx_rect(bx, by, bw, bh);
-    d = 0.299 * gbf_pn_r + 0.587 * gbf_pn_g + 0.114 * gbf_pn_b > 0.5;   // a light face: Rooms' light-theme colours
+    d = 0.299 * gbf_pn_r + 0.587 * gbf_pn_g + 0.114 * gbf_pn_b > 0.5;   // a light face: Grand Tour's light-theme colours
     gbp_draw(bx + 1, by + 1, bw - 2, bh - 2, t, gsp_glow, !d);
     gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gbf_box(bx, by, bw, bh);
     by += bh + 4 * gbf_s;
@@ -1056,7 +1056,7 @@ function gbf_window() local(s, tb, pad, bw, cx, cw, px, pw, ph, fs, dy, dh, dht,
   cur = gbf_idx_current_cached();
   gbf_font(max(7, floor(9 * s)), 'b'); gfx_set(gbf_ac_r, gbf_ac_g, gbf_ac_b, 1);
   gfx_x = px + 32 * s; gfx_y = dy + (ph - 9 * s) * 0.5;
-  cur >= 0 ? gfx_drawstr(gbf_fam_name((GBF_IDX_BASE + cur * GBF_IS)[0]));
+  cur >= 0 ? gfx_drawstr(gbf_fam_name(gbf_fam_now(cur)));   // (a bank: its playing program's family)
   gbf_name(); gbf_font(max(9, floor(13 * s)), 'b'); gfx_set(gbf_tx_r, gbf_tx_g, gbf_tx_b, 1);
   gfx_measurestr(strlen(#gb_want) ? #gbf_name : "No instrument", gbf_tw, gbf_th_);
   gfx_x = px + max(90 * s, (pw - gbf_tw) * 0.5); gfx_y = dy + (ph - gbf_th_) * 0.5;

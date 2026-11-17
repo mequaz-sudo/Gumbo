@@ -92,10 +92,14 @@ local KINDS = {
   { key = "ddc", name = "DDC",          long = "DDC",      short = "DDC", file = "ddc_reakit.jsfx",         w = 600, minw = 260, h = 319, minh = 140, src = "DDC_ReaKit.jsfx" },
   { key = "wid", name = "Stereo Width", long = "WIDTH",    short = "W",   file = "stereowidth_reakit.jsfx", w = 300, minw = 280, h = 364, minh = 140, src = "StereoWidth_ReaKit.jsfx" },
 }
--- Gumbo (the SFZ player, 2026-11-01; the owner: "i want gumbo to dock all its own"): only in its own tab ("Gumbo -
--- Dock", Gumbo's package carries a copy of this file), never a chip in the effects' bar
+-- Gumbo (the SFZ player, 2026-11-01; the owner: "i want gumbo to dock all its own") and EON Grand Tour (the reverb,
+-- 2026-11-12; the owner: "Do it Gumbo's way"): each only in its own tab ("Gumbo - Dock" / "Grand Tour - Dock"; each
+-- package carries a copy of this file), never a chip in the effects' bar. own = its own tab only: no route setting.
 if ONLY and ONLY.key == "gmb" then
-  KINDS[#KINDS + 1] = { key = "gmb", name = "Gumbo", long = "GUMBO", short = "GB", file = "gumbo_reakit.jsfx", w = 1000, minw = 700, h = 640, minh = 420, src = "Gumbo_ReaKit.jsfx" }
+  KINDS[#KINDS + 1] = { key = "gmb", name = "Gumbo", long = "GUMBO", short = "GB", file = "gumbo_reakit.jsfx", w = 1000, minw = 700, h = 640, minh = 420, src = "Gumbo_ReaKit.jsfx", own = true }
+elseif ONLY and ONLY.key == "gt" then
+  -- the face's designed size (720 x 460, EON Floatter's SIZES row for it) and the least that still reads whole
+  KINDS[#KINDS + 1] = { key = "gt", name = "Grand Tour", long = "GRAND TOUR", short = "GT", file = "grandtour_reakit.jsfx", w = 720, minw = 480, h = 460, minh = 300, src = "GrandTour_ReaKit.jsfx", own = true }
 end
 local kind = 1
 for i, k in ipairs(KINDS) do if k.key == r.GetExtState(EXT, "kind") then kind = i end end
@@ -152,7 +156,7 @@ local wanted_skipped = false
 local ROUTE = { t = r.GetExtState("EON_ReaKitDock", "route_t") }
 function ROUTE.tab(k)
   local key = KINDS[k] and KINDS[k].key
-  if not key or key == "gmb" then return false end
+  if not key or KINDS[k].own then return false end
   local v = r.GetExtState("EON_ReaKitDock", "route_" .. key)
   return v ~= "dock"
 end
@@ -1017,7 +1021,7 @@ function TABS.others()
   local function up(x) return x ~= EXT and now - (tonumber(r.GetExtState(x, "alive")) or 0) < 1.0 end
   if up("EON_ReaKitDock") then return true end
   for _, k in ipairs(KINDS) do if up("EON_ReaKitDock_" .. k.key) then return true end end
-  return up("EON_ReaKitDock_gmb")
+  return up("EON_ReaKitDock_gmb") or up("EON_ReaKitDock_gt")   -- the own-tab-only docks (not in the full dock's KINDS)
 end
 -- MEASURED 2026-11-05 (tabs_visual3_run.py, REAPER 7.84): the dockers are laid out again only when the compact
 -- switch FLIPS; a new size limit alone changes nothing on screen (DockWindowRefresh, a refresh of the window, a nudge
@@ -1854,7 +1858,7 @@ local function gear_pick(pick)
     opt_set("tintk", ({ "30", "50", "100" })[pick - 11]); if opt.tint == "1" then TINT.pass(true) end
   elseif pick >= 15 and pick <= 17 then opt_set("layout", ({ "auto", "across", "down" })[pick - 14])
   elseif pick == 18 then opt_set("tips", opt.tips == "0" and "1" or "0")
-  elseif pick >= 19 and KINDS[pick - 18] and KINDS[pick - 18].key ~= "gmb" then ROUTE.set(pick - 18, not ROUTE.tab(pick - 18)) end
+  elseif pick >= 19 and KINDS[pick - 18] and not KINDS[pick - 18].own then ROUTE.set(pick - 18, not ROUTE.tab(pick - 18)) end
   has_key = ""
 end
 -- The EON palette (EON Floatter's P; the Swing FX picker's slate): 0xRRGGBBAA
@@ -2138,7 +2142,7 @@ local function menu_frame()
     ImGui.TextColored(ctx, MENU.c.muted, "    Own dock tab (lit) or the full dock")
     local ni = 0
     for k, kd in ipairs(KINDS) do
-      if kd.key ~= "gmb" then
+      if not kd.own then
         if ni % 4 == 0 then ImGui.Text(ctx, "   ") end
         ImGui.SameLine(ctx, 0, ni % 4 == 0 and 8 or 4)
         local on_t = ROUTE.tab(k)
@@ -2211,7 +2215,7 @@ local function gear_menu(mx, my)
     .. on(opt.layout == "down") .. "Layout: effects stacked down|"
     .. on(opt.tips ~= "0") .. "Tooltips"
   for k, kd in ipairs(KINDS) do                          -- 19..26: where each effect lives (ROUTE)
-    if kd.key ~= "gmb" then m = m .. "|" .. on(ROUTE.tab(k)) .. kd.name .. " in its own dock tab" end
+    if not kd.own then m = m .. "|" .. on(ROUTE.tab(k)) .. kd.name .. " in its own dock tab" end
   end
   gfx.x, gfx.y = mx, my
   local pick = gfx.showmenu(m)

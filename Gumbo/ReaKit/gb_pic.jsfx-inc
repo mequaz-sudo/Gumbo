@@ -1,6 +1,7 @@
 // Copyright (c) 2026 EON Studios (Quaz). All rights reserved. Free to use: see Gumbo_LICENSE.md.
 // gb_pic.jsfx-inc -- Gumbo's own SPACE pictures (2026-11-06, the owner: "give gumbo its own pictures"; Gumbo is free,
-// Rooms is paid, so Gumbo no longer draws Rooms' room pictures). One small drawing per General MIDI 2 reverb type,
+// Grand Tour (then named Rooms) is paid, so Gumbo no longer draws its room pictures).
+// One small drawing per General MIDI 2 reverb type,
 // drawn straight each frame (the box is about 120 x 60 at 1x: a few dozen shapes, no cached image):
 //   0 Small Room, 1 Medium Room, 2 Large Room -- a wooden room, its back wall further away the bigger it is, boards
 //     running to the back, a window, a lamp;

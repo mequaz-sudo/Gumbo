@@ -613,8 +613,12 @@ function rkth_em_shown() (
   rkth_em_pend > 0 && gmem[RKTH_EM_BASE + 2] < rkth_em_pgen && time_precise() - rkth_em_pt < 3
     ? rkth_em_pend : gmem[RKTH_EM_BASE + 1] | 0;
 );
+// A host whose shared memory is its OWN (Grand Tour, 2026-11-12) reaches Plus only through its own helper script,
+// which carries this band across: it sets rkth_em_relay every frame, 1 = its helper is running, 2 = it is not (the
+// chip then says NEEDS HELPER; NEEDS PLUS would send the user to the wrong script). 0 (every other host): as before.
 function rkth_em_label() local(_s) (
   _s = rkth_em_shown();
+  rkth_em_relay == 2 ? "NEEDS HELPER" :
   !rkth_em_alive() ? "NEEDS PLUS" : _s == 1 ? "MCP" : _s == 2 ? "TCP" : _s == 3 ? "OFF" : "...";
 );
 // Ask Plus: where this instance sits, then the counter LAST.
@@ -1377,8 +1381,9 @@ local(thw, knw, vuw, syw, thx, thy, knx, kny, vux, vuy, syx, syy, _tw, _th, kid,
       _xi += 1;
     );
     _xw > 0 ? _xw += 14*rkth_scale;
-    // EMBED: its chip holds "NEEDS PLUS" while Plus is not running
-    rkth_em_ok ? ( gfx_measurestr("NEEDS PLUS", _tw, _th); _xw = max(_xw, _tw + 14*rkth_scale); );
+    // EMBED: its chip holds "NEEDS PLUS" while Plus is not running ("NEEDS HELPER" for a relaying host, the width
+    // kept whether its helper runs or not)
+    rkth_em_ok ? ( gfx_measurestr(rkth_em_relay ? "NEEDS HELPER" : "NEEDS PLUS", _tw, _th); _xw = max(_xw, _tw + 14*rkth_scale); );
     // ── DROPPED PANEL geometry (user 2026-08-12: "make it drop down not
     // across"). The chips used to FLOW horizontally along the header, which put
     // them on a collision course with each host's right-hand chrome and forced

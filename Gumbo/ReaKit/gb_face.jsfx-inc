@@ -179,6 +179,8 @@ function gbf_idx_load() local(k) (
   gbf_idx_sort();
   gbf_cur_for = -1;                                 // the entries moved: find the loaded one again
   gbf_fav_load(); gbf_q_gen += 1;                   // the stars and the search follow the new entries
+  memset(GBF_BANKT, 0, GBF_IMAX); gbf_bk_i = 0;     // which entries are banks: read again (gbf_bank_scan, an entry a pass)
+  gbf_bkp_tile = -1;                                // (a bank pick that waited named an entry of the old list)
   gbf_idx_loaded = 1;
 );
 function gbf_idx_str(e, which) local(p, n, i) (   // which 0 = name, 1 = path -> #gbf_es
@@ -397,10 +399,12 @@ function gbf_pg_group(i) ( gbf_pg_drum(i) ? 16 : ((GB_PRG + i * 5)[1] / 8) | 0; 
 // categories for the GM library"): by its GM group, a few by number; the kits under Drums, a kit with "808" in its name
 // under 808s; the sound effects under Other (12: ALL INSTRUMENTS only). A bank that is not GM gets these too -- Gumbo
 // is a GM player, its banks are GM SoundFonts.
-function gbf_pg_tile(i) local(p, g) (
-  gbf_pg_drum(i) ? ( gb_prog_name(i); matchi("*808*", #gb_ls) ? 1 : 0; )
+// (gbf_tile_of: the rule itself, from a program's number -- the loaded bank's entries AND a bank read off the disk
+// before it is loaded, gbf_bank_scan; kit808 = a kit with "808" in its name)
+function gbf_tile_of(drum, p, kit808) local(g) (
+  drum ? ( kit808 ? 1 : 0 )
   : (
-    p = (GB_PRG + i * 5)[1]; g = (p / 8) | 0;
+    g = (p / 8) | 0;
     g == 0 ? ( p == 4 || p == 5 || p == 7 ? 4 : 3 )            // pianos; the electric pianos and the clavinet
     : g <= 2 ? ( p == 22 ? 9 : 3 )                               // mallets and organs; the harmonica
     : g == 3 ? 10 : g == 4 ? 2                                   // guitars; basses
@@ -411,7 +415,54 @@ function gbf_pg_tile(i) local(p, g) (
     : g == 14 ? 0 : 12;                                          // percussive; sound effects
   );
 );
-GBF_PGFAM = 1755000;                 // 512 -> 1755512: entry i's tile (rebuilt with GBF_PGORD, once per finished load; after GBF_KNM's 1754556)
+function gbf_pg_tile(i) (
+  gbf_pg_drum(i) ? ( gb_prog_name(i); gbf_tile_of(1, 0, matchi("*808*", #gb_ls)); )
+  : gbf_tile_of(0, (GB_PRG + i * 5)[1], 0);
+);
+// ── a bank that is NOT loaded, under the tiles it has sounds for (the owner, 2026-11-16: "it's very misleading if we
+// have categories, but our general MIDI is not able to be picked from those categories") ──
+// Gumbo knows a bank's programs only once it is loaded, so until now a tile showed no sign of a bank that was not (its
+// list family is "Other": no tile). The list's files say which they are: a bank's converted file opens with its
+// "// program S LO HI name" lines (and "// drums S"), before any region. gbf_bank_scan reads that head, ONE list entry
+// a pass (a file open each: spread out, not one stall when the lists load), and keeps the tiles its programs file
+// under: GBF_BANKT[i] = a bit a tile (2^tile, tiles 0..11), 0 = one instrument or not read yet. gbf_listed shows such
+// an entry under each of those tiles; a click there loads it and plays the tile's first program (gbf_bkp_*).
+GBF_BANKT = 1757000;                 // 512 -> 1757512 (GBF_IMAX; the gap after GBF_PGMATCH's 1756512)
+gbf_bk_i = 0;                        // the next list entry to read (gbf_idx_load starts it over)
+gbf_bkp_tile = -1; gbf_bkp_for = -1; // a bank picked under a tile: the tile, the list entry; -1 = nothing waits
+function gbf_bank_has(i, c) ( c >= 0 && c < GBF_NFAM && (GBF_BANKT[i] & 2 ^ c) != 0; );
+function gbf_bank_scan() local(h, k, go, m, np, drum, sec, lo, hi, t) (
+  gbf_idx_loaded && gbf_bk_i < gbf_idx_n ? (
+    gbf_idx_str(GBF_IDX_BASE + gbf_bk_i * GBF_IS, 1);
+    m = 0; np = 0; drum = 0;
+    h = file_open(#gbf_es);
+    h >= 0 ? (
+      file_text(h) ? (
+        k = 0; go = 1;
+        // the head only: comment lines and the "<control>" line; the first region line ends it (700: a full GM bank
+        // with its variations and kits is under 300 lines of head)
+        while (go && file_avail(h) > 0 && k < 700) (
+          file_string(h, #gbf_ln);
+          strncmp(#gbf_ln, "//", 2) != 0 && strncmp(#gbf_ln, "<control>", 9) != 0 && strlen(#gbf_ln) > 2 ? go = 0
+          : strncmp(#gbf_ln, "// drums ", 9) == 0 ? ( sec = 0; match("// drums %d*", #gbf_ln, sec); drum = sec; )
+          : strncmp(#gbf_ln, "// program ", 11) == 0 ? (
+            sec = 0; lo = 0; hi = 0;
+            match("// program %d %d %d*", #gbf_ln, sec, lo, hi) ? (
+              np += 1;
+              t = gbf_tile_of(drum > 0 && sec == drum, max(0, min(127, lo)), matchi("*808*", #gbf_ln));
+              t < GBF_NFAM && !(m & 2 ^ t) ? m += 2 ^ t;
+            );
+          );
+          k += 1;
+        );
+      );
+      file_close(h);
+    );
+    GBF_BANKT[gbf_bk_i] = np > 1 ? m : 0;   // (one program = one instrument, as the face has it: gb_nprg > 1)
+    gbf_bk_i += 1;
+  );
+);
+GBF_PGFAM = 1755000;                // 512 -> 1755512: entry i's tile (rebuilt with GBF_PGORD, once per finished load; after GBF_KNM's 1754556)
 GBF_PGMATCH = 1756000;               // 512 -> 1756512: does entry i's name match the search (rebuilt when the search or the load changes)
 gbf_pgm_q = -1; gbf_pgm_gen = -1; gbf_pg_followed = -1; gbf_pg_at = -1;
 function gbf_pg_match_build() local(i) (
@@ -748,8 +799,38 @@ function gbf_key_name(n) local(p, k) (
   );
   strlen(#gb_ls);
 );
+// a bank picked under a tile (gbf_browser's click) has finished loading: the tile's first program, in menu order.
+// Dropped when another instrument came in instead, or the load failed.
+function gbf_bkp_apply() local(k, i, hit, keep, q) (
+  gbf_bkp_tile >= 0 ? (
+    gb_ready ? (
+      gbf_idx_current_cached() == gbf_bkp_for && gb_nprg > 1 ? (
+        gbf_pg_order();
+        // (the program the sliders already name stays when it is one of the tile's: a bank left on Pop Bass and
+        // picked again under Bass comes back on Pop Bass)
+        hit = -1; keep = 0; k = 0;
+        loop(gb_nprg,
+          i = GBF_PGORD[k]; q = GB_PRG + i * 5;
+          GBF_PGFAM[i] == gbf_bkp_tile ? (
+            hit < 0 ? hit = i;
+            (gbf_pg_drum(i) ? 128 : 0) + q[1] == (slider89 | 0) && gbf_pg_bank(i) == (slider90 | 0) ? keep = 1;
+          );
+          k += 1;
+        );
+        hit >= 0 && !keep ? gbf_prog_pick(hit);
+      );
+      gbf_bkp_tile = -1;
+    ) : gb_job == GB_J_FAILED || gb_job == GB_J_IDLE ? gbf_bkp_tile = -1;
+  );
+);
+// the family the top bar names: a bank's playing program's tile (the owner, 2026-11-16: the bar said "Other" on Pop
+// Bass), else the list entry's own
+function gbf_fam_now(cur) (
+  gb_ready && gb_nprg > 1 && gbf_pg_i >= 0 ? ( gbf_pg_order(); GBF_PGFAM[gbf_pg_i]; ) : (GBF_IDX_BASE + cur * GBF_IS)[0];
+);
 // once a frame, before anything that draws the instrument: which program plays, and the tables built from it
 function gbf_prog_sync() (
+  gbf_bkp_apply();
   gb_ready ? ( gbf_prog_cur(); gbf_pgk = gb_load_gen * 65536 + gbf_pg_sec * 128 + gbf_pg_p; ) : gbf_pgk = -1;
   gbf_rec_build(); gbf_names_build(); gbf_range();
 );
@@ -982,7 +1063,7 @@ function gbf_match_build() local(i, k, c, e) (
 // is entry i in the list now: searching = every match (any family); else its family (or all), favourites only when on
 function gbf_listed(i) local(e) (
   e = GBF_IDX_BASE + i * GBF_IS;
-  (!gbf_favonly || GBF_FAV[i]) && (strlen(#gbf_q) > 0 ? GBF_MATCH[i] : (gbf_cat < 0 || e[0] == gbf_cat));
+  (!gbf_favonly || GBF_FAV[i]) && (strlen(#gbf_q) > 0 ? GBF_MATCH[i] : (gbf_cat < 0 || e[0] == gbf_cat || gbf_bank_has(i, gbf_cat)));
 );
 // one of the loaded bank's programs as a row under the bank's own row (the owner, 2026-11-03: programs picked the way
 // instruments are): indented on a guide line, the one playing lit; a click plays it
@@ -1029,6 +1110,7 @@ function gbf_group_row(g, x, cy, w, rh, open, cnt) local(s, hot, cx, cy2) (
 );
 function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, n, ry, rh, hrh, vis, cur, f, ic, iw, ih, yb, sh, sx, sw, pg, pgn, pgr, k, g, lg, qall, hdrs) (
   s = gbf_s;
+  gbf_bank_scan();                   // which list entries are banks, one a pass (before the rows: it uses #gbf_es)
   gfx_set(gbf_pn_r * 0.92, gbf_pn_g * 0.92, gbf_pn_b * 0.92, 1); gfx_rect(x, y, w, h);
   gfx_set(gbf_bd_r, gbf_bd_g, gbf_bd_b, 1); gfx_rect(x + w - 1, y, 1, h);
   // family tiles: 4 x 3
@@ -1118,7 +1200,11 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, n, ry, rh, hr
           lmb_down = 0; gbf_idx_str(e, 1); gbh_request_fav(#gbf_es) ? ( GBF_FAV[i] = !GBF_FAV[i]; gbf_q_gen += 1; );
         );
         // a click on the instrument already loaded (or loading) does nothing; after a failed load it tries again
-        lmb_down && !gbf_menu_block && gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s) && (i != cur || gb_job == GB_J_FAILED) ? gbf_load_entry(i);
+        lmb_down && !gbf_menu_block && gbf_hit(x + 6 * s, cy, w - 12 * s, rh - 2 * s) && (i != cur || gb_job == GB_J_FAILED) ? (
+          // a bank picked under a tile: once it is in, the tile's first program plays (gbf_bkp_apply)
+          gbf_bkp_tile = strlen(#gbf_q) == 0 && gbf_bank_has(i, gbf_cat) ? gbf_cat : -1; gbf_bkp_for = i;
+          gbf_load_entry(i);
+        );
         cy += rh;
       );
       n += 1;
@@ -1174,7 +1260,17 @@ function gbf_browser(x, y, w, h) local(s, tw, th, i, j, cx, cy, e, n, ry, rh, hr
   gfx_drawstr(#gbf_tmp, 0, x + w - 6 * s, y + h);
 );
 // step through the family of the loaded instrument (or the list) by d
-function gbf_step(d) local(cur, fam, i, k, e) (
+// (inside a bank: its next / previous program of the playing one's family, round the ends -- the owner, 2026-11-16;
+// the bank's own family is "Other", so the arrows used to load the next whole bank)
+function gbf_step(d) local(cur, fam, i, k, e, p, n, j) (
+  gbf_bkp_tile = -1;
+  gb_ready && gb_nprg > 1 && gbf_pg_i >= 0 ? (
+    gbf_pg_order(); fam = GBF_PGFAM[gbf_pg_i]; n = gb_nprg;
+    p = 0; k = 0; loop(n, GBF_PGORD[k] == gbf_pg_i ? p = k; k += 1; );
+    k = 0; j = -1;
+    while (j < 0 && k < n - 1) ( k += 1; i = GBF_PGORD[(p + d * k + n * 2) % n]; GBF_PGFAM[i] == fam ? j = i; );
+    j >= 0 ? gbf_prog_pick(j);
+  ) : (
   cur = gbf_idx_current_cached(); fam = cur >= 0 ? (GBF_IDX_BASE + cur * GBF_IS)[0] : gbf_cat;
   i = cur >= 0 ? cur : d > 0 ? -1 : 0;   // nothing loaded: > starts at the first, < at the last
   k = 0;
@@ -1182,6 +1278,7 @@ function gbf_step(d) local(cur, fam, i, k, e) (
     i = (i + d + gbf_idx_n) % gbf_idx_n; e = GBF_IDX_BASE + i * GBF_IS;
     i != cur && (fam < 0 || e[0] == fam) ? ( gbf_load_entry(i); k = gbf_idx_n; );   // alone in its family: no reload
     k += 1;
+  );
   );
 );
 
